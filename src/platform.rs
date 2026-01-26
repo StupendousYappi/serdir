@@ -110,6 +110,7 @@ impl FileExt for std::fs::File {
     }
 }
 
+#[derive(Hash, Eq, PartialEq)]
 pub struct FileInfo {
     pub inode: u64,
     pub len: u64,
