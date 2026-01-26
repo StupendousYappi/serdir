@@ -144,7 +144,7 @@ where
                 }
                 let chunk_size = std::cmp::min(CHUNK_SIZE, left.end - left.start) as usize;
                 Some(tokio::task::block_in_place(move || {
-                    match inner.f.read_at(chunk_size, left.start) {
+                    match inner.f.read_range(chunk_size, left.start) {
                         Err(e) => (
                             Err(Box::<dyn StdError + Send + Sync + 'static>::from(e).into()),
                             (left, inner),

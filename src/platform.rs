@@ -24,41 +24,36 @@ pub trait FileExt {
     /// uninitialized buffer. This may change after
     /// [`read_buf`](https://github.com/rust-lang/rust/issues/78485) is stabilized, including buf
     /// equivalents of `read_at`/`seek_read`.
-    fn read_at(&self, chunk_size: usize, offset: u64) -> io::Result<Vec<u8>>;
+    fn read_range(&self, chunk_size: usize, offset: u64) -> io::Result<Vec<u8>>;
 }
 
 impl FileExt for std::fs::File {
     #[cfg(unix)]
-    fn read_at(&self, chunk_size: usize, offset: u64) -> io::Result<Vec<u8>> {
-        use std::os::unix::io::AsRawFd;
+    fn read_range(&self, chunk_size: usize, offset: u64) -> io::Result<Vec<u8>> {
+        use std::os::unix::fs::FileExt;
 
         let mut chunk = Vec::with_capacity(chunk_size);
-        let offset = libc::off_t::try_from(offset).map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "offset too large")
-        })?;
+        // Get a mutable slice to the uninitialized spare capacity
+        let spare = chunk.spare_capacity_mut();
+        debug_assert!(spare.len() == chunk_size);
 
-        // SAFETY: `Vec::with_capacity` guaranteed the passed pointers are valid.
-        let retval = unsafe {
-            libc::pread(
-                self.as_raw_fd(),
-                chunk.as_mut_ptr() as *mut libc::c_void,
-                chunk_size,
-                offset,
-            )
+        // SAFETY: read_at on Unix takes a raw buffer. We cast our MaybeUninit
+        // slice to a raw byte slice. This is safe because we will only
+        // "initialize" the bytes that are actually read.
+        let bytes_read = unsafe {
+            let slice = std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, chunk_size);
+            self.read_at(slice, offset)?
         };
-        let bytes_read = usize::try_from(retval).map_err(|_| std::io::Error::last_os_error())?;
 
-        if bytes_read == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                format!("no bytes beyond position {}", offset),
-            ));
-        }
-
-        // SAFETY: `libc::pread` guaranteed these bytes are initialized.
+        // SAFETY: We just confirmed that 'bytes_read' were initialized by the OS.
         unsafe {
             chunk.set_len(bytes_read);
         }
+
+        if bytes_read == 0 {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+
         Ok(chunk)
     }
 
@@ -201,7 +196,7 @@ mod test {
     fn test_read_at_middle() {
         let mut f = tempfile().unwrap();
         f.write_all(b"0123456789").unwrap();
-        let chunk = f.read_at(3, 4).unwrap();
+        let chunk = f.read_range(3, 4).unwrap();
         assert_eq!(chunk, b"456");
     }
 
@@ -209,7 +204,7 @@ mod test {
     fn test_read_at_beyond_eof() {
         let mut f = tempfile().unwrap();
         f.write_all(b"0123456789").unwrap();
-        let chunk = f.read_at(10, 8).unwrap();
+        let chunk = f.read_range(10, 8).unwrap();
         assert_eq!(chunk, b"89");
     }
 
@@ -217,7 +212,7 @@ mod test {
     fn test_read_at_entirely_beyond_eof() {
         let mut f = tempfile().unwrap();
         f.write_all(b"0123456789").unwrap();
-        let err = f.read_at(3, 10).unwrap_err();
+        let err = f.read_range(3, 10).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
     }
 
@@ -231,7 +226,7 @@ mod test {
             .open(path)
             .unwrap();
         // This should fail because it's not open for reading.
-        let err = f.read_at(10, 0).unwrap_err();
+        let err = f.read_range(10, 0).unwrap_err();
         assert!(err.to_string().starts_with("Bad file descriptor "));
     }
 
@@ -243,7 +238,7 @@ mod test {
         rand::thread_rng().fill_bytes(&mut data);
         f.write_all(&data).unwrap();
 
-        let chunk = f.read_at(data.len(), 0).unwrap();
+        let chunk = f.read_range(data.len(), 0).unwrap();
         assert_eq!(chunk, data);
     }
 }
