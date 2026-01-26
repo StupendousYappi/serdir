@@ -10,77 +10,16 @@
 //! [http](http://crates.io/crates/http) crate and [tokio](https://crates.io/crates/tokio).
 //! Works well with [hyper](https://crates.io/crates/hyper) 1.x.
 //!
-//! This crate supplies two ways to respond to HTTP GET and HEAD requests:
+//! This crate supplies a way to respond to HTTP GET and HEAD requests:
 //!
 //! *   the `serve` function can be used to serve an `Entity`, a trait representing reusable,
 //!     byte-rangeable HTTP entities. `Entity` must be able to produce exactly the same data on
 //!     every call, know its size in advance, and be able to produce portions of the data on demand.
-//! *   the `streaming_body` function can be used to add a body to an otherwise-complete response.
-//!     If a body is needed (on `GET` rather than `HEAD` requests), it returns a `BodyWriter`
-//!     (which implements `std::io::Writer`). The caller should produce the complete body or call
-//!     `BodyWriter::abort`, causing the HTTP stream to terminate abruptly.
 //!
 //! It supplies a static file `Entity` implementation and a (currently Unix-only)
 //! helper for serving a full directory tree from the local filesystem, including
 //! automatically looking for `.gz`-suffixed files when the client advertises
 //! `Accept-Encoding: gzip`.
-//!
-//! # Why two ways?
-//!
-//! They have pros and cons. This table shows some of them:
-//!
-//! <table>
-//!   <tr><th></th><th><code>serve</code></th><th><code>streaming_body</code></th></tr>
-//!   <tr><td>automatic byte range serving</td><td>yes</td><td>no [<a href="#range">1</a>]</td></tr>
-//!   <tr><td>backpressure</td><td>yes</td><td>no [<a href="#backpressure">2</a>]</td></tr>
-//!   <tr><td>conditional GET</td><td>yes</td><td>no [<a href="#conditional_get">3</a>]</td></tr>
-//!   <tr><td>sends first byte before length known</td><td>no</td><td>yes</td></tr>
-//!   <tr><td>automatic gzip content encoding</td><td>no [<a href="#gzip">4</a>]</td><td>yes</td></tr>
-//! </table>
-//!
-//! <a name="range">\[1\]</a>: `streaming_body` always sends the full body. Byte range serving
-//! wouldn't make much sense with its interface. The application will generate all the bytes
-//! every time anyway, and `http-serve`'s buffering logic would have to be complex
-//! to handle multiple ranges well.
-//!
-//! <a name="backpressure">\[2\]</a>: `streaming_body` is often appended to while holding
-//! a lock or open database transaction, where backpressure is undesired. It'd be
-//! possible to add support for "wait points" where the caller explicitly wants backpressure. This
-//! would make it more suitable for large streams, even infinite streams like
-//! [Server-sent events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events).
-//!
-//! <a name="conditional_get">\[3\]</a>: `streaming_body` doesn't yet support
-//! generating etags or honoring conditional GET requests. PRs welcome!
-//!
-//! <a name="gzip">\[4\]</a>: `serve` doesn't automatically apply `Content-Encoding:
-//! gzip` because the content encoding is a property of the entity you supply. The
-//! entity's etag, length, and byte range boundaries must match the encoding. You
-//! can use the `http_serve::should_gzip` helper to decide between supplying a plain
-//! or gzipped entity. `serve` could automatically apply the related
-//! `Transfer-Encoding: gzip` where the browser requests it via `TE: gzip`, but
-//! common browsers have
-//! [chosen](https://bugs.chromium.org/p/chromium/issues/detail?id=94730) to avoid
-//! requesting or handling `Transfer-Encoding`.
-//!
-//! Use `serve` when:
-//!
-//! *   metadata (length, etag, etc) and byte ranges can be regenerated cheaply and consistently
-//!     via a lazy `Entity`, or
-//! *   data can be fully buffered in memory or on disk and reused many times. You may want to
-//!     create a pair of buffers for gzipped (for user-agents which specify `Accept-Encoding:
-//!     gzip`) vs raw.
-//!
-//! Use `streaming_body` when regenerating the entire body each time a response is sent.
-//!
-//! Once you return a `hyper::server::Response` to hyper, your only way to signal error to the
-//! client is to abruptly close the HTTP connection while sending the body. If you want the ability
-//! to return a well-formatted error to the client while producing body bytes, you must buffer the
-//! entire body in-memory before returning anything to hyper.
-//!
-//! If you are buffering a response in memory, `serve` requires copying the bytes (when using
-//! `Data = Vec<u8>` or similar) or atomic reference-counting (with `Data = Arc<Vec<u8>>` or
-//! similar). `streaming_body` doesn't need to keep its own copy for potential future use; it may
-//! be cheaper because it can simply hand ownership of the existing `Vec<u8>`s to hyper.
 //!
 //! # Why the weird type bounds? Why not use `hyper::Body` and `BoxError`?
 //!
@@ -131,7 +70,6 @@ fn as_u64(len: usize) -> u64 {
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 mod body;
-mod chunker;
 
 #[cfg(feature = "dir")]
 #[cfg_attr(docsrs, doc(cfg(feature = "dir")))]
@@ -139,14 +77,12 @@ pub mod dir;
 
 mod etag;
 mod file;
-mod gzip;
 mod platform;
 mod range;
 mod serving;
 
 pub use crate::body::Body;
 pub use crate::file::ChunkedReadFile;
-pub use crate::gzip::BodyWriter;
 pub use crate::serving::serve;
 
 /// A reusable, read-only, byte-rangeable HTTP entity for GET and HEAD serving.
@@ -291,148 +227,7 @@ pub fn should_gzip(headers: &HeaderMap) -> bool {
     gzip_q > 0 && gzip_q >= identity_q
 }
 
-/// A builder returned by [`streaming_body`].
-pub struct StreamingBodyBuilder {
-    chunk_size: usize,
-    gzip_level: u32,
-    should_gzip: bool,
-    body_needed: bool,
-}
-
-/// Creates a response and streaming body writer for the given request.
-///
-/// The streaming body writer is currently `Some(writer)` for `GET` requests and
-/// `None` for `HEAD` requests. In the future, `streaming_body` may also support
-/// conditional `GET` requests.
-///
-/// ```
-/// # use http::{Request, Response, header::{self, HeaderValue}};
-/// use std::io::Write as _;
-///
-/// fn respond(req: Request<hyper::body::Incoming>) -> std::io::Result<Response<http_serve::Body>> {
-///     let (mut resp, stream) = http_serve::streaming_body(&req).build();
-///     if let Some(mut w) = stream {
-///         write!(&mut w, "hello world")?;
-///     }
-///     resp.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
-///     Ok(resp)
-/// }
-/// ```
-///
-/// The caller may also continue appending to `stream` after returning the response to `hyper`.
-/// The response will end when `stream` is dropped. The only disadvantage to writing to the stream
-/// after the fact is that there's no way to report mid-response errors other than abruptly closing
-/// the TCP connection ([BodyWriter::abort]).
-///
-/// ```
-/// # use http::{Request, Response, header::{self, HeaderValue}};
-/// use std::io::Write as _;
-///
-/// fn respond(req: Request<hyper::body::Incoming>) -> std::io::Result<Response<http_serve::Body>> {
-///     let (mut resp, stream) = http_serve::streaming_body(&req).build();
-///     if let Some(mut w) = stream {
-///         tokio::spawn(async move {
-///             for i in 0..10 {
-///                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-///                 write!(&mut w, "write {}\n", i)?;
-///             }
-///             Ok::<_, std::io::Error>(())
-///         });
-///     }
-///     resp.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
-///     Ok(resp)
-/// }
-/// ```
-pub fn streaming_body<H: AsRequest>(req: &H) -> StreamingBodyBuilder {
-    StreamingBodyBuilder {
-        chunk_size: 4096,
-        gzip_level: 6,
-        should_gzip: should_gzip(req.headers()),
-        body_needed: *req.method() != http::method::Method::HEAD,
-    }
-}
-
-/// A trait for types that provide the required request accessors needed by [`streaming_body`].
-pub trait AsRequest {
-    /// Returns the HTTP method.
-    fn method(&self) -> &http::Method;
-
-    /// Returns the request headers.
-    fn headers(&self) -> &http::HeaderMap;
-}
-
-impl<T> AsRequest for http::Request<T> {
-    #[inline]
-    fn method(&self) -> &http::Method {
-        self.method()
-    }
-
-    #[inline]
-    fn headers(&self) -> &http::HeaderMap {
-        self.headers()
-    }
-}
-
-impl AsRequest for http::request::Parts {
-    #[inline]
-    fn method(&self) -> &http::Method {
-        &self.method
-    }
-
-    #[inline]
-    fn headers(&self) -> &http::HeaderMap {
-        &self.headers
-    }
-}
-
-impl StreamingBodyBuilder {
-    /// Sets the size of a data chunk.
-    ///
-    /// This is a compromise between memory usage and efficiency. The default of 4096 is usually
-    /// fine; increasing will likely only be noticeably more efficient when compression is off.
-    pub fn with_chunk_size(self, chunk_size: usize) -> Self {
-        StreamingBodyBuilder { chunk_size, ..self }
-    }
-
-    /// Sets the gzip compression level. Defaults to 6.
-    ///
-    /// `gzip_level` should be an integer between 0 and 9 (inclusive).
-    /// 0 means no compression; 9 gives the best compression (but most CPU usage).
-    ///
-    /// This is only effective if the client supports compression.
-    pub fn with_gzip_level(self, gzip_level: u32) -> Self {
-        StreamingBodyBuilder { gzip_level, ..self }
-    }
-
-    /// Returns the HTTP response and, if the request is a `GET`, a body writer.
-    #[allow(clippy::type_complexity)]
-    pub fn build<D, E>(self) -> (http::Response<crate::Body<D, E>>, Option<BodyWriter<D, E>>)
-    where
-        D: From<Vec<u8>> + Send + Sync,
-        E: Send + Sync,
-    {
-        let (w, r) = chunker::Writer::with_chunk_size(self.chunk_size);
-        let mut resp = http::Response::new(Body(crate::body::BodyStream::Chunker(r)));
-        resp.headers_mut()
-            .append(header::VARY, HeaderValue::from_static("accept-encoding"));
-
-        if self.should_gzip && self.gzip_level > 0 {
-            resp.headers_mut()
-                .append(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
-        }
-
-        if !self.body_needed {
-            return (resp, None);
-        }
-
-        let w = match self.should_gzip && self.gzip_level > 0 {
-            true => BodyWriter::gzipped(w, flate2::Compression::new(self.gzip_level)),
-            false => BodyWriter::raw(w),
-        };
-
-        (resp, Some(w))
-    }
-}
+// streaming_body and related types removed.
 
 #[cfg(test)]
 mod tests {

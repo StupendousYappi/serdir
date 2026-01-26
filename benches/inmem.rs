@@ -6,8 +6,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Benchmarks of serving data built in to the binary via `include_bytes!`, using both the
-//! `serve` function on an `Entity` and the `streaming_body` method.
+//! Benchmarks of serving data built in to the binary via `include_bytes!`, using the
+//! `serve` function on an `Entity`.
 
 use bytes::{Bytes, BytesMut};
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
@@ -15,7 +15,7 @@ use futures_core::Stream;
 use futures_util::{future, stream};
 use http::header::HeaderValue;
 use http::{Request, Response};
-use http_serve::{streaming_body, BoxError};
+use http_serve::BoxError;
 use hyper_util::rt::TokioIo;
 use once_cell::sync::Lazy;
 use std::convert::TryInto;
@@ -23,7 +23,6 @@ use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::ops::Range;
 use std::pin::Pin;
-use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 use tokio::net::TcpListener;
 
@@ -76,37 +75,6 @@ async fn serve(req: Request<hyper::body::Incoming>) -> Result<Response<Body>, Bo
             let mut b = BytesMut::with_capacity(WONDERLAND.len());
             b.extend_from_slice(WONDERLAND);
             http_serve::serve(BytesEntity(b.freeze()), &req)
-        }
-        b'b' => {
-            // chunked, data written before returning the Response.
-            let colon = path.find(':').unwrap();
-            let s = usize::from_str(&path[2..colon]).unwrap();
-            let l = u32::from_str(&path[colon + 1..]).unwrap();
-            let (resp, w) = streaming_body(&req)
-                .with_chunk_size(s)
-                .with_gzip_level(l)
-                .build();
-            if let Some(mut w) = w {
-                w.write_all(WONDERLAND).unwrap();
-            }
-            resp
-        }
-        b'a' => {
-            // chunked, data written after returning the Response.
-            let colon = path.find(':').unwrap();
-            let s = usize::from_str(&path[2..colon]).unwrap();
-            let l = u32::from_str(&path[colon + 1..]).unwrap();
-            let (resp, w) = streaming_body(&req)
-                .with_chunk_size(s)
-                .with_gzip_level(l)
-                .build();
-            tokio::spawn(async {
-                if let Some(mut w) = w {
-                    w.write_all(WONDERLAND).unwrap();
-                }
-                Ok::<_, std::convert::Infallible>(())
-            });
-            resp
         }
         _ => unreachable!(),
     };
@@ -232,45 +200,6 @@ fn criterion_benchmark(c: &mut Criterion) {
     g.throughput(Throughput::Bytes(WONDERLAND.len() as u64));
     g.bench_function("static", |b| get(b, "s"));
     g.bench_function("copied", |b| get(b, "c"));
-    g.finish();
-
-    // Streaming body benchmarks. In variants with the data written "before" and "after" response,
-    // try every gzip level.
-    //
-    // Also benchmark larger chunksizes, but only with gzip level 0 (disabled). The chunk size
-    // difference is dwarfed by gzip overhead. When not gzipping, it makes a noticeable difference,
-    // probably for two reasons:
-    //
-    // * more writes. hyper (as of 0.12.33) forces a flush every 16 buffers (see
-    //   hyper::proto::h1::io::MAX_BUF_LIST_BUFFERS), so to write the entire request in one writev
-    //   call, chunks must be at least 1/16th of the total file size.
-    //
-    // * more memory allocations.
-    let mut g = c.benchmark_group("streaming_body_before");
-    g.throughput(Throughput::Bytes(WONDERLAND.len() as u64));
-    for l in 0..=9 {
-        g.bench_with_input(format!("gzip/{}", l), &l, |b, p| {
-            get(b, &format!("b4096:{}", p))
-        });
-    }
-    for c in &[4096, 16384, 65536, 1048576] {
-        g.bench_with_input(format!("chunksize/{}", c), c, |b, p| {
-            get(b, &format!("b{}:0", p))
-        });
-    }
-    g.finish();
-    let mut g = c.benchmark_group("streaming_body_after");
-    g.throughput(Throughput::Bytes(WONDERLAND.len() as u64));
-    for l in 0..=9 {
-        g.bench_with_input(format!("gzip/{}", l), &l, |b, p| {
-            get(b, &format!("a4096:{}", p))
-        });
-    }
-    for c in &[4096, 16384, 65536, 1048576] {
-        g.bench_with_input(format!("chunksize/{}", c), c, |b, p| {
-            get(b, &format!("a{}:0", p))
-        });
-    }
     g.finish();
 }
 

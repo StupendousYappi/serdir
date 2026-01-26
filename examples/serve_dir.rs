@@ -53,39 +53,35 @@ fn reply(
                 .body(http_serve::Body::empty())
                 .unwrap());
         }
-        let (mut resp, stream) = http_serve::streaming_body(&req).build();
-        if let Some(mut w) = stream {
-            let mut dir = nix::dir::Dir::from(node.into_file()).unwrap(); // TODO: don't unwrap.
-            write!(
-                &mut w,
-                "<!DOCTYPE html>\n<title>directory listing</title>\n<ul>\n"
-            )?;
-            let mut ents: Vec<_> = dir.iter().map(|e| e.unwrap()).collect();
-            ents.sort_unstable_by(|a, b| a.file_name().cmp(b.file_name()));
-            for ent in ents {
-                let p = match ent.file_name().to_str() {
-                    Err(_) => continue, // skip non-UTF-8
-                    Ok(".") => continue,
-                    Ok(p) => p,
-                };
-                if p == ".." && req.uri().path() == "/" {
-                    continue;
-                };
-                write!(&mut w, "<li><a href=\"")?;
-                htmlescape::encode_minimal_w(p, &mut w)?;
-                let is_dir = is_dir(&dir, &ent).unwrap(); // TODO: don't unwrap.
-                if is_dir {
-                    write!(&mut w, "/")?;
-                }
-                write!(&mut w, "\">")?;
-                htmlescape::encode_minimal_w(p, &mut w)?;
-                if is_dir {
-                    write!(&mut w, "/")?;
-                }
-                write!(&mut w, "</a>\n")?;
+        let mut listing = String::new();
+        let mut dir = nix::dir::Dir::from(node.into_file()).unwrap(); // TODO: don't unwrap.
+        listing.push_str("<!DOCTYPE html>\n<title>directory listing</title>\n<ul>\n");
+        let mut ents: Vec<_> = dir.iter().map(|e| e.unwrap()).collect();
+        ents.sort_unstable_by(|a, b| a.file_name().cmp(b.file_name()));
+        for ent in ents {
+            let p = match ent.file_name().to_str() {
+                Err(_) => continue, // skip non-UTF-8
+                Ok(".") => continue,
+                Ok(p) => p,
+            };
+            if p == ".." && req.uri().path() == "/" {
+                continue;
+            };
+            listing.push_str("<li><a href=\"");
+            listing.push_str(&htmlescape::encode_minimal(p));
+            let is_dir = is_dir(&dir, &ent).unwrap(); // TODO: don't unwrap.
+            if is_dir {
+                listing.push('/');
             }
-            write!(&mut w, "</ul>\n")?;
+            listing.push_str("\">");
+            listing.push_str(&htmlescape::encode_minimal(p));
+            if is_dir {
+                listing.push('/');
+            }
+            listing.push_str("</a>\n");
         }
+        listing.push_str("</ul>\n");
+        let mut resp = http::Response::new(http_serve::Body::from(listing));
         resp.headers_mut()
             .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
         return Ok(resp);

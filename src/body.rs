@@ -14,8 +14,7 @@ use sync_wrapper::SyncWrapper;
 
 use crate::BoxError;
 
-/// An [`http_body::Body`] implementation returned by [`crate::serve`] and
-/// [`crate::StreamingBodyBuilder::build`].
+/// An [`http_body::Body`] implementation returned by [`crate::serve`].
 #[pin_project::pin_project]
 pub struct Body<D = bytes::Bytes, E = BoxError>(#[pin] pub(crate) BodyStream<D, E>);
 
@@ -47,7 +46,6 @@ where
             BodyStream::Once(_) => http_body::SizeHint::with_exact(0),
             BodyStream::ExactLen(l) => http_body::SizeHint::with_exact(l.remaining),
             BodyStream::Multipart(s) => http_body::SizeHint::with_exact(s.remaining()),
-            BodyStream::Chunker(c) => c.size_hint(),
         }
     }
 
@@ -56,7 +54,6 @@ where
             BodyStream::Once(c) => c.is_none(),
             BodyStream::ExactLen(l) => l.remaining == 0,
             BodyStream::Multipart(s) => s.remaining() == 0,
-            BodyStream::Chunker(c) => c.is_end_stream(),
         }
     }
 }
@@ -114,7 +111,6 @@ pub(crate) enum BodyStream<D, E> {
     Once(Option<Result<D, E>>),
     ExactLen(#[pin] ExactLenStream<D, E>),
     Multipart(#[pin] crate::serving::MultipartStream<D, E>),
-    Chunker(#[pin] crate::chunker::Reader<D, E>),
 }
 
 impl<D, E> Stream for BodyStream<D, E>
@@ -132,7 +128,6 @@ where
             BodyStreamProj::Once(c) => Poll::Ready(c.take()),
             BodyStreamProj::ExactLen(s) => s.poll_next(cx),
             BodyStreamProj::Multipart(s) => s.poll_next(cx),
-            BodyStreamProj::Chunker(s) => s.poll_next(cx),
         }
     }
 }
