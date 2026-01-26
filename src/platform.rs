@@ -191,3 +191,59 @@ pub fn file_info(file: &File, _metadata: &Metadata) -> io::Result<FileInfo> {
     let info = FileInfo { inode, len, mtime };
     Ok(info)
 }
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::io::Write;
+    use tempfile::tempfile;
+
+    #[test]
+    fn test_read_at_middle() {
+        let mut f = tempfile().unwrap();
+        f.write_all(b"0123456789").unwrap();
+        let chunk = f.read_at(3, 4).unwrap();
+        assert_eq!(chunk, b"456");
+    }
+
+    #[test]
+    fn test_read_at_beyond_eof() {
+        let mut f = tempfile().unwrap();
+        f.write_all(b"0123456789").unwrap();
+        let chunk = f.read_at(10, 8).unwrap();
+        assert_eq!(chunk, b"89");
+    }
+
+    #[test]
+    fn test_read_at_entirely_beyond_eof() {
+        let mut f = tempfile().unwrap();
+        f.write_all(b"0123456789").unwrap();
+        let err = f.read_at(3, 10).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn test_read_at_io_error() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = tempdir.path().join("write_only");
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(path)
+            .unwrap();
+        // This should fail because it's not open for reading.
+        let err = f.read_at(10, 0).unwrap_err();
+        assert!(err.to_string().starts_with("Bad file descriptor "));
+    }
+
+    #[test]
+    fn test_read_whole() {
+        use rand::RngCore;
+        let mut f = tempfile().unwrap();
+        let mut data = vec![0u8; 20480]; // 20KB
+        rand::thread_rng().fill_bytes(&mut data);
+        f.write_all(&data).unwrap();
+
+        let chunk = f.read_at(data.len(), 0).unwrap();
+        assert_eq!(chunk, data);
+    }
+}
