@@ -20,21 +20,21 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 bytes = "1.0"
-flate2 = "1.0.1"
-futures-core = { version = "0.3.1", default-features = false }
-futures-util = { version = "0.3.1", default-features = false }
-http = "1.0.0"
-http-body = "1.0.0"
-httpdate = "1.0.0"
-memchr = "2.0"
-mime = "0.3.7"
-pin-project = "1.1.5"
-smallvec = "1.4.0"
-sync_wrapper = "1.0.1"
-tokio = { version = "1.39.0", features = ["rt-multi-thread"] }
+flate2 = "1.1"
+futures-core = { version = "0.3.31", default-features = false }
+futures-util = { version = "0.3.31", default-features = false }
+http = "1.4"
+http-body = "1.0"
+httpdate = "1.0"
+memchr = "2.7"
+mime = "0.3"
+pin-project = "1.1"
+smallvec = "1"
+sync_wrapper = "1.0"
+tokio = { version = "1.49", features = ["rt-multi-thread"] }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.69"
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3.6", features = [
