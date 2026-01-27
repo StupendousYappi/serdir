@@ -1,4 +1,5 @@
 // Copyright (c) 2020 The http-serve developers
+// Copyright (c) 2026 Greg Steffensen
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE.txt or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
