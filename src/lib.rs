@@ -90,7 +90,7 @@ pub trait Entity: 'static + Send + Sync {
     ///
     /// [`BoxError`] is a good choice for most implementations.
     ///
-    /// This must be convertable from [`BoxError`] to allow `http_serve` to
+    /// This must be convertable from [`BoxError`] to allow `serve_files` to
     /// inject errors.
     ///
     /// Note that errors returned directly from the body to `hyper` just drop

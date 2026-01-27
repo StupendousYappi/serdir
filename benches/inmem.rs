@@ -15,9 +15,9 @@ use futures_core::Stream;
 use futures_util::{future, stream};
 use http::header::HeaderValue;
 use http::{Request, Response};
-use http_serve::BoxError;
 use hyper_util::rt::TokioIo;
 use once_cell::sync::Lazy;
+use serve_files::BoxError;
 use std::convert::TryInto;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr};
@@ -30,7 +30,7 @@ static WONDERLAND: &[u8] = include_bytes!("wonderland.txt");
 
 struct BytesEntity(Bytes);
 
-impl http_serve::Entity for BytesEntity {
+impl serve_files::Entity for BytesEntity {
     type Data = Bytes;
     type Error = BoxError;
 
@@ -61,20 +61,20 @@ impl http_serve::Entity for BytesEntity {
     }
 }
 
-type Body = http_serve::Body;
+type Body = serve_files::Body;
 
 async fn serve(req: Request<hyper::body::Incoming>) -> Result<Response<Body>, BoxError> {
     let path = req.uri().path();
     let resp = match path.as_bytes()[1] {
         b's' => {
             // static entity
-            http_serve::serve(BytesEntity(Bytes::from_static(WONDERLAND)), &req)
+            serve_files::serve(BytesEntity(Bytes::from_static(WONDERLAND)), &req)
         }
         b'c' => {
             // copied entity
             let mut b = BytesMut::with_capacity(WONDERLAND.len());
             b.extend_from_slice(WONDERLAND);
-            http_serve::serve(BytesEntity(b.freeze()), &req)
+            serve_files::serve(BytesEntity(b.freeze()), &req)
         }
         _ => unreachable!(),
     };

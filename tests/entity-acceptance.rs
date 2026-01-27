@@ -11,9 +11,9 @@ use futures_core::Stream;
 use futures_util::{future, stream};
 use http::header::HeaderValue;
 use http::{Request, Response};
-use http_serve::Body;
 use hyper_util::rt::TokioIo;
 use once_cell::sync::Lazy;
+use serve_files::Body;
 use std::ops::Range;
 use std::pin::Pin;
 use std::time::SystemTime;
@@ -31,7 +31,7 @@ struct FakeEntity {
     last_modified: SystemTime,
 }
 
-impl http_serve::Entity for &'static FakeEntity {
+impl serve_files::Entity for &'static FakeEntity {
     type Data = bytes::Bytes;
     type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -69,7 +69,7 @@ async fn serve(
         "/weak" => &*ENTITY_WEAK_ETAG,
         p => panic!("unexpected path {}", p),
     };
-    Ok(http_serve::serve(entity, &req))
+    Ok(serve_files::serve(entity, &req))
 }
 
 fn new_server() -> String {

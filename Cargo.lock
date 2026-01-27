@@ -452,39 +452,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "http-serve"
-version = "0.4.0-rc.2"
-dependencies = [
- "bytes",
- "criterion",
- "fixed-cache",
- "futures-core",
- "futures-util",
- "htmlescape",
- "http",
- "http-body",
- "http-body-util",
- "httparse",
- "httpdate",
- "hyper",
- "hyper-util",
- "memchr",
- "mime",
- "mime_guess",
- "nix",
- "once_cell",
- "pin-project-lite",
- "rand",
- "rapidhash",
- "reqwest",
- "socket2 0.5.10",
- "sync_wrapper",
- "tempfile",
- "tokio",
- "winapi",
-]
-
-[[package]]
 name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1091,6 +1058,39 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "serve-files"
+version = "0.4.0-rc.2"
+dependencies = [
+ "bytes",
+ "criterion",
+ "fixed-cache",
+ "futures-core",
+ "futures-util",
+ "htmlescape",
+ "http",
+ "http-body",
+ "http-body-util",
+ "httparse",
+ "httpdate",
+ "hyper",
+ "hyper-util",
+ "memchr",
+ "mime",
+ "mime_guess",
+ "nix",
+ "once_cell",
+ "pin-project-lite",
+ "rand",
+ "rapidhash",
+ "reqwest",
+ "socket2 0.5.10",
+ "sync_wrapper",
+ "tempfile",
+ "tokio",
+ "winapi",
 ]
 
 [[package]]

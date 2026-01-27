@@ -120,7 +120,7 @@ impl FsDir {
 ///
 /// The caller can inspect it as desired. If it is a directory, the caller might pass the result of
 /// `into_file()` to `nix::dir::Dir::from`. If it is a plain file, the caller might create an
-/// `http_serve::Entity` with `into_file_entity()`.
+/// `serve_files::Entity` with `into_file_entity()`.
 pub struct Node {
     file: std::fs::File,
     metadata: std::fs::Metadata,

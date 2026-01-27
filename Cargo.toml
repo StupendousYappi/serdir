@@ -1,13 +1,13 @@
 [package]
-name = "http-serve"
+name = "serve-files"
 version = "0.4.0-rc.2"
-authors = ["Scott Lamb <slamb@slamb.org>"]
+authors = ["Greg Steffensen <greg.steffensen@gmail.com>"]
 license = "MIT/Apache-2.0"
 readme = "README.md"
 description = "helpers for conditional GET, HEAD, byte range serving, and gzip content encoding for static files and more with hyper and tokio"
 keywords = ["http", "file", "range"]
 categories = ["web-programming::http-server"]
-repository = "https://github.com/scottlamb/http-serve"
+repository = "https://github.com/StupendousYappi/serve-files"
 edition = "2021"
 rust-version = "1.88"
 

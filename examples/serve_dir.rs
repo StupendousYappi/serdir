@@ -9,14 +9,14 @@
 //! Test program which serves the current directory on `http://127.0.0.1:1337/`.
 
 use http::header::{self, HeaderMap, HeaderValue};
-use http_serve::dir;
 use hyper_util::rt::TokioIo;
+use serve_files::dir;
 use std::fmt::Write;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-use http_serve::Body;
+use serve_files::Body;
 
 fn is_dir(dir: &nix::dir::Dir, ent: &nix::dir::Entry) -> Result<bool, nix::Error> {
     // Many filesystems return file types in the directory entries.
@@ -48,7 +48,7 @@ fn reply(
             return Ok(http::Response::builder()
                 .status(http::StatusCode::MOVED_PERMANENTLY)
                 .header(http::header::LOCATION, loc)
-                .body(http_serve::Body::empty())
+                .body(serve_files::Body::empty())
                 .unwrap());
         }
         let mut listing = String::new();
@@ -79,7 +79,7 @@ fn reply(
             listing.push_str("</a>\n");
         }
         listing.push_str("</ul>\n");
-        let mut resp = http::Response::new(http_serve::Body::from(listing));
+        let mut resp = http::Response::new(serve_files::Body::from(listing));
         resp.headers_mut()
             .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
         return Ok(resp);
@@ -93,7 +93,7 @@ fn reply(
         }
     }
     let f = node.into_file_entity(h)?;
-    Ok(http_serve::serve(f, &req))
+    Ok(serve_files::serve(f, &req))
 }
 
 async fn serve(
@@ -120,7 +120,7 @@ async fn serve(
     };
     Ok(http::Response::builder()
         .status(status)
-        .body(http_serve::Body::from(format!("I/O error: {}", e)))
+        .body(serve_files::Body::from(format!("I/O error: {}", e)))
         .unwrap())
 }
 

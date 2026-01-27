@@ -24,13 +24,13 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 async fn serve(
     req: Request<hyper::body::Incoming>,
-) -> Result<Response<http_serve::Body<Bytes, BoxError>>, BoxError> {
+) -> Result<Response<serve_files::Body<Bytes, BoxError>>, BoxError> {
     let f = tokio::task::block_in_place::<_, Result<_, BoxError>>(move || {
         let f = std::fs::File::open(&*PATH.lock().unwrap())?;
         let headers = http::header::HeaderMap::new();
-        Ok(http_serve::ChunkedReadFile::new(f, headers)?)
+        Ok(serve_files::ChunkedReadFile::new(f, headers)?)
     })?;
-    Ok(http_serve::serve(f, &req))
+    Ok(serve_files::serve(f, &req))
 }
 
 /// Returns the hostport of a newly created, never-destructed server.

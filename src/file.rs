@@ -36,16 +36,16 @@ static CHUNK_SIZE: u64 = 65_536;
 /// # use bytes::Bytes;
 /// # use http::{Request, Response, header::{self, HeaderMap, HeaderValue}};
 /// type BoxError = Box<dyn std::error::Error + Send + Sync>;
-/// async fn serve_dictionary(req: Request<hyper::body::Incoming>) -> Result<Response<http_serve::Body>, BoxError> {
+/// async fn serve_dictionary(req: Request<hyper::body::Incoming>) -> Result<Response<serve_files::Body>, BoxError> {
 ///     let f = tokio::task::block_in_place::<_, Result<_, BoxError>>(
 ///         move || {
 ///             let f = std::fs::File::open("/usr/share/dict/words")?;
 ///             let mut headers = http::header::HeaderMap::new();
 ///             headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
-///             Ok(http_serve::ChunkedReadFile::new(f, headers)?)
+///             Ok(serve_files::ChunkedReadFile::new(f, headers)?)
 ///         },
 ///     )?;
-///     Ok(http_serve::serve(f, &req))
+///     Ok(serve_files::serve(f, &req))
 /// }
 /// ```
 pub struct ChunkedReadFile<

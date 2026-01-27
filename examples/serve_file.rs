@@ -25,9 +25,9 @@ use http::{
     header::{self, HeaderMap, HeaderValue},
     Request, Response,
 };
-use http_serve::ChunkedReadFile;
 use hyper::{server::conn::http1, service::service_fn};
 use hyper_util::rt::TokioIo;
+use serve_files::ChunkedReadFile;
 use tokio::net::TcpListener;
 
 struct Context {
@@ -39,7 +39,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 async fn serve(
     ctx: &'static Context,
     req: Request<hyper::body::Incoming>,
-) -> Result<Response<http_serve::Body>, BoxError> {
+) -> Result<Response<serve_files::Body>, BoxError> {
     let f = tokio::task::block_in_place::<_, Result<ChunkedReadFile<Bytes, BoxError>, BoxError>>(
         move || {
             let f = std::fs::File::open(&ctx.path)?;
@@ -51,7 +51,7 @@ async fn serve(
             Ok(ChunkedReadFile::new(f, headers)?)
         },
     )?;
-    Ok(http_serve::serve(f, &req))
+    Ok(serve_files::serve(f, &req))
 }
 
 #[tokio::main]

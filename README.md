@@ -1,24 +1,19 @@
-# http-serve
+# serve-files
 
-[![crates.io](https://img.shields.io/crates/v/http-serve.svg)](https://crates.io/crates/http-serve)
-[![Released API docs](https://docs.rs/http-serve/badge.svg)](https://docs.rs/http-serve/)
-[![CI](https://github.com/scottlamb/http-serve/workflows/CI/badge.svg)](https://github.com/scottlamb/http-serve/actions?query=workflow%3ACI)
+[![crates.io](https://img.shields.io/crates/v/serve-files.svg)](https://crates.io/crates/serve-files)
+[![Released API docs](https://docs.rs/serve-files/badge.svg)](https://docs.rs/serve-files/)
+[![CI](https://github.com/StupendousYappi/serve-files/workflows/CI/badge.svg)](https://github.com/StupendousYappi/serve-files/actions?query=workflow%3ACI)
 
 Rust helpers for serving HTTP GET and HEAD responses with
 [hyper](https://crates.io/crates/hyper) 1.x and
 [tokio](https://crates.io/crates/tokio).
 
-This crate supplies two ways to respond to HTTP GET and HEAD requests:
+This crate supplies a way to respond to HTTP GET and HEAD requests:
 
 *   the `serve` function can be used to serve an `Entity`, a trait representing
     reusable, byte-rangeable HTTP entities. `Entity` must be able to produce
     exactly the same data on every call, know its size in advance, and be able
     to produce portions of the data on demand.
-*   the `streaming_body` function can be used to add a body to an
-    otherwise-complete response.  If a body is needed (on `GET` rather than `HEAD`
-    requests, it returns a `BodyWriter` (which implements `std::io::Writer`).
-    The caller should produce the complete body or call `BodyWriter::abort`,
-    causing the HTTP stream to terminate abruptly.
 
 It supplies a static file `Entity` implementation and a (currently Unix-only)
 helper for serving a full directory tree from the local filesystem, including
@@ -55,7 +50,7 @@ generating etags or honoring conditional GET requests. PRs welcome!
 <a name="gzip">\[4\]</a>: `serve` doesn't automatically apply `Content-Encoding:
 gzip` because the content encoding is a property of the entity you supply. The
 entity's etag, length, and byte range boundaries must match the encoding. You
-can use the `http_serve::should_gzip` helper to decide between supplying a plain
+can use the `serve_files::should_gzip` helper to decide between supplying a plain
 or gzipped entity. `serve` could automatically apply the related
 `Transfer-Encoding: gzip` where the browser requests it via `TE: gzip`, but
 common browsers have
@@ -79,7 +74,7 @@ your own that do anything you desire:
     [moonfire-nvr](https://github.com/scottlamb/moonfire-nvr)'s logic for
     generating `.mp4` files to represent arbitrary time ranges.)
 
-`http_serve::serve` is similar to golang's
+`serve_files::serve` is similar to golang's
 [http.ServeContent](https://golang.org/pkg/net/http/#ServeContent). It was
 extracted from [moonfire-nvr](https://github.com/scottlamb/moonfire-nvr)'s
 `.mp4` file serving.
@@ -92,7 +87,7 @@ Examples:
     ```
 *   Serve a directory tree:
     ```
-    $ cargo run --features dir --example serve_dir .
+    $ cargo run --example serve_dir .
     ```
 
 ## Authors
