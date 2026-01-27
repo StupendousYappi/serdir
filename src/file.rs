@@ -48,21 +48,16 @@ static CHUNK_SIZE: u64 = 65_536;
 ///     Ok(http_serve::serve(f, &req))
 /// }
 /// ```
-#[derive(Clone)]
 pub struct ChunkedReadFile<
     D: 'static + Send + Buf + From<Vec<u8>> + From<&'static [u8]>,
     E: 'static + Send + Into<Box<dyn StdError + Send + Sync>> + From<Box<dyn StdError + Send + Sync>>,
 > {
-    inner: Arc<ChunkedReadFileInner>,
-    phantom: std::marker::PhantomData<(D, E)>,
-}
-
-struct ChunkedReadFileInner {
     len: u64,
     mtime: SystemTime,
-    f: std::fs::File,
+    f: Arc<std::fs::File>,
     headers: HeaderMap,
     etag: ETag,
+    phantom: std::marker::PhantomData<(D, E)>,
 }
 
 impl<D, E> ChunkedReadFile<D, E>
@@ -106,13 +101,11 @@ where
         let etag: ETag = ETAG_CACHE.get_or_try_insert_with(info, |_info| ETag::from_file(&file))?;
 
         Ok(ChunkedReadFile {
-            inner: Arc::new(ChunkedReadFileInner {
-                len: info.len,
-                mtime: info.mtime,
-                headers,
-                f: file,
-                etag,
-            }),
+            len: info.len,
+            mtime: info.mtime,
+            headers,
+            f: Arc::new(file),
+            etag,
             phantom: std::marker::PhantomData,
         })
     }
@@ -131,56 +124,45 @@ where
     type Error = E;
 
     fn len(&self) -> u64 {
-        self.inner.len
+        self.len
     }
 
     fn get_range(
         &self,
         range: Range<u64>,
     ) -> Pin<Box<dyn Stream<Item = Result<Self::Data, Self::Error>> + Send + Sync>> {
-        let stream = stream::unfold(
-            (range, Arc::clone(&self.inner)),
-            move |(left, inner)| async {
-                if left.start == left.end {
-                    return None;
-                }
-                let chunk_size = std::cmp::min(CHUNK_SIZE, left.end - left.start) as usize;
-                Some(tokio::task::block_in_place(move || {
-                    match inner.f.read_range(chunk_size, left.start) {
-                        Err(e) => (
-                            Err(Box::<dyn StdError + Send + Sync + 'static>::from(e).into()),
-                            (left, inner),
-                        ),
-                        Ok(v) => {
-                            let bytes_read = v.len();
-                            (
-                                Ok(v.into()),
-                                (left.start + bytes_read as u64..left.end, inner),
-                            )
-                        }
+        let stream = stream::unfold((range, Arc::clone(&self.f)), move |(left, f)| async {
+            if left.start == left.end {
+                return None;
+            }
+            let chunk_size = std::cmp::min(CHUNK_SIZE, left.end - left.start) as usize;
+            Some(tokio::task::block_in_place(move || {
+                match f.read_range(chunk_size, left.start) {
+                    Err(e) => (
+                        Err(Box::<dyn StdError + Send + Sync + 'static>::from(e).into()),
+                        (left, f),
+                    ),
+                    Ok(v) => {
+                        let bytes_read = v.len();
+                        (Ok(v.into()), (left.start + bytes_read as u64..left.end, f))
                     }
-                }))
-            },
-        );
+                }
+            }))
+        });
         let _: &dyn Stream<Item = Result<Self::Data, Self::Error>> = &stream;
         Box::pin(stream)
     }
 
     fn add_headers(&self, h: &mut HeaderMap) {
-        h.extend(
-            self.inner
-                .headers
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone())),
-        );
+        h.extend(self.headers.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
 
     fn etag(&self) -> Option<HeaderValue> {
-        Some(self.inner.etag.into())
+        Some(self.etag.into())
     }
 
     fn last_modified(&self) -> Option<SystemTime> {
-        Some(self.inner.mtime)
+        Some(self.mtime)
     }
 }
 
@@ -220,7 +202,7 @@ impl From<ETag> for HeaderValue {
 
 type BuildHasher = std::hash::BuildHasherDefault<rapidhash::fast::RapidHasher<'static>>;
 
-const CACHE_SIZE: usize = 512;
+const CACHE_SIZE: usize = 1024;
 
 static ETAG_CACHE: Cache<FileInfo, ETag, BuildHasher> =
     static_cache!(FileInfo, ETag, CACHE_SIZE, BuildHasher::new());
