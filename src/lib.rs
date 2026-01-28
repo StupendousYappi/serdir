@@ -72,6 +72,7 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 mod body;
 
 pub mod dir;
+pub mod served_dir;
 
 mod etag;
 mod file;
@@ -80,7 +81,7 @@ mod range;
 mod serving;
 
 pub use crate::body::Body;
-pub use crate::file::ChunkedReadFile;
+pub use crate::file::FileEntity;
 pub use crate::serving::serve;
 
 /// A reusable, read-only, byte-rangeable HTTP entity for GET and HEAD serving.

@@ -135,13 +135,13 @@ impl Node {
         self.file
     }
 
-    /// Converts this node (which must represent a plain file) into a `ChunkedReadFile`.
+    /// Converts this node (which must represent a plain file) into a `FileEntity`.
     /// The caller is expected to supply all headers. The function `add_encoding_headers`
     /// may be useful.
     pub fn into_file_entity<D, E>(
         self,
         headers: HeaderMap,
-    ) -> Result<crate::file::ChunkedReadFile<D, E>, Error>
+    ) -> Result<crate::file::FileEntity<D, E>, Error>
     where
         D: 'static + Send + Sync + bytes::Buf + From<Vec<u8>> + From<&'static [u8]>,
         E: 'static
@@ -150,7 +150,7 @@ impl Node {
             + Into<Box<dyn std::error::Error + Send + Sync>>
             + From<Box<dyn std::error::Error + Send + Sync>>,
     {
-        crate::file::ChunkedReadFile::new_with_metadata(self.file, &self.metadata, headers)
+        crate::file::FileEntity::new_with_metadata(self.file, &self.metadata, headers)
     }
 
     /// Returns the (already fetched) metadata for this node.
@@ -191,7 +191,7 @@ impl Node {
 }
 
 /// Ensures path is safe: no NUL bytes, not absolute, no `..` segments.
-fn validate_path(path: &str) -> Result<(), &'static str> {
+pub(crate) fn validate_path(path: &str) -> Result<(), &'static str> {
     if memchr::memchr(0, path.as_bytes()).is_some() {
         return Err("path contains NUL byte");
     }

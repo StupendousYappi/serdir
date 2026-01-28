@@ -29,7 +29,7 @@ static CHUNK_SIZE: u64 = 65_536;
 /// HTTP entity created from a [`std::fs::File`] which reads the file chunk-by-chunk within
 /// a [`tokio::task::block_in_place`] closure.
 ///
-/// `ChunkedReadFile` is cheap to clone and reuse for many requests.
+/// `FileEntity` is cheap to clone and reuse for many requests.
 ///
 /// Expects to be served from a tokio threadpool.
 ///
@@ -43,13 +43,13 @@ static CHUNK_SIZE: u64 = 65_536;
 ///             let f = std::fs::File::open("/usr/share/dict/words")?;
 ///             let mut headers = http::header::HeaderMap::new();
 ///             headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
-///             Ok(serve_files::ChunkedReadFile::new(f, headers)?)
+///             Ok(serve_files::FileEntity::new(f, headers)?)
 ///         },
 ///     )?;
 ///     Ok(serve_files::serve(f, &req))
 /// }
 /// ```
-pub struct ChunkedReadFile<
+pub struct FileEntity<
     D: 'static + Send + Buf + From<Vec<u8>> + From<&'static [u8]>,
     E: 'static + Send + Into<Box<dyn StdError + Send + Sync>> + From<Box<dyn StdError + Send + Sync>>,
 > {
@@ -61,7 +61,7 @@ pub struct ChunkedReadFile<
     phantom: std::marker::PhantomData<(D, E)>,
 }
 
-impl<D, E> ChunkedReadFile<D, E>
+impl<D, E> FileEntity<D, E>
 where
     D: 'static + Send + Sync + Buf + From<Vec<u8>> + From<&'static [u8]>,
     E: 'static
@@ -70,7 +70,7 @@ where
         + Into<Box<dyn StdError + Send + Sync>>
         + From<Box<dyn StdError + Send + Sync>>,
 {
-    /// Creates a new ChunkedReadFile.
+    /// Creates a new FileEntity.
     ///
     /// `read(2)` calls will be wrapped in [`tokio::task::block_in_place`] calls so that they don't
     /// block the tokio reactor thread on local disk I/O. Note that [`std::fs::File::open`] and
@@ -78,10 +78,10 @@ where
     /// should be wrapped in [`tokio::task::block_in_place`] as well.
     pub fn new(file: std::fs::File, headers: HeaderMap) -> Result<Self, io::Error> {
         let m = file.metadata()?;
-        ChunkedReadFile::new_with_metadata(file, &m, headers)
+        FileEntity::new_with_metadata(file, &m, headers)
     }
 
-    /// Creates a new ChunkedReadFile, with presupplied metadata.
+    /// Creates a new FileEntity, with presupplied metadata.
     ///
     /// This is an optimization for the case where the caller has already called `fstat(2)`.
     /// Note that on Windows, this still may perform a blocking file operation, so it should
@@ -101,7 +101,7 @@ where
         let info = platform::file_info(&file, metadata)?;
         let etag: ETag = ETAG_CACHE.get_or_try_insert_with(info, |_info| ETag::from_file(&file))?;
 
-        Ok(ChunkedReadFile {
+        Ok(FileEntity {
             len: info.len,
             mtime: info.mtime,
             headers,
@@ -112,7 +112,7 @@ where
     }
 }
 
-impl<D, E> Entity for ChunkedReadFile<D, E>
+impl<D, E> Entity for FileEntity<D, E>
 where
     D: 'static + Send + Sync + Buf + From<Vec<u8>> + From<&'static [u8]>,
     E: 'static
@@ -210,8 +210,8 @@ static ETAG_CACHE: Cache<FileInfo, ETag, BuildHasher> =
 
 #[cfg(test)]
 mod tests {
-    use super::ChunkedReadFile;
     use super::Entity;
+    use super::FileEntity;
     use bytes::Bytes;
     use futures_core::Stream;
     use futures_util::stream::TryStreamExt;
@@ -223,7 +223,7 @@ mod tests {
     use std::time::SystemTime;
 
     type BoxError = Box<dyn std::error::Error + Sync + Send>;
-    type CRF = ChunkedReadFile<Bytes, BoxError>;
+    type CRF = FileEntity<Bytes, BoxError>;
 
     async fn to_bytes(
         s: Pin<Box<dyn Stream<Item = Result<Bytes, BoxError>> + Send>>,
@@ -258,7 +258,7 @@ mod tests {
                 b"sd"
             );
 
-            // A ChunkedReadFile constructed from a modified file should have a different etag.
+            // A FileEntity constructed from a modified file should have a different etag.
             f.write_all(b"jkl;").unwrap();
             let crf2 = CRF::new(File::open(&p).unwrap(), HeaderMap::new()).unwrap();
             assert_eq!(8, crf2.len());

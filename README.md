@@ -59,7 +59,7 @@ requesting or handling `Transfer-Encoding`.
 
 See the [documentation](https://docs.rs/http-serve/) for more.
 
-There's a built-in `Entity` implementation, `ChunkedReadFile`. It serves
+There's a built-in `Entity` implementation, `FileEntity`. It serves
 static files from the local filesystem, reading chunks in a separate thread
 pool to avoid blocking the tokio reactor thread.
 

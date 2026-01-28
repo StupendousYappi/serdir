@@ -1,0 +1,342 @@
+//! Serves files from a local directory.
+
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+};
+
+use bytes::Bytes;
+use http::{header, HeaderMap, HeaderValue};
+use std::io::Error as IOError;
+
+use crate::{BoxError, FileEntity};
+
+/// Provides servable `FileEntity` values for file paths within a directory.
+pub struct ServedDir {
+    auto_gzip: bool,
+    dirpath: PathBuf,
+    strip_prefix: Option<String>,
+    known_extensions: Option<HashMap<String, HeaderValue>>,
+    default_content_type: HeaderValue,
+}
+
+static OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-stream");
+
+impl ServedDir {
+    /// Returns a builder for `ServedDir`.
+    pub fn builder(path: impl Into<PathBuf>) -> ServedDirBuilder {
+        ServedDirBuilder::new(path.into())
+    }
+
+    /// Returns a `FileEntity` for the given path and request headers.
+    pub async fn get(
+        &self,
+        path: &str,
+        req_hdrs: &HeaderMap,
+    ) -> Result<FileEntity<Bytes, BoxError>, IOError> {
+        let path = match self.strip_prefix.as_deref() {
+            Some(prefix) => path.strip_prefix(prefix).ok_or_else(|| {
+                IOError::new(ErrorKind::NotFound, "invalid path, prefix not found")
+            })?,
+            None => path,
+        };
+
+        if let Err(e) = self.validate_path(path) {
+            return Err(IOError::new(ErrorKind::InvalidInput, e));
+        }
+
+        let full_path = self.dirpath.join(path);
+        let should_gzip = self.auto_gzip && super::should_gzip(req_hdrs);
+        let auto_gzip = self.auto_gzip;
+        let content_type: HeaderValue = self.get_content_type(&full_path);
+
+        let node: Node = tokio::task::spawn_blocking(move || -> Result<Node, IOError> {
+            if should_gzip {
+                let result = Self::find_gzipped(&full_path)?;
+                if let Some(n) = result {
+                    return Ok(n);
+                }
+            }
+
+            let file = File::open(full_path)?;
+            let metadata = file.metadata()?;
+            if !metadata.is_file() {
+                return Err(IOError::new(ErrorKind::InvalidInput, "not a regular file"));
+            }
+            Ok(Node {
+                file,
+                metadata,
+                auto_gzip,
+                is_gzipped: false,
+            })
+        })
+        .await
+        .unwrap_or_else(|e: tokio::task::JoinError| Err(e.into()))?;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::CONTENT_TYPE, content_type);
+        let e = node.into_file_entity(headers)?;
+        Ok(e)
+    }
+
+    fn get_content_type(&self, path: &Path) -> HeaderValue {
+        let extension = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+
+        self.known_extensions
+            .as_ref()
+            .and_then(|exts| exts.get(extension).cloned())
+            .or_else(|| Self::guess_content_type(extension))
+            .unwrap_or_else(|| self.default_content_type.clone())
+    }
+
+    #[cfg(feature = "mime_guess")]
+    fn guess_content_type(ext: &str) -> Option<HeaderValue> {
+        mime_guess::from_ext(ext)
+            .first_raw()
+            .map(|s| HeaderValue::from_str(s).unwrap())
+    }
+
+    #[cfg(not(feature = "mime_guess"))]
+    fn guess_content_type(ext: &str) -> Option<HeaderValue> {
+        let guess = match ext {
+            "html" => Some("text/html"),
+            "htm" => Some("text/html"),
+            "hxt" => Some("text/html"),
+            "css" => Some("text/css"),
+            "js" => Some("application/javascript"),
+            "es" => Some("application/javascript"),
+            "ecma" => Some("application/javascript"),
+            "jsm" => Some("application/javascript"),
+            "jsx" => Some("application/javascript"),
+            "png" => Some("image/png"),
+            "apng" => Some("image/apng"),
+            "avif" => Some("image/avif"),
+            "gif" => Some("image/gif"),
+            "ico" => Some("image/x-icon"),
+            "jpeg" => Some("image/jpeg"),
+            "jfif" => Some("image/jpeg"),
+            "pjpeg" => Some("image/jpeg"),
+            "pjp" => Some("image/jpeg"),
+            "jpg" => Some("image/jpeg"),
+            "svg" => Some("image/svg+xml"),
+            "tiff" => Some("image/tiff"),
+            "webp" => Some("image/webp"),
+            "bmp" => Some("image/bmp"),
+            "pdf" => Some("application/pdf"),
+            "zip" => Some("application/zip"),
+            "gz" => Some("application/gzip"),
+            "tar" => Some("application/tar"),
+            "bz" => Some("application/x-bzip"),
+            "bz2" => Some("application/x-bzip2"),
+            "xz" => Some("application/x-xz"),
+            "csv" => Some("text/csv"),
+            "txt" => Some("text/plain"),
+            "text" => Some("text/plain"),
+            "log" => Some("text/plain"),
+            "md" => Some("text/markdown"),
+            "markdown" => Some("text/x-markdown"),
+            "mkd" => Some("text/x-markdown"),
+            "mp4" => Some("video/mp4"),
+            "webm" => Some("video/webm"),
+            "mpeg" => Some("video/mpeg"),
+            "mpg" => Some("video/mpeg"),
+            "mpg4" => Some("video/mp4"),
+            "xml" => Some("application/xml"),
+            "json" => Some("application/json"),
+            "yaml" => Some("application/yaml"),
+            "yml" => Some("application/yaml"),
+            "toml" => Some("application/toml"),
+            "ini" => Some("application/ini"),
+            "ics" => Some("text/calendar"),
+            "doc" => Some("application/msword"),
+            "docx" => {
+                Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            }
+            "xls" => Some("application/vnd.ms-excel"),
+            "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            "ppt" => Some("application/vnd.ms-powerpoint"),
+            "pptx" => {
+                Some("application/vnd.openxmlformats-officedocument.presentationml.presentation")
+            }
+            _ => None,
+        };
+        guess.map(|s| HeaderValue::from_str(s).unwrap())
+    }
+
+    fn find_gzipped(path: &Path) -> Result<Option<Node>, IOError> {
+        let gz_path = path.with_added_extension(".gz");
+        match File::open(&gz_path) {
+            Ok(file) => {
+                let metadata = file.metadata()?;
+                if metadata.is_file() {
+                    return Ok(Some(Node {
+                        file,
+                        metadata,
+                        auto_gzip: true,
+                        is_gzipped: true,
+                    }));
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(ref e) if e.kind() == ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Ensures path is safe: no NUL bytes, not absolute, no `..` segments.
+    fn validate_path(&self, path: &str) -> Result<(), &'static str> {
+        if memchr::memchr(0, path.as_bytes()).is_some() {
+            return Err("path contains NUL byte");
+        }
+        if path.as_bytes().first() == Some(&b'/') {
+            return Err("path is absolute");
+        }
+        let mut left = path.as_bytes();
+        loop {
+            let next = memchr::memchr(b'/', left);
+            let seg = &left[0..next.unwrap_or(left.len())];
+            if seg == b".." {
+                return Err("path contains .. segment");
+            }
+            match next {
+                None => break,
+                Some(n) => left = &left[n + 1..],
+            };
+        }
+        Ok(())
+    }
+}
+
+/// A builder for [`ServedDir`].
+pub struct ServedDirBuilder {
+    dirpath: PathBuf,
+    auto_gzip: bool,
+    strip_prefix: Option<String>,
+    known_extensions: Option<HashMap<String, HeaderValue>>,
+    default_content_type: HeaderValue,
+}
+
+impl ServedDirBuilder {
+    fn new(dirpath: PathBuf) -> Self {
+        Self {
+            dirpath,
+            auto_gzip: true,
+            strip_prefix: None,
+            known_extensions: None,
+            default_content_type: OCTET_STREAM.clone(),
+        }
+    }
+
+    /// Sets whether to automatically serve gzipped versions of files.
+    /// Defaults to `true`.
+    pub fn auto_gzip(mut self, auto_gzip: bool) -> Self {
+        self.auto_gzip = auto_gzip;
+        self
+    }
+
+    /// Sets a prefix to strip from the request path.
+    pub fn strip_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.strip_prefix = Some(prefix.into());
+        self
+    }
+
+    /// Sets a map of file extensions to content types.
+    pub fn known_extensions(mut self, extensions: HashMap<String, HeaderValue>) -> Self {
+        self.known_extensions = Some(extensions);
+        self
+    }
+
+    /// Sets the default content type to use when the extension is unknown.
+    /// Defaults to `application/octet-stream`.
+    pub fn default_content_type(mut self, content_type: HeaderValue) -> Self {
+        self.default_content_type = content_type;
+        self
+    }
+
+    /// Builds the [`ServedDir`].
+    pub fn build(self) -> ServedDir {
+        ServedDir {
+            dirpath: self.dirpath,
+            auto_gzip: self.auto_gzip,
+            strip_prefix: self.strip_prefix,
+            known_extensions: self.known_extensions,
+            default_content_type: self.default_content_type,
+        }
+    }
+}
+
+/// An opened path (aka inode on Unix) as returned by `FsDir::open`.
+///
+/// This is not necessarily a plain file; it could also be a directory, for example.
+///
+/// The caller can inspect it as desired. If it is a directory, the caller might pass the result of
+/// `into_file()` to `nix::dir::Dir::from`. If it is a plain file, the caller might create an
+/// `serve_files::Entity` with `into_file_entity()`.
+pub struct Node {
+    file: std::fs::File,
+    metadata: std::fs::Metadata,
+    auto_gzip: bool,
+    is_gzipped: bool,
+}
+
+impl Node {
+    /// Converts this node to a `std::fs::File`.
+    pub fn into_file(self) -> std::fs::File {
+        self.file
+    }
+
+    /// Converts this node (which must represent a plain file) into a `FileEntity`.
+    /// The caller is expected to supply all headers. The function `add_encoding_headers`
+    /// may be useful.
+    pub fn into_file_entity<D, E>(
+        self,
+        mut headers: HeaderMap,
+    ) -> Result<crate::file::FileEntity<D, E>, IOError>
+    where
+        D: 'static + Send + Sync + bytes::Buf + From<Vec<u8>> + From<&'static [u8]>,
+        E: 'static
+            + Send
+            + Sync
+            + Into<Box<dyn std::error::Error + Send + Sync>>
+            + From<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        // Add `Content-Encoding` and `Vary` headers for the encoding to `hdrs`.
+        if let Some(e) = self.encoding() {
+            headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static(e));
+        }
+        if self.auto_gzip {
+            headers.insert(header::VARY, HeaderValue::from_static("accept-encoding"));
+        }
+
+        crate::file::FileEntity::new_with_metadata(self.file, &self.metadata, headers)
+    }
+
+    /// Returns the (already fetched) metadata for this node.
+    pub fn metadata(&self) -> &std::fs::Metadata {
+        &self.metadata
+    }
+
+    /// Returns the encoding this file is assumed to have applied to the caller's request.
+    /// E.g., if automatic gzip compression is enabled and `index.html.gz` was found when the
+    /// caller requested `index.html`, this will return `Some("gzip")`. If the caller requests
+    /// `index.html.gz`, this will return `None` because the gzip encoding is built in to the
+    /// caller's request.
+    pub fn encoding(&self) -> Option<&'static str> {
+        if self.is_gzipped {
+            Some("gzip")
+        } else {
+            None
+        }
+    }
+
+    /// Returns true iff the content varies with the request's `Accept-Encoding` header value.
+    pub fn encoding_varies(&self) -> bool {
+        self.auto_gzip
+    }
+}
