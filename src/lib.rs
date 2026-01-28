@@ -36,8 +36,9 @@
 #![deny(missing_docs, clippy::print_stderr, clippy::print_stdout)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-use bytes::Buf;
+use bytes::{Buf, Bytes, BytesMut};
 use futures_core::Stream;
+use futures_util::StreamExt;
 use http::header::{self, HeaderMap, HeaderValue};
 use std::ops::Range;
 use std::pin::Pin;
@@ -141,6 +142,25 @@ pub trait Entity: 'static + Send + Sync {
     /// this time is in the future, as required by [RFC 7232 section
     /// 2.2.1](https://tools.ietf.org/html/rfc7232#section-2.2.1).
     fn last_modified(&self) -> Option<SystemTime>;
+
+    /// Reads the entire body of this entity into a `Bytes`.
+    ///
+    /// This is a convenience method for testing and debugging.
+    #[cfg(test)]
+    async fn read_body(&self) -> Result<Bytes, Self::Error>
+    where
+        Self: Sized,
+    {
+        let chunks = self.get_range(0..self.len()).collect::<Vec<_>>().await;
+        let mut bytes = BytesMut::new();
+        for chunk in chunks {
+            match chunk {
+                Ok(chunk) => bytes.extend_from_slice(chunk.chunk()),
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(bytes.freeze())
+    }
 }
 
 /// Parses an RFC 7231 section 5.3.1 `qvalue` into an integer in [0, 1000].

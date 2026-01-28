@@ -20,6 +20,7 @@ pub struct ServedDir {
     strip_prefix: Option<String>,
     known_extensions: Option<HashMap<String, HeaderValue>>,
     default_content_type: HeaderValue,
+    common_headers: HeaderMap,
 }
 
 static OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-stream");
@@ -31,6 +32,15 @@ impl ServedDir {
     }
 
     /// Returns a `FileEntity` for the given path and request headers.
+    ///
+    /// The `Accept-Encoding` request header is used to determine whether to serve the file
+    /// gzipped if possible. If gzip encoding is requested, and `auto_gzip` is enabled, this
+    /// method will look for a file with the same name but a `.gz` extension. If found, it will
+    /// serve that file instead of the primary file. If gzip encoding is not requested,
+    /// `auto_gzip` is disabled, or the file is not found, the primary file will be served.
+    ///
+    /// This method will return an error with kind `ErrorKind::NotFound` if the file is not found.
+    /// It will return an error with kind `ErrorKind::InvalidInput` if the path is invalid.
     pub async fn get(
         &self,
         path: &str,
@@ -75,7 +85,7 @@ impl ServedDir {
         .await
         .unwrap_or_else(|e: tokio::task::JoinError| Err(e.into()))?;
 
-        let mut headers = HeaderMap::new();
+        let mut headers = self.common_headers.clone();
         headers.insert(http::header::CONTENT_TYPE, content_type);
         let e = node.into_file_entity(headers)?;
         Ok(e)
@@ -169,7 +179,14 @@ impl ServedDir {
     }
 
     fn find_gzipped(path: &Path) -> Result<Option<Node>, IOError> {
-        let gz_path = path.with_added_extension(".gz");
+        let mut gz_path = path.to_path_buf();
+        if let Some(name) = path.file_name() {
+            let mut new_name = name.to_os_string();
+            new_name.push(".gz");
+            gz_path.set_file_name(new_name);
+        } else {
+            return Ok(None);
+        }
         match File::open(&gz_path) {
             Ok(file) => {
                 let metadata = file.metadata()?;
@@ -220,6 +237,7 @@ pub struct ServedDirBuilder {
     strip_prefix: Option<String>,
     known_extensions: Option<HashMap<String, HeaderValue>>,
     default_content_type: HeaderValue,
+    common_headers: HeaderMap,
 }
 
 impl ServedDirBuilder {
@@ -230,6 +248,7 @@ impl ServedDirBuilder {
             strip_prefix: None,
             known_extensions: None,
             default_content_type: OCTET_STREAM.clone(),
+            common_headers: HeaderMap::new(),
         }
     }
 
@@ -259,6 +278,15 @@ impl ServedDirBuilder {
         self
     }
 
+    /// Adds a common header to be added to all successful responses.
+    ///
+    /// The header will added to the `FileEntity` if the `ServedDir` returns one, but
+    /// will not be recoded anywhere in an error response.
+    pub fn common_header(mut self, name: header::HeaderName, value: HeaderValue) -> Self {
+        self.common_headers.insert(name, value);
+        self
+    }
+
     /// Builds the [`ServedDir`].
     pub fn build(self) -> ServedDir {
         ServedDir {
@@ -267,6 +295,7 @@ impl ServedDirBuilder {
             strip_prefix: self.strip_prefix,
             known_extensions: self.known_extensions,
             default_content_type: self.default_content_type,
+            common_headers: self.common_headers,
         }
     }
 }
@@ -338,5 +367,202 @@ impl Node {
     /// Returns true iff the content varies with the request's `Accept-Encoding` header value.
     pub fn encoding_varies(&self) -> bool {
         self.auto_gzip
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Entity;
+    use tempfile::TempDir;
+
+    struct TestContext {
+        tmp: TempDir,
+        builder: ServedDirBuilder,
+    }
+
+    impl TestContext {
+        fn write_file(&self, name: &str, contents: &str) {
+            std::fs::write(self.tmp.path().join(name), contents.as_bytes())
+                .expect("failed to write test file")
+        }
+
+        fn new() -> Self {
+            let tmp = TempDir::new().unwrap();
+            let path = tmp.path().to_path_buf();
+            Self {
+                tmp,
+                builder: ServedDir::builder(path),
+            }
+        }
+    }
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_get() {
+        let context = TestContext::new();
+        context.write_file("one.txt", "one");
+        context.write_file("two.json", "more content");
+        let served_dir = context.builder.build();
+        let hdrs = HeaderMap::new();
+
+        let e1 = served_dir.get("one.txt", &hdrs).await.unwrap();
+        assert_eq!(e1.len(), 3);
+        assert_eq!(
+            e1.header(&http::header::CONTENT_TYPE).unwrap(),
+            "text/plain"
+        );
+
+        let e2 = served_dir.get("two.json", &hdrs).await.unwrap();
+        assert_eq!(e2.len(), 12);
+        assert_eq!(
+            e2.header(&http::header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_not_found() {
+        let context = TestContext::new();
+        let served_dir = context.builder.build();
+        let hdrs = HeaderMap::new();
+
+        let err = served_dir.get("non-existent.txt", &hdrs).await.unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::NotFound);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_auto_gzip() {
+        let context = TestContext::new();
+        context.write_file("test.txt", "plain text");
+        context.write_file("test.txt.gz", "fake gzip content");
+
+        // 1. auto_gzip enabled (default), Accept-Encoding: gzip
+        let served_dir = context.builder.build();
+        let mut hdrs = HeaderMap::new();
+        hdrs.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip, deflate"),
+        );
+
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "gzip");
+        assert_eq!(e.read_body().await.unwrap(), "fake gzip content");
+
+        // 2. auto_gzip enabled (default), no Accept-Encoding
+        let hdrs = HeaderMap::new();
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert!(e.header(&header::CONTENT_ENCODING).is_none());
+        assert_eq!(e.read_body().await.unwrap(), "plain text");
+
+        // 3. auto_gzip disabled
+        let served_dir = ServedDir::builder(context.tmp.path().to_path_buf())
+            .auto_gzip(false)
+            .build();
+        let mut hdrs = HeaderMap::new();
+        hdrs.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip, deflate"),
+        );
+
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert!(e.header(&header::CONTENT_ENCODING).is_none());
+        assert_eq!(e.read_body().await.unwrap(), "plain text");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_forbidden_paths() {
+        let context = TestContext::new();
+        let served_dir = context.builder.build();
+        let hdrs = HeaderMap::new();
+
+        // 1. Contains ".."
+        let err = served_dir
+            .get("include/../etc/passwd", &hdrs)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert!(err.to_string().contains(".."));
+
+        // 2. Contains null byte
+        let err = served_dir.get("test\0file.txt", &hdrs).await.unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("NUL byte"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_strip_prefix() {
+        let context = TestContext::new();
+        context.write_file("real.txt", "real content");
+
+        let served_dir = context.builder.strip_prefix("/static/").build();
+        let hdrs = HeaderMap::new();
+
+        // Should work with the prefix
+        let e = served_dir.get("/static/real.txt", &hdrs).await.unwrap();
+        assert_eq!(e.read_body().await.unwrap(), "real content");
+
+        // Should fail without the prefix
+        let err = served_dir.get("real.txt", &hdrs).await.unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::NotFound);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_content_types() {
+        let context = TestContext::new();
+        context.write_file("index.html", "html");
+        context.write_file("style.css", "css");
+        context.write_file("script.js", "js");
+        context.write_file("image.webp", "webp");
+        context.write_file("unknown.foo", "foo");
+
+        let served_dir = context.builder.build();
+        let hdrs = HeaderMap::new();
+
+        let e = served_dir.get("index.html", &hdrs).await.unwrap();
+        assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/html");
+
+        let e = served_dir.get("style.css", &hdrs).await.unwrap();
+        assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/css");
+
+        let e = served_dir.get("script.js", &hdrs).await.unwrap();
+        assert_eq!(
+            e.header(&header::CONTENT_TYPE).unwrap(),
+            "application/javascript"
+        );
+
+        let e = served_dir.get("image.webp", &hdrs).await.unwrap();
+        assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "image/webp");
+
+        let e = served_dir.get("unknown.foo", &hdrs).await.unwrap();
+        assert_eq!(
+            e.header(&header::CONTENT_TYPE).unwrap(),
+            "application/octet-stream"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_common_headers() {
+        let context = TestContext::new();
+        context.write_file("one.txt", "one");
+
+        let served_dir = context
+            .builder
+            .common_header(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=3600"),
+            )
+            .common_header(
+                header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                HeaderValue::from_static("*"),
+            )
+            .build();
+        let hdrs = HeaderMap::new();
+
+        let e = served_dir.get("one.txt", &hdrs).await.unwrap();
+        assert_eq!(
+            e.header(&header::CACHE_CONTROL).unwrap(),
+            "public, max-age=3600"
+        );
+        assert_eq!(e.header(&header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(), "*");
+        assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/plain");
     }
 }

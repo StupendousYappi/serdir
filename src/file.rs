@@ -13,6 +13,7 @@ use fixed_cache::{static_cache, Cache};
 use futures_core::Stream;
 use futures_util::stream;
 use http::header::{HeaderMap, HeaderValue};
+use http::HeaderName;
 use std::error::Error as StdError;
 use std::io;
 use std::ops::Range;
@@ -49,6 +50,7 @@ static CHUNK_SIZE: u64 = 65_536;
 ///     Ok(serve_files::serve(f, &req))
 /// }
 /// ```
+#[derive(Debug)]
 pub struct FileEntity<
     D: 'static + Send + Buf + From<Vec<u8>> + From<&'static [u8]>,
     E: 'static + Send + Into<Box<dyn StdError + Send + Sync>> + From<Box<dyn StdError + Send + Sync>>,
@@ -110,6 +112,11 @@ where
             phantom: std::marker::PhantomData,
         })
     }
+
+    /// Returns the value of the header with the given name, if it exists.
+    pub(crate) fn header(&self, name: &HeaderName) -> Option<&HeaderValue> {
+        self.headers.get(name)
+    }
 }
 
 impl<D, E> Entity for FileEntity<D, E>
@@ -167,7 +174,7 @@ where
     }
 }
 
-#[derive(Hash, Eq, PartialEq, Clone, Copy)]
+#[derive(Hash, Eq, PartialEq, Clone, Copy, Debug)]
 struct ETag(u64);
 
 impl ETag {
@@ -244,9 +251,16 @@ mod tests {
             let p = tmp.path().join("f");
             let mut f = File::create(&p).unwrap();
             f.write_all(b"asdf").unwrap();
-
-            let crf1 = CRF::new(File::open(&p).unwrap(), HeaderMap::new()).unwrap();
+            let mut headers = HeaderMap::new();
+            headers.insert(http::header::CONTENT_TYPE, "text/plain".parse().unwrap());
+            let crf1 = CRF::new(File::open(&p).unwrap(), headers).unwrap();
             assert_eq!(4, crf1.len());
+            assert_eq!(
+                Some("text/plain"),
+                crf1.header(&http::header::CONTENT_TYPE)
+                    .map(|v| v.to_str().unwrap())
+            );
+            assert!(crf1.header(&http::header::CONTENT_LANGUAGE).is_none());
 
             // Test returning part/all of the stream.
             assert_eq!(
