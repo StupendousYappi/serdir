@@ -22,7 +22,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use crate::Entity;
+use crate::{Entity, ServeFilesError};
 
 // This stream breaks apart the file into chunks of at most CHUNK_SIZE. This size is
 // a tradeoff between memory usage and thread handoffs.
@@ -78,7 +78,7 @@ where
     /// block the tokio reactor thread on local disk I/O. Note that [`std::fs::File::open`] and
     /// this constructor (specifically, its call to `fstat(2)`) may also block, so they typically
     /// should be wrapped in [`tokio::task::block_in_place`] as well.
-    pub fn new(path: impl AsRef<Path>, headers: HeaderMap) -> Result<Self, io::Error> {
+    pub fn new(path: impl AsRef<Path>, headers: HeaderMap) -> Result<Self, ServeFilesError> {
         let path = path.as_ref();
         let m = std::fs::metadata(path)?;
         FileEntity::new_with_metadata(path, &m, headers)
@@ -93,17 +93,19 @@ where
         path: impl AsRef<Path>,
         metadata: &::std::fs::Metadata,
         headers: HeaderMap,
-    ) -> Result<Self, io::Error> {
+    ) -> Result<Self, ServeFilesError> {
         // `file` might represent a directory. If so, it's better to realize that now (while
         // we can still send a proper HTTP error) rather than during `get_range` (when all we can
         // do is drop the HTTP connection).
         if !metadata.is_file() {
-            return Err(io::Error::new(io::ErrorKind::Other, "expected a file"));
+            return Err(ServeFilesError::NotAFile(path.as_ref().to_path_buf()));
         }
-        let file = std::fs::File::open(path)?;
+        let file = std::fs::File::open(path).map_err(ServeFilesError::IOError)?;
 
-        let info = platform::file_info(&file, metadata)?;
-        let etag: ETag = ETAG_CACHE.get_or_try_insert_with(info, |_info| ETag::from_file(&file))?;
+        let info = platform::file_info(&file, metadata).map_err(ServeFilesError::IOError)?;
+        let etag: ETag = ETAG_CACHE
+            .get_or_try_insert_with(info, |_info| ETag::from_file(&file))
+            .map_err(ServeFilesError::IOError)?;
 
         Ok(FileEntity {
             len: info.len,

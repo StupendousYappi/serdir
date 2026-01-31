@@ -39,7 +39,12 @@
 use bytes::Buf;
 use futures_core::Stream;
 use http::header::{HeaderMap, HeaderValue};
+use std::error::Error;
+use std::fmt::Display;
+use std::io::Error as IOError;
+use std::io::ErrorKind;
 use std::ops::Range;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::SystemTime;
 #[cfg(test)]
@@ -72,6 +77,56 @@ fn as_u64(len: usize) -> u64 {
 
 /// A type-erased error.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Error returned by this crate's public APIs.
+#[derive(Debug)]
+pub enum ServeFilesError {
+    /// The path exists but is not a regular file.
+    NotAFile(PathBuf),
+    /// The input path is not a directory.
+    NotADirectory(PathBuf),
+    /// The requested file was not found.
+    NotFound,
+    /// The input path is invalid (e.g., contains NUL bytes or ".." segments).
+    InvalidPath(String),
+    /// An unexpected I/O error occurred.
+    IOError(IOError),
+}
+
+impl Display for ServeFilesError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServeFilesError::NotAFile(path) => {
+                write!(f, "Path is not a file: {}", path.display())
+            }
+            ServeFilesError::NotADirectory(path) => {
+                write!(f, "Path is not a directory: {}", path.display())
+            }
+            ServeFilesError::NotFound => write!(f, "File not found"),
+            ServeFilesError::InvalidPath(msg) => write!(f, "Invalid path: {}", msg),
+            ServeFilesError::IOError(err) => write!(f, "I/O error: {}", err),
+        }
+    }
+}
+
+impl Error for ServeFilesError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            ServeFilesError::IOError(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
+impl From<IOError> for ServeFilesError {
+    fn from(err: IOError) -> Self {
+        if err.kind() == ErrorKind::NotFound {
+            ServeFilesError::NotFound
+        } else {
+            ServeFilesError::IOError(err)
+        }
+    }
+}
 
 mod body;
 

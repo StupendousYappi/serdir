@@ -2,18 +2,15 @@
 
 use std::{
     collections::HashMap,
-    error::Error,
-    fmt::Display,
     fs::File,
     io::ErrorKind,
     path::{Path, PathBuf},
 };
 
+use crate::{BoxError, FileEntity, ServeFilesError};
 use bytes::Bytes;
 use http::{header, HeaderMap, HeaderValue};
 use std::io::Error as IOError;
-
-use crate::{BoxError, FileEntity};
 
 /// Returns `FileEntity` values for file paths within a directory.
 pub struct ServedDir {
@@ -30,7 +27,7 @@ static OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-s
 
 impl ServedDir {
     /// Returns a builder for `ServedDir`.
-    pub fn builder(path: impl Into<PathBuf>) -> ServedDirBuilder {
+    pub fn builder(path: impl Into<PathBuf>) -> Result<ServedDirBuilder, ServeFilesError> {
         ServedDirBuilder::new(path.into())
     }
 
@@ -48,17 +45,13 @@ impl ServedDir {
         &self,
         path: &str,
         req_hdrs: &HeaderMap,
-    ) -> Result<FileEntity<Bytes, BoxError>, IOError> {
+    ) -> Result<FileEntity<Bytes, BoxError>, ServeFilesError> {
         let path = match self.strip_prefix.as_deref() {
-            Some(prefix) => path.strip_prefix(prefix).ok_or_else(|| {
-                IOError::new(ErrorKind::NotFound, "invalid path, prefix not found")
-            })?,
+            Some(prefix) => path.strip_prefix(prefix).ok_or(ServeFilesError::NotFound)?,
             None => path,
         };
 
-        if let Err(e) = self.validate_path(path) {
-            return Err(IOError::new(ErrorKind::InvalidInput, e));
-        }
+        self.validate_path(path)?;
 
         let full_path = self.dirpath.join(path);
         let preferred = if self.auto_compress {
@@ -69,14 +62,16 @@ impl ServedDir {
         let auto_compress = self.auto_compress;
         let content_type: HeaderValue = self.get_content_type(&full_path);
 
-        let node: Node = tokio::task::spawn_blocking(move || -> Result<Node, IOError> {
-            let mut node = Self::find_file(&full_path, preferred)?
-                .ok_or_else(|| IOError::new(ErrorKind::NotFound, "file not found"))?;
+        let node: Node = tokio::task::spawn_blocking(move || -> Result<Node, ServeFilesError> {
+            let mut node =
+                Self::find_file(&full_path, preferred)?.ok_or(ServeFilesError::NotFound)?;
             node.auto_compress = auto_compress;
             Ok(node)
         })
         .await
-        .unwrap_or_else(|e: tokio::task::JoinError| Err(e.into()))?;
+        .unwrap_or_else(|e: tokio::task::JoinError| {
+            Err(IOError::new(ErrorKind::Other, e).into())
+        })?;
 
         let mut headers = self.common_headers.clone();
         headers.insert(http::header::CONTENT_TYPE, content_type);
@@ -174,29 +169,30 @@ impl ServedDir {
     fn find_file(
         path: &Path,
         supported: crate::CompressionSupport,
-    ) -> Result<Option<Node>, IOError> {
-        let try_path = |p: &Path, encoding: ContentEncoding| -> Result<Option<Node>, IOError> {
-            match File::open(p) {
-                Ok(file) => {
-                    let metadata = file.metadata()?;
-                    // TODO: simplify this, I think we want to fail with NotAFile earlier, and can trust that path is a file
-                    // if we get here
-                    if metadata.is_file()
-                        || (matches!(encoding, ContentEncoding::Identity) && metadata.is_dir())
-                    {
-                        return Ok(Some(Node {
-                            path: p.to_path_buf(),
-                            metadata,
-                            auto_compress: false, // will be set by caller
-                            content_encoding: encoding,
-                        }));
+    ) -> Result<Option<Node>, ServeFilesError> {
+        let try_path =
+            |p: &Path, encoding: ContentEncoding| -> Result<Option<Node>, ServeFilesError> {
+                match File::open(p) {
+                    Ok(file) => {
+                        let metadata = file.metadata().map_err(ServeFilesError::IOError)?;
+                        // TODO: simplify this, I think we want to fail with NotAFile earlier, and can trust that path is a file
+                        // if we get here
+                        if metadata.is_file()
+                            || (matches!(encoding, ContentEncoding::Identity) && metadata.is_dir())
+                        {
+                            return Ok(Some(Node {
+                                path: p.to_path_buf(),
+                                metadata,
+                                auto_compress: false, // will be set by caller
+                                content_encoding: encoding,
+                            }));
+                        }
                     }
+                    Err(ref e) if e.kind() == ErrorKind::NotFound => {}
+                    Err(e) => return Err(ServeFilesError::IOError(e)),
                 }
-                Err(ref e) if e.kind() == ErrorKind::NotFound => {}
-                Err(e) => return Err(e),
-            }
-            Ok(None)
-        };
+                Ok(None)
+            };
 
         if supported.brotli() {
             let mut br_path = path.to_path_buf();
@@ -226,19 +222,23 @@ impl ServedDir {
     }
 
     /// Ensures path is safe: no NUL bytes, not absolute, no `..` segments.
-    fn validate_path(&self, path: &str) -> Result<(), &'static str> {
+    fn validate_path(&self, path: &str) -> Result<(), ServeFilesError> {
         if memchr::memchr(0, path.as_bytes()).is_some() {
-            return Err("path contains NUL byte");
+            return Err(ServeFilesError::InvalidPath(
+                "path contains NUL byte".to_string(),
+            ));
         }
         if path.as_bytes().first() == Some(&b'/') {
-            return Err("path is absolute");
+            return Err(ServeFilesError::InvalidPath("path is absolute".to_string()));
         }
         let mut left = path.as_bytes();
         loop {
             let next = memchr::memchr(b'/', left);
             let seg = &left[0..next.unwrap_or(left.len())];
             if seg == b".." {
-                return Err("path contains .. segment");
+                return Err(ServeFilesError::InvalidPath(
+                    "path contains .. segment".to_string(),
+                ));
             }
             match next {
                 None => break,
@@ -260,15 +260,18 @@ pub struct ServedDirBuilder {
 }
 
 impl ServedDirBuilder {
-    fn new(dirpath: PathBuf) -> Self {
-        Self {
+    fn new(dirpath: PathBuf) -> Result<Self, ServeFilesError> {
+        if !dirpath.is_dir() {
+            return Err(ServeFilesError::NotADirectory(dirpath));
+        }
+        Ok(Self {
             dirpath,
             auto_compress: true,
             strip_prefix: None,
             known_extensions: None,
             default_content_type: OCTET_STREAM.clone(),
             common_headers: HeaderMap::new(),
-        }
+        })
     }
 
     /// Sets whether to automatically serve compressed versions of files.
@@ -340,18 +343,6 @@ impl ContentEncoding {
     }
 }
 
-/// Error returned when creating a `FileEntity` for a path that is not a file.
-#[derive(Debug)]
-pub struct NotAFile(pub PathBuf);
-
-impl Display for NotAFile {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Path is not a file: {}", self.0.display())
-    }
-}
-
-impl Error for NotAFile {}
-
 /// An opened path (aka inode on Unix) as returned by `FsDir::open`.
 ///
 /// This is not necessarily a plain file; it could also be a directory, for example.
@@ -373,7 +364,7 @@ impl Node {
     fn into_file_entity<D, E>(
         self,
         mut headers: HeaderMap,
-    ) -> Result<crate::file::FileEntity<D, E>, IOError>
+    ) -> Result<crate::file::FileEntity<D, E>, ServeFilesError>
     where
         D: 'static + Send + Sync + bytes::Buf + From<Vec<u8>> + From<&'static [u8]>,
         E: 'static
@@ -383,7 +374,7 @@ impl Node {
             + From<Box<dyn std::error::Error + Send + Sync>>,
     {
         if !self.metadata.is_file() {
-            return Err(IOError::new(ErrorKind::Other, NotAFile(self.path)));
+            return Err(ServeFilesError::NotAFile(self.path));
         }
 
         // Add `Content-Encoding` and `Vary` headers for the encoding to `hdrs`.
@@ -420,7 +411,7 @@ mod tests {
             let path = tmp.path().to_path_buf();
             Self {
                 tmp,
-                builder: ServedDir::builder(path),
+                builder: ServedDir::builder(path).expect("failed to create builder"),
             }
         }
     }
@@ -454,7 +445,7 @@ mod tests {
         let hdrs = HeaderMap::new();
 
         let err = served_dir.get("non-existent.txt", &hdrs).await.unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::NotFound);
+        assert!(matches!(err, ServeFilesError::NotFound));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -501,6 +492,7 @@ mod tests {
 
         // 5. auto_compress disabled
         let served_dir = ServedDir::builder(context.tmp.path().to_path_buf())
+            .unwrap()
             .auto_compress(false)
             .build();
         let mut hdrs = HeaderMap::new();
@@ -525,13 +517,11 @@ mod tests {
             .get("include/../etc/passwd", &hdrs)
             .await
             .unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidInput);
-        assert!(err.to_string().contains(".."));
+        assert!(matches!(err, ServeFilesError::InvalidPath(msg) if msg.contains("..")));
 
         // 2. Contains null byte
         let err = served_dir.get("test\0file.txt", &hdrs).await.unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidInput);
-        assert!(err.to_string().contains("NUL byte"));
+        assert!(matches!(err, ServeFilesError::InvalidPath(msg) if msg.contains("NUL byte")));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -548,7 +538,7 @@ mod tests {
 
         // Should fail without the prefix
         let err = served_dir.get("real.txt", &hdrs).await.unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::NotFound);
+        assert!(matches!(err, ServeFilesError::NotFound));
     }
 
     #[tokio::test(flavor = "multi_thread")]

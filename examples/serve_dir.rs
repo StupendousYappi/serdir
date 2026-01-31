@@ -10,9 +10,9 @@
 
 use http::header::{self, HeaderValue};
 use hyper_util::rt::TokioIo;
-use serve_files::served_dir::{NotAFile, ServedDir};
+use serve_files::served_dir::ServedDir;
+use serve_files::ServeFilesError;
 use std::fmt::Write;
-use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -40,7 +40,7 @@ fn is_dir(dir: &nix::dir::Dir, ent: &nix::dir::Entry) -> Result<bool, nix::Error
 fn directory_listing(
     req: http::Request<hyper::body::Incoming>,
     path: &std::path::Path,
-) -> Result<http::Response<Body>, ::std::io::Error> {
+) -> Result<http::Response<Body>, ServeFilesError> {
     if !req.uri().path().ends_with("/") {
         let mut loc = ::bytes::BytesMut::with_capacity(req.uri().path().len() + 1);
         write!(loc, "{}/", req.uri().path()).unwrap();
@@ -52,7 +52,7 @@ fn directory_listing(
             .unwrap());
     }
     let mut listing = String::new();
-    let file = std::fs::File::open(path)?;
+    let file = std::fs::File::open(path).map_err(ServeFilesError::IOError)?;
     let mut dir = nix::dir::Dir::from(file).unwrap(); // TODO: don't unwrap.
     listing.push_str("<!DOCTYPE html>\n<title>directory listing</title>\n<ul>\n");
     let mut ents: Vec<_> = dir.iter().map(|e| e.unwrap()).collect();
@@ -89,7 +89,7 @@ fn directory_listing(
 async fn serve(
     served_dir: &Arc<ServedDir>,
     req: http::Request<hyper::body::Incoming>,
-) -> Result<http::Response<Body>, ::std::io::Error> {
+) -> Result<http::Response<Body>, ServeFilesError> {
     let p = if req.uri().path() == "/" {
         "."
     } else {
@@ -99,14 +99,10 @@ async fn serve(
     let res = served_dir.get(p, req.headers()).await;
     match res {
         Ok(f) => Ok(serve_files::serve(f, &req)),
-        Err(e) if e.kind() == ErrorKind::Other => {
-            if let Some(not_a_file) = e.get_ref().and_then(|e| e.downcast_ref::<NotAFile>()) {
-                directory_listing(req, &not_a_file.0)
-            } else {
-                Err(e)
-            }
-        }
-        Err(e) => Err(e),
+        Err(e) => match e {
+            ServeFilesError::NotAFile(path) => directory_listing(req, &path),
+            _ => Err(e),
+        },
     }
 }
 
@@ -118,20 +114,21 @@ async fn handle_request(
         Ok(res) => return Ok(res),
         Err(e) => e,
     };
-    let status = match e.kind() {
-        ErrorKind::NotFound => http::StatusCode::NOT_FOUND,
+    let status = match e {
+        ServeFilesError::NotFound => http::StatusCode::NOT_FOUND,
+        ServeFilesError::InvalidPath(_) => http::StatusCode::BAD_REQUEST,
         _ => http::StatusCode::INTERNAL_SERVER_ERROR,
     };
     Ok(http::Response::builder()
         .status(status)
-        .body(serve_files::Body::from(format!("I/O error: {}", e)))
+        .body(serve_files::Body::from(format!("Error: {}", e)))
         .unwrap())
 }
 
 #[tokio::main]
 async fn main() {
     let served_dir: &'static Arc<ServedDir> =
-        Box::leak(Box::new(Arc::new(ServedDir::builder(".").build())));
+        Box::leak(Box::new(Arc::new(ServedDir::builder(".").unwrap().build())));
     let addr = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 1337));
     let listener = TcpListener::bind(addr).await.unwrap();
     println!("Serving . on http://{}", listener.local_addr().unwrap());
