@@ -62,13 +62,10 @@ impl ServedDir {
         let content_type: HeaderValue = self.get_content_type(&full_path);
 
         let node: Node = tokio::task::spawn_blocking(move || -> Result<Node, ServeFilesError> {
-            let node = Self::find_file(&full_path, preferred)?.ok_or(ServeFilesError::NotFound)?;
-            Ok(node)
+            Self::find_file(full_path, preferred)
         })
         .await
-        .unwrap_or_else(|e: tokio::task::JoinError| {
-            Err(IOError::new(ErrorKind::Other, e).into())
-        })?;
+        .map_err(|e: tokio::task::JoinError| IOError::new(ErrorKind::Other, e))??;
 
         let mut headers = self.common_headers.clone();
         headers.insert(http::header::CONTENT_TYPE, content_type);
@@ -172,26 +169,27 @@ impl ServedDir {
     }
 
     fn find_file(
-        path: &Path,
+        path: PathBuf,
         supported: crate::CompressionSupport,
-    ) -> Result<Option<Node>, ServeFilesError> {
-        let try_path =
-            |p: &Path, encoding: ContentEncoding| -> Result<Option<Node>, ServeFilesError> {
-                match File::open(p) {
-                    Ok(file) => {
-                        let metadata = file.metadata().map_err(ServeFilesError::IOError)?;
-                        return Ok(Some(Node {
-                            path: p.to_path_buf(),
-                            file,
-                            metadata,
-                            content_encoding: encoding,
-                        }));
+    ) -> Result<Node, ServeFilesError> {
+        let try_path = |p: &Path, encoding: ContentEncoding| -> Result<Node, ServeFilesError> {
+            match File::open(p) {
+                Ok(file) => {
+                    let metadata = file.metadata().map_err(ServeFilesError::IOError)?;
+                    if !metadata.is_file() {
+                        return Err(ServeFilesError::NotAFile(path.to_path_buf()));
                     }
-                    Err(ref e) if e.kind() == ErrorKind::NotFound => {}
-                    Err(e) => return Err(ServeFilesError::IOError(e)),
+                    Ok(Node {
+                        path: p.to_path_buf(),
+                        file,
+                        metadata,
+                        content_encoding: encoding,
+                    })
                 }
-                Ok(None)
-            };
+                Err(ref e) if e.kind() == ErrorKind::NotFound => Err(ServeFilesError::NotFound),
+                Err(e) => Err(ServeFilesError::IOError(e)),
+            }
+        };
 
         if supported.brotli() {
             let mut br_path = path.to_path_buf();
@@ -199,8 +197,11 @@ impl ServedDir {
                 let mut new_name = name.to_os_string();
                 new_name.push(".br");
                 br_path.set_file_name(new_name);
-                if let Some(node) = try_path(&br_path, ContentEncoding::Brotli)? {
-                    return Ok(Some(node));
+                match try_path(&br_path, ContentEncoding::Brotli) {
+                    Ok(node) => return Ok(node),
+                    Err(ServeFilesError::NotFound) => {}
+                    Err(ServeFilesError::NotAFile(_)) => {}
+                    Err(e) => return Err(e),
                 }
             }
         }
@@ -211,13 +212,16 @@ impl ServedDir {
                 let mut new_name = name.to_os_string();
                 new_name.push(".gz");
                 gz_path.set_file_name(new_name);
-                if let Some(node) = try_path(&gz_path, ContentEncoding::Gzip)? {
-                    return Ok(Some(node));
+                match try_path(&gz_path, ContentEncoding::Gzip) {
+                    Ok(node) => return Ok(node),
+                    Err(ServeFilesError::NotFound) => {}
+                    Err(ServeFilesError::NotAFile(_)) => {}
+                    Err(e) => return Err(e),
                 }
             }
         }
 
-        try_path(path, ContentEncoding::Identity)
+        try_path(&path, ContentEncoding::Identity)
     }
 
     /// Ensures path is safe: no NUL bytes, not absolute, no `..` segments.

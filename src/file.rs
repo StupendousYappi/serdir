@@ -81,9 +81,12 @@ where
     /// should be wrapped in [`tokio::task::block_in_place`] as well.
     pub fn new(path: impl AsRef<Path>, headers: HeaderMap) -> Result<Self, ServeFilesError> {
         let path = path.as_ref();
-        let file = File::open(path)?;
-        let m = file.metadata()?;
-        FileEntity::new_with_metadata(path, file, &m, headers)
+        let file = File::open(&path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(ServeFilesError::NotAFile(path.to_path_buf()));
+        }
+        FileEntity::new_with_metadata(path, file, &metadata, headers)
     }
 
     /// Creates a new FileEntity, with presupplied metadata and a pre-opened file.

@@ -38,8 +38,6 @@
 
 use bytes::Buf;
 use futures_core::Stream;
-#[cfg(test)]
-use futures_util::StreamExt as _;
 use http::header::{HeaderMap, HeaderValue};
 use std::error::Error;
 use std::fmt::Display;
