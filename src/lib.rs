@@ -135,7 +135,7 @@ mod range;
 mod serving;
 
 pub use crate::body::Body;
-pub use crate::compression::{detect_compression_support, CompressionSupport};
+pub use crate::compression::CompressionSupport;
 pub use crate::file::FileEntity;
 pub use crate::serving::serve;
 

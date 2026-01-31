@@ -6,8 +6,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use http::header::{self, HeaderMap};
+use http::header::{self, HeaderMap, HeaderValue};
+use std::fs::{File, Metadata};
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
+
+use crate::{FileEntity, ServeFilesError};
 
 /// Parses an RFC 7231 section 5.3.1 `qvalue` into an integer in [0, 1000].
 /// ```text
@@ -56,82 +61,196 @@ impl CompressionSupport {
     pub fn gzip(&self) -> bool {
         matches!(self, CompressionSupport::Gzip | CompressionSupport::Both)
     }
-}
 
-/// Returns the preferred compression to use when responding to the given request, if any.
-///
-/// Use via `detect_compression_support(req.headers())`.
-///
-/// Follows the rules of [RFC 7231 section
-/// 5.3.4](https://tools.ietf.org/html/rfc7231#section-5.3.4).
-///
-/// Note that if both gzip and brotli are supported, brotli will be preferred by the server.
-pub fn detect_compression_support(headers: &HeaderMap) -> CompressionSupport {
-    let v = match headers.get(header::ACCEPT_ENCODING) {
-        None => return CompressionSupport::None,
-        Some(v) if v.is_empty() => return CompressionSupport::None,
-        Some(v) => v,
-    };
-    let (mut gzip_q, mut br_q, mut identity_q, mut star_q) = (None, None, None, None);
-    let parts = match v.to_str() {
-        Ok(s) => s.split(','),
-        Err(_) => return CompressionSupport::None,
-    };
-    for qi in parts {
-        // Parse.
-        let coding;
-        let quality;
-        match qi.split_once(';') {
-            None => {
-                coding = qi.trim();
-                quality = 1000;
-            }
-            Some((c, q)) => {
-                coding = c.trim();
-                let Some(q) = q
-                    .trim()
-                    .strip_prefix("q=")
-                    .and_then(|q| parse_qvalue(q).ok())
-                else {
-                    return CompressionSupport::None; // unparseable.
-                };
-                quality = q;
-            }
+    /// Returns the preferred compression to use when responding to the given request, if any.
+    ///
+    /// Follows the rules of [RFC 7231 section
+    /// 5.3.4](https://tools.ietf.org/html/rfc7231#section-5.3.4).
+    ///
+    /// Note that if both gzip and brotli are supported, brotli will be preferred by the server.
+    pub fn detect(headers: &HeaderMap) -> CompressionSupport {
+        let v = match headers.get(header::ACCEPT_ENCODING) {
+            None => return CompressionSupport::None,
+            Some(v) if v.is_empty() => return CompressionSupport::None,
+            Some(v) => v,
         };
+        let (mut gzip_q, mut br_q, mut identity_q, mut star_q) = (None, None, None, None);
+        let parts = match v.to_str() {
+            Ok(s) => s.split(','),
+            Err(_) => return CompressionSupport::None,
+        };
+        for qi in parts {
+            // Parse.
+            let coding;
+            let quality;
+            match qi.split_once(';') {
+                None => {
+                    coding = qi.trim();
+                    quality = 1000;
+                }
+                Some((c, q)) => {
+                    coding = c.trim();
+                    let Some(q) = q
+                        .trim()
+                        .strip_prefix("q=")
+                        .and_then(|q| parse_qvalue(q).ok())
+                    else {
+                        return CompressionSupport::None; // unparseable.
+                    };
+                    quality = q;
+                }
+            };
 
-        if coding == "gzip" {
-            gzip_q = Some(quality);
-        } else if coding == "br" {
-            br_q = Some(quality);
-        } else if coding == "identity" {
-            identity_q = Some(quality);
-        } else if coding == "*" {
-            star_q = Some(quality);
+            if coding == "gzip" {
+                gzip_q = Some(quality);
+            } else if coding == "br" {
+                br_q = Some(quality);
+            } else if coding == "identity" {
+                identity_q = Some(quality);
+            } else if coding == "*" {
+                star_q = Some(quality);
+            }
+        }
+
+        let gzip_q = gzip_q.or(star_q).unwrap_or(0);
+        let br_q = br_q.or(star_q).unwrap_or(0);
+
+        // "If the representation has no content-coding, then it is
+        // acceptable by default unless specifically excluded by the
+        // Accept-Encoding field stating either "identity;q=0" or "*;q=0"
+        // without a more specific entry for "identity"."
+        let identity_q = identity_q.or(star_q).unwrap_or(0);
+
+        // The server will always have identity coding available, so if it's
+        // higher priority than another coding, there's no need to enable
+        // the other coding. According to the RFC, it's possible for a client
+        // to support other codings while not supporting identity coding, but
+        // that seems very unlikely in practice and we don't support that.
+        let use_gzip = gzip_q > 0 && gzip_q >= identity_q;
+        let use_br = br_q > 0 && br_q >= identity_q;
+
+        match (use_gzip, use_br) {
+            (true, false) => CompressionSupport::Gzip,
+            (false, true) => CompressionSupport::Brotli,
+            (true, true) => CompressionSupport::Both,
+            (false, false) => CompressionSupport::None,
         }
     }
+}
 
-    let gzip_q = gzip_q.or(star_q).unwrap_or(0);
-    let br_q = br_q.or(star_q).unwrap_or(0);
+#[derive(Debug, Clone)]
+pub(crate) enum CompressionStrategy {
+    Static,
+    None,
+}
 
-    // "If the representation has no content-coding, then it is
-    // acceptable by default unless specifically excluded by the
-    // Accept-Encoding field stating either "identity;q=0" or "*;q=0"
-    // without a more specific entry for "identity"."
-    let identity_q = identity_q.or(star_q).unwrap_or(0);
+impl CompressionStrategy {
+    pub(crate) fn find_file(
+        &self,
+        path: PathBuf,
+        supported: crate::CompressionSupport,
+    ) -> Result<MatchedFile, ServeFilesError> {
+        match self {
+            CompressionStrategy::Static => {
+                if supported.brotli() {
+                    let br_path = path.with_added_extension("br");
+                    match Self::try_path(&br_path, ContentEncoding::Brotli) {
+                        Ok(f) => return Ok(f),
+                        Err(ServeFilesError::NotFound) | Err(ServeFilesError::NotAFile(_)) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
 
-    // The server will always have identity coding available, so if it's
-    // higher priority than another coding, there's no need to enable
-    // the other coding. According to the RFC, it's possible for a client
-    // to support other codings while not supporting identity coding, but
-    // that seems very unlikely in practice and we don't support that.
-    let use_gzip = gzip_q > 0 && gzip_q >= identity_q;
-    let use_br = br_q > 0 && br_q >= identity_q;
+                if supported.gzip() {
+                    let gz_path = path.with_added_extension("gz");
+                    match Self::try_path(&gz_path, ContentEncoding::Gzip) {
+                        Ok(f) => return Ok(f),
+                        Err(ServeFilesError::NotFound) | Err(ServeFilesError::NotAFile(_)) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+            CompressionStrategy::None => {}
+        }
 
-    match (use_gzip, use_br) {
-        (true, false) => CompressionSupport::Gzip,
-        (false, true) => CompressionSupport::Brotli,
-        (true, true) => CompressionSupport::Both,
-        (false, false) => CompressionSupport::None,
+        Self::try_path(&path, ContentEncoding::Identity)
+    }
+
+    fn try_path(p: &Path, encoding: ContentEncoding) -> Result<MatchedFile, ServeFilesError> {
+        // we want to read the file metadata from the open file handle, rather than calling
+        // `std::fs::metadata` on the path, to guarantee that the metadata and the file contents
+        // are consistent (otherwise, if the file is modified, there could be a race condition
+        // that causes a mismatch between etag values and file contents, which could cause corrupt
+        // behavior for clients)
+        match File::open(p) {
+            Ok(file) => {
+                let metadata = file.metadata().map_err(ServeFilesError::IOError)?;
+                if !metadata.is_file() {
+                    return Err(ServeFilesError::NotAFile(p.to_path_buf()));
+                }
+                Ok(MatchedFile {
+                    file,
+                    metadata,
+                    content_encoding: encoding,
+                })
+            }
+            Err(ref e) if e.kind() == ErrorKind::NotFound => Err(ServeFilesError::NotFound),
+            Err(e) => Err(ServeFilesError::IOError(e)),
+        }
+    }
+}
+
+pub(crate) enum ContentEncoding {
+    Gzip,
+    Brotli,
+    Identity,
+}
+
+impl ContentEncoding {
+    /// Returns the encoding this file is assumed to have applied to the caller's request.
+    /// E.g., if automatic gzip compression is enabled and `index.html.gz` was found when the
+    /// caller requested `index.html`, this will return `Some("gzip")`. If the caller requests
+    /// `index.html.gz`, this will return `None` because the gzip encoding is built in to the
+    /// caller's request.
+    pub(crate) fn get_header_value(&self) -> Option<HeaderValue> {
+        match self {
+            ContentEncoding::Gzip => Some(HeaderValue::from_static("gzip")),
+            ContentEncoding::Brotli => Some(HeaderValue::from_static("br")),
+            ContentEncoding::Identity => None,
+        }
+    }
+}
+
+/// An opened file handle to a file, as returned by `ServedDir::open`.
+///
+/// This is not necessarily a plain file; it could also be a directory, for example.
+///
+/// The caller can inspect it as desired. If it is a directory, the caller might pass the result of
+/// `into_file()` to `nix::dir::Dir::from`. If it is a plain file, the caller might create an
+/// `serve_files::Entity` with `into_file_entity()`.
+pub(crate) struct MatchedFile {
+    pub(crate) metadata: Metadata,
+    pub(crate) file: File,
+    pub(crate) content_encoding: ContentEncoding,
+}
+
+impl MatchedFile {
+    /// Converts this MatchedFile (which must represent a plain file) into a `FileEntity`.
+    /// The caller is expected to supply all headers. The function `add_encoding_headers`
+    /// may be useful.
+    pub(crate) fn into_file_entity<D, E>(
+        self,
+        headers: HeaderMap,
+    ) -> Result<FileEntity<D, E>, ServeFilesError>
+    where
+        D: 'static + Send + Sync + bytes::Buf + From<Vec<u8>> + From<&'static [u8]>,
+        E: 'static
+            + Send
+            + Sync
+            + Into<Box<dyn std::error::Error + Send + Sync>>
+            + From<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        FileEntity::new_with_metadata(self.file, &self.metadata, headers)
     }
 }
 
@@ -178,7 +297,7 @@ mod tests {
         // does not imply that the user agent will be able to correctly process
         // all encodings." Identity seems safer; don't compress.
         assert!(matches!(
-            detect_compression_support(&header::HeaderMap::new()),
+            CompressionSupport::detect(&header::HeaderMap::new()),
             CompressionSupport::None
         ));
 
@@ -187,24 +306,24 @@ mod tests {
         // acceptable unless it is accompanied by a qvalue of 0.  (As
         // defined in Section 5.3.1, a qvalue of 0 means "not acceptable".)"
         assert_matches!(
-            detect_compression_support(&ae_hdrs("gzip")),
+            CompressionSupport::detect(&ae_hdrs("gzip")),
             CompressionSupport::Gzip
         );
         assert_matches!(
-            detect_compression_support(&ae_hdrs("gzip;q=0.001")),
+            CompressionSupport::detect(&ae_hdrs("gzip;q=0.001")),
             CompressionSupport::Gzip
         );
         assert_matches!(
-            detect_compression_support(&ae_hdrs("br;q=0.001")),
+            CompressionSupport::detect(&ae_hdrs("br;q=0.001")),
             CompressionSupport::Brotli
         );
         assert_matches!(
-            detect_compression_support(&ae_hdrs("br, gzip")),
+            CompressionSupport::detect(&ae_hdrs("br, gzip")),
             CompressionSupport::Both
         );
 
         assert_matches!(
-            detect_compression_support(&ae_hdrs("gzip;q=0")),
+            CompressionSupport::detect(&ae_hdrs("gzip;q=0")),
             CompressionSupport::None
         );
 
@@ -212,7 +331,7 @@ mod tests {
         // empty implies that the user agent does not want any content-coding in
         // response."
         assert_matches!(
-            detect_compression_support(&ae_hdrs("")),
+            CompressionSupport::detect(&ae_hdrs("")),
             CompressionSupport::None
         );
 
@@ -221,34 +340,34 @@ mod tests {
         // If * is q=1000, then identity_q=1000, and neither gzip nor br is
         // strictly greater than 1000.
         assert_matches!(
-            detect_compression_support(&ae_hdrs("*")),
+            CompressionSupport::detect(&ae_hdrs("*")),
             CompressionSupport::Both
         );
         assert_matches!(
-            detect_compression_support(&ae_hdrs("gzip;q=0, *")),
+            CompressionSupport::detect(&ae_hdrs("gzip;q=0, *")),
             CompressionSupport::Brotli
         );
         assert_matches!(
-            detect_compression_support(&ae_hdrs("identity;q=0, *")),
+            CompressionSupport::detect(&ae_hdrs("identity;q=0, *")),
             CompressionSupport::Both
         );
 
         // "If multiple content-codings are acceptable, then the acceptable
         // content-coding with the highest non-zero qvalue is preferred."
         assert_matches!(
-            detect_compression_support(&ae_hdrs("identity;q=0.5, gzip;q=1.0")),
+            CompressionSupport::detect(&ae_hdrs("identity;q=0.5, gzip;q=1.0")),
             CompressionSupport::Gzip
         );
         assert_matches!(
-            detect_compression_support(&ae_hdrs("identity;q=1.0, gzip;q=0.5")),
+            CompressionSupport::detect(&ae_hdrs("identity;q=1.0, gzip;q=0.5")),
             CompressionSupport::None
         );
         assert_matches!(
-            detect_compression_support(&ae_hdrs("br;q=1.0, gzip;q=0.5, identity;q=0.1")),
+            CompressionSupport::detect(&ae_hdrs("br;q=1.0, gzip;q=0.5, identity;q=0.1")),
             CompressionSupport::Both
         );
         assert_matches!(
-            detect_compression_support(&ae_hdrs("br;q=0.5, gzip;q=1.0, identity;q=0.1")),
+            CompressionSupport::detect(&ae_hdrs("br;q=0.5, gzip;q=1.0, identity;q=0.1")),
             CompressionSupport::Both
         );
 
@@ -257,11 +376,11 @@ mod tests {
         // content-coding that is listed as acceptable, the origin server SHOULD
         // send a response without any content-coding."
         assert_matches!(
-            detect_compression_support(&ae_hdrs("*;q=0")),
+            CompressionSupport::detect(&ae_hdrs("*;q=0")),
             CompressionSupport::None
         );
         assert_matches!(
-            detect_compression_support(&ae_hdrs("gzip;q=0.002")), // q=2
+            CompressionSupport::detect(&ae_hdrs("gzip;q=0.002")), // q=2
             CompressionSupport::Gzip
         );
     }

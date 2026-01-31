@@ -2,11 +2,11 @@
 
 use std::{
     collections::HashMap,
-    fs::File,
     io::ErrorKind,
     path::{Path, PathBuf},
 };
 
+use crate::compression::{CompressionStrategy, CompressionSupport, MatchedFile};
 use crate::{BoxError, FileEntity, ServeFilesError};
 use bytes::Bytes;
 use http::{header, HeaderMap, HeaderValue};
@@ -15,7 +15,7 @@ use std::io::Error as IOError;
 /// Returns `FileEntity` values for file paths within a directory.
 pub struct ServedDir {
     /// Provides servable `FileEntity` values for file paths within a directory.
-    auto_compress: bool,
+    compression_strategy: CompressionStrategy,
     dirpath: PathBuf,
     strip_prefix: Option<String>,
     known_extensions: Option<HashMap<String, HeaderValue>>,
@@ -54,16 +54,13 @@ impl ServedDir {
         self.validate_path(path)?;
 
         let full_path = self.dirpath.join(path);
-        let preferred = if self.auto_compress {
-            crate::detect_compression_support(req_hdrs)
-        } else {
-            crate::CompressionSupport::None
-        };
+        let preferred = CompressionSupport::detect(req_hdrs);
         let content_type: HeaderValue = self.get_content_type(&full_path);
 
+        let strategy = self.compression_strategy.clone();
         let matched_file: MatchedFile =
             tokio::task::spawn_blocking(move || -> Result<MatchedFile, ServeFilesError> {
-                Self::find_file(full_path, preferred)
+                strategy.find_file(full_path, preferred)
             })
             .await
             .map_err(|e: tokio::task::JoinError| IOError::new(ErrorKind::Other, e))??;
@@ -75,7 +72,7 @@ impl ServedDir {
         if let Some(value) = matched_file.content_encoding.get_header_value() {
             headers.insert(header::CONTENT_ENCODING, value);
         }
-        if self.auto_compress {
+        if matches!(self.compression_strategy, CompressionStrategy::Static) {
             headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
         }
 
@@ -169,54 +166,6 @@ impl ServedDir {
         guess.map(|s| HeaderValue::from_str(s).unwrap())
     }
 
-    fn find_file(
-        path: PathBuf,
-        supported: crate::CompressionSupport,
-    ) -> Result<MatchedFile, ServeFilesError> {
-        if supported.brotli() {
-            let br_path = path.with_added_extension("br");
-            match Self::try_path(&br_path, ContentEncoding::Brotli) {
-                Ok(f) => return Ok(f),
-                Err(ServeFilesError::NotFound) | Err(ServeFilesError::NotAFile(_)) => {}
-                Err(e) => return Err(e),
-            }
-        }
-
-        if supported.gzip() {
-            let gz_path = path.with_added_extension("gz");
-            match Self::try_path(&gz_path, ContentEncoding::Gzip) {
-                Ok(f) => return Ok(f),
-                Err(ServeFilesError::NotFound) | Err(ServeFilesError::NotAFile(_)) => {}
-                Err(e) => return Err(e),
-            }
-        }
-
-        Self::try_path(&path, ContentEncoding::Identity)
-    }
-
-    fn try_path(p: &Path, encoding: ContentEncoding) -> Result<MatchedFile, ServeFilesError> {
-        // we want to read the file metadata from the open file handle, rather than calling
-        // `std::fs::metadata` on the path, to guarantee that the metadata and the file contents
-        // are consistent (otherwise, if the file is modified, there could be a race condition
-        // that causes a mismatch between etag values and file contents, which could cause corrupt
-        // behavior for clients)
-        match File::open(p) {
-            Ok(file) => {
-                let metadata = file.metadata().map_err(ServeFilesError::IOError)?;
-                if !metadata.is_file() {
-                    return Err(ServeFilesError::NotAFile(p.to_path_buf()));
-                }
-                Ok(MatchedFile {
-                    file,
-                    metadata,
-                    content_encoding: encoding,
-                })
-            }
-            Err(ref e) if e.kind() == ErrorKind::NotFound => Err(ServeFilesError::NotFound),
-            Err(e) => Err(ServeFilesError::IOError(e)),
-        }
-    }
-
     /// Ensures path is safe: no NUL bytes, not absolute, no `..` segments.
     fn validate_path(&self, path: &str) -> Result<(), ServeFilesError> {
         if memchr::memchr(0, path.as_bytes()).is_some() {
@@ -248,7 +197,7 @@ impl ServedDir {
 /// A builder for [`ServedDir`].
 pub struct ServedDirBuilder {
     dirpath: PathBuf,
-    auto_compress: bool,
+    compression_strategy: CompressionStrategy,
     strip_prefix: Option<String>,
     known_extensions: Option<HashMap<String, HeaderValue>>,
     default_content_type: HeaderValue,
@@ -262,7 +211,7 @@ impl ServedDirBuilder {
         }
         Ok(Self {
             dirpath,
-            auto_compress: true,
+            compression_strategy: CompressionStrategy::Static,
             strip_prefix: None,
             known_extensions: None,
             default_content_type: OCTET_STREAM.clone(),
@@ -273,7 +222,11 @@ impl ServedDirBuilder {
     /// Sets whether to automatically serve compressed versions of files.
     /// Defaults to `true`.
     pub fn auto_compress(mut self, auto_compress: bool) -> Self {
-        self.auto_compress = auto_compress;
+        self.compression_strategy = if auto_compress {
+            CompressionStrategy::Static
+        } else {
+            CompressionStrategy::None
+        };
         self
     }
 
@@ -309,66 +262,12 @@ impl ServedDirBuilder {
     pub fn build(self) -> ServedDir {
         ServedDir {
             dirpath: self.dirpath,
-            auto_compress: self.auto_compress,
+            compression_strategy: self.compression_strategy,
             strip_prefix: self.strip_prefix,
             known_extensions: self.known_extensions,
             default_content_type: self.default_content_type,
             common_headers: self.common_headers,
         }
-    }
-}
-
-enum ContentEncoding {
-    Gzip,
-    Brotli,
-    Identity,
-}
-
-impl ContentEncoding {
-    /// Returns the encoding this file is assumed to have applied to the caller's request.
-    /// E.g., if automatic gzip compression is enabled and `index.html.gz` was found when the
-    /// caller requested `index.html`, this will return `Some("gzip")`. If the caller requests
-    /// `index.html.gz`, this will return `None` because the gzip encoding is built in to the
-    /// caller's request.
-    fn get_header_value(&self) -> Option<HeaderValue> {
-        match self {
-            ContentEncoding::Gzip => Some(HeaderValue::from_static("gzip")),
-            ContentEncoding::Brotli => Some(HeaderValue::from_static("br")),
-            ContentEncoding::Identity => None,
-        }
-    }
-}
-
-/// An opened file handle to a file, as returned by `ServedDir::open`.
-///
-/// This is not necessarily a plain file; it could also be a directory, for example.
-///
-/// The caller can inspect it as desired. If it is a directory, the caller might pass the result of
-/// `into_file()` to `nix::dir::Dir::from`. If it is a plain file, the caller might create an
-/// `serve_files::Entity` with `into_file_entity()`.
-struct MatchedFile {
-    metadata: std::fs::Metadata,
-    file: File,
-    content_encoding: ContentEncoding,
-}
-
-impl MatchedFile {
-    /// Converts this MatchedFile (which must represent a plain file) into a `FileEntity`.
-    /// The caller is expected to supply all headers. The function `add_encoding_headers`
-    /// may be useful.
-    fn into_file_entity<D, E>(
-        self,
-        headers: HeaderMap,
-    ) -> Result<crate::file::FileEntity<D, E>, ServeFilesError>
-    where
-        D: 'static + Send + Sync + bytes::Buf + From<Vec<u8>> + From<&'static [u8]>,
-        E: 'static
-            + Send
-            + Sync
-            + Into<Box<dyn std::error::Error + Send + Sync>>
-            + From<Box<dyn std::error::Error + Send + Sync>>,
-    {
-        FileEntity::new_with_metadata(self.file, &self.metadata, headers)
     }
 }
 
