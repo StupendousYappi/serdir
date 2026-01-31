@@ -61,24 +61,25 @@ impl ServedDir {
         };
         let content_type: HeaderValue = self.get_content_type(&full_path);
 
-        let node: Node = tokio::task::spawn_blocking(move || -> Result<Node, ServeFilesError> {
-            Self::find_file(full_path, preferred)
-        })
-        .await
-        .map_err(|e: tokio::task::JoinError| IOError::new(ErrorKind::Other, e))??;
+        let matched_file: MatchedFile =
+            tokio::task::spawn_blocking(move || -> Result<MatchedFile, ServeFilesError> {
+                Self::find_file(full_path, preferred)
+            })
+            .await
+            .map_err(|e: tokio::task::JoinError| IOError::new(ErrorKind::Other, e))??;
 
         let mut headers = self.common_headers.clone();
         headers.insert(http::header::CONTENT_TYPE, content_type);
 
         // Add `Content-Encoding` and `Vary` headers for the encoding to `hdrs`.
-        if let Some(value) = node.content_encoding.get_header_value() {
+        if let Some(value) = matched_file.content_encoding.get_header_value() {
             headers.insert(header::CONTENT_ENCODING, value);
         }
         if self.auto_compress {
             headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
         }
 
-        node.into_file_entity(headers)
+        matched_file.into_file_entity(headers)
     }
 
     fn get_content_type(&self, path: &Path) -> HeaderValue {
@@ -171,62 +172,49 @@ impl ServedDir {
     fn find_file(
         path: PathBuf,
         supported: crate::CompressionSupport,
-    ) -> Result<Node, ServeFilesError> {
-        let try_path = |p: &Path, encoding: ContentEncoding| -> Result<Node, ServeFilesError> {
-            // we want to read the file metadata from the open file handle, rather than calling
-            // `std::fs::metadata` on the path, to guarantee that the metadata and the file contents
-            // are consistent (otherwise, if the file is modified, there could be a race condition
-            // that causes a mismatch between etag values and file contents, which could cause corrupt
-            // behavior for clients)
-            match File::open(p) {
-                Ok(file) => {
-                    let metadata = file.metadata().map_err(ServeFilesError::IOError)?;
-                    if !metadata.is_file() {
-                        return Err(ServeFilesError::NotAFile(path.to_path_buf()));
-                    }
-                    Ok(Node {
-                        path: p.to_path_buf(),
-                        file,
-                        metadata,
-                        content_encoding: encoding,
-                    })
-                }
-                Err(ref e) if e.kind() == ErrorKind::NotFound => Err(ServeFilesError::NotFound),
-                Err(e) => Err(ServeFilesError::IOError(e)),
-            }
-        };
-
+    ) -> Result<MatchedFile, ServeFilesError> {
         if supported.brotli() {
-            let mut br_path = path.to_path_buf();
-            if let Some(name) = path.file_name() {
-                let mut new_name = name.to_os_string();
-                new_name.push(".br");
-                br_path.set_file_name(new_name);
-                match try_path(&br_path, ContentEncoding::Brotli) {
-                    Ok(node) => return Ok(node),
-                    Err(ServeFilesError::NotFound) => {}
-                    Err(ServeFilesError::NotAFile(_)) => {}
-                    Err(e) => return Err(e),
-                }
+            let br_path = path.with_added_extension("br");
+            match Self::try_path(&br_path, ContentEncoding::Brotli) {
+                Ok(f) => return Ok(f),
+                Err(ServeFilesError::NotFound) | Err(ServeFilesError::NotAFile(_)) => {}
+                Err(e) => return Err(e),
             }
         }
 
         if supported.gzip() {
-            let mut gz_path = path.to_path_buf();
-            if let Some(name) = path.file_name() {
-                let mut new_name = name.to_os_string();
-                new_name.push(".gz");
-                gz_path.set_file_name(new_name);
-                match try_path(&gz_path, ContentEncoding::Gzip) {
-                    Ok(node) => return Ok(node),
-                    Err(ServeFilesError::NotFound) => {}
-                    Err(ServeFilesError::NotAFile(_)) => {}
-                    Err(e) => return Err(e),
-                }
+            let gz_path = path.with_added_extension("gz");
+            match Self::try_path(&gz_path, ContentEncoding::Gzip) {
+                Ok(f) => return Ok(f),
+                Err(ServeFilesError::NotFound) | Err(ServeFilesError::NotAFile(_)) => {}
+                Err(e) => return Err(e),
             }
         }
 
-        try_path(&path, ContentEncoding::Identity)
+        Self::try_path(&path, ContentEncoding::Identity)
+    }
+
+    fn try_path(p: &Path, encoding: ContentEncoding) -> Result<MatchedFile, ServeFilesError> {
+        // we want to read the file metadata from the open file handle, rather than calling
+        // `std::fs::metadata` on the path, to guarantee that the metadata and the file contents
+        // are consistent (otherwise, if the file is modified, there could be a race condition
+        // that causes a mismatch between etag values and file contents, which could cause corrupt
+        // behavior for clients)
+        match File::open(p) {
+            Ok(file) => {
+                let metadata = file.metadata().map_err(ServeFilesError::IOError)?;
+                if !metadata.is_file() {
+                    return Err(ServeFilesError::NotAFile(p.to_path_buf()));
+                }
+                Ok(MatchedFile {
+                    file,
+                    metadata,
+                    content_encoding: encoding,
+                })
+            }
+            Err(ref e) if e.kind() == ErrorKind::NotFound => Err(ServeFilesError::NotFound),
+            Err(e) => Err(ServeFilesError::IOError(e)),
+        }
     }
 
     /// Ensures path is safe: no NUL bytes, not absolute, no `..` segments.
@@ -351,22 +339,21 @@ impl ContentEncoding {
     }
 }
 
-/// An opened path (aka inode on Unix) as returned by `FsDir::open`.
+/// An opened file handle to a file, as returned by `ServedDir::open`.
 ///
 /// This is not necessarily a plain file; it could also be a directory, for example.
 ///
 /// The caller can inspect it as desired. If it is a directory, the caller might pass the result of
 /// `into_file()` to `nix::dir::Dir::from`. If it is a plain file, the caller might create an
 /// `serve_files::Entity` with `into_file_entity()`.
-struct Node {
-    path: PathBuf,
+struct MatchedFile {
     metadata: std::fs::Metadata,
     file: File,
     content_encoding: ContentEncoding,
 }
 
-impl Node {
-    /// Converts this node (which must represent a plain file) into a `FileEntity`.
+impl MatchedFile {
+    /// Converts this MatchedFile (which must represent a plain file) into a `FileEntity`.
     /// The caller is expected to supply all headers. The function `add_encoding_headers`
     /// may be useful.
     fn into_file_entity<D, E>(
@@ -381,7 +368,7 @@ impl Node {
             + Into<Box<dyn std::error::Error + Send + Sync>>
             + From<Box<dyn std::error::Error + Send + Sync>>,
     {
-        FileEntity::new_with_metadata(&self.path, self.file, &self.metadata, headers)
+        FileEntity::new_with_metadata(self.file, &self.metadata, headers)
     }
 }
 

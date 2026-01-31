@@ -86,7 +86,7 @@ where
         if !metadata.is_file() {
             return Err(ServeFilesError::NotAFile(path.to_path_buf()));
         }
-        FileEntity::new_with_metadata(path, file, &metadata, headers)
+        FileEntity::new_with_metadata(file, &metadata, headers)
     }
 
     /// Creates a new FileEntity, with presupplied metadata and a pre-opened file.
@@ -100,15 +100,11 @@ where
     /// refer to the same file- the metadata should be retrieved from the opened file handle
     /// to ensure this.
     pub(crate) fn new_with_metadata(
-        path: impl AsRef<Path>,
         file: std::fs::File,
         metadata: &::std::fs::Metadata,
         headers: HeaderMap,
     ) -> Result<Self, ServeFilesError> {
-        if !metadata.is_file() {
-            return Err(ServeFilesError::NotAFile(path.as_ref().to_path_buf()));
-        }
-
+        debug_assert!(metadata.is_file());
         let info = platform::file_info(&file, metadata).map_err(ServeFilesError::IOError)?;
         let etag: ETag = ETAG_CACHE
             .get_or_try_insert_with(info, |_info| ETag::from_file(&file))
