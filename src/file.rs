@@ -105,9 +105,6 @@ where
         metadata: &::std::fs::Metadata,
         headers: HeaderMap,
     ) -> Result<Self, ServeFilesError> {
-        // `file` might represent a directory. If so, it's better to realize that now (while
-        // we can still send a proper HTTP error) rather than during `get_range` (when all we can
-        // do is drop the HTTP connection).
         if !metadata.is_file() {
             return Err(ServeFilesError::NotAFile(path.as_ref().to_path_buf()));
         }

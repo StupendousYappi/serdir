@@ -173,6 +173,11 @@ impl ServedDir {
         supported: crate::CompressionSupport,
     ) -> Result<Node, ServeFilesError> {
         let try_path = |p: &Path, encoding: ContentEncoding| -> Result<Node, ServeFilesError> {
+            // we want to read the file metadata from the open file handle, rather than calling
+            // `std::fs::metadata` on the path, to guarantee that the metadata and the file contents
+            // are consistent (otherwise, if the file is modified, there could be a race condition
+            // that causes a mismatch between etag values and file contents, which could cause corrupt
+            // behavior for clients)
             match File::open(p) {
                 Ok(file) => {
                     let metadata = file.metadata().map_err(ServeFilesError::IOError)?;
@@ -590,6 +595,85 @@ mod tests {
             "public, max-age=3600"
         );
         assert_eq!(e.header(&header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(), "*");
+        assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/plain");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_unexpected_br_path() {
+        let context = TestContext::new();
+        let path = context.tmp.path();
+
+        // Create the raw file
+        context.write_file("test.txt", "raw content");
+
+        // Create a directory where the .br file is expected
+        std::fs::create_dir(path.join("test.txt.br")).unwrap();
+
+        let served_dir = context.builder.build();
+        let mut hdrs = HeaderMap::new();
+        hdrs.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("br"));
+
+        // Should ignore the directory and serve the raw file
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert!(e.header(&header::CONTENT_ENCODING).is_none());
+        assert_eq!(e.read_body().await.unwrap(), "raw content");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_unexpected_gz_path() {
+        let context = TestContext::new();
+        let path = context.tmp.path();
+
+        // Create the raw file
+        context.write_file("test.txt", "raw content");
+
+        // Create a directory where the .gz file is expected
+        std::fs::create_dir(path.join("test.txt.gz")).unwrap();
+
+        let served_dir = context.builder.build();
+        let mut hdrs = HeaderMap::new();
+        hdrs.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
+
+        // Should ignore the directory and serve the raw file
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert!(e.header(&header::CONTENT_ENCODING).is_none());
+        assert_eq!(e.read_body().await.unwrap(), "raw content");
+    }
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_get_directory() {
+        let context = TestContext::new();
+        let path = context.tmp.path();
+        std::fs::create_dir(path.join("subdir")).unwrap();
+
+        let served_dir = context.builder.build();
+        let hdrs = HeaderMap::new();
+
+        let err = served_dir.get("subdir", &hdrs).await.unwrap_err();
+        assert!(matches!(err, ServeFilesError::NotAFile(_)));
+        if let ServeFilesError::NotAFile(err_path) = err {
+            assert_eq!(err_path, path.join("subdir"));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg(unix)]
+    async fn test_served_dir_symlink() {
+        use std::os::unix::fs::symlink;
+        let context = TestContext::new();
+        let path = context.tmp.path();
+
+        // Create the raw file
+        context.write_file("target.txt", "target content");
+
+        // Create a symlink pointing to the target file
+        symlink(path.join("target.txt"), path.join("link.txt")).unwrap();
+
+        let served_dir = context.builder.build();
+        let hdrs = HeaderMap::new();
+
+        // Should follow the symlink and serve the target file
+        let e = served_dir.get("link.txt", &hdrs).await.unwrap();
+        assert_eq!(e.read_body().await.unwrap(), "target content");
         assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/plain");
     }
 }
