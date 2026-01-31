@@ -59,13 +59,10 @@ impl ServedDir {
         } else {
             crate::CompressionSupport::None
         };
-        let auto_compress = self.auto_compress;
         let content_type: HeaderValue = self.get_content_type(&full_path);
 
         let node: Node = tokio::task::spawn_blocking(move || -> Result<Node, ServeFilesError> {
-            let mut node =
-                Self::find_file(&full_path, preferred)?.ok_or(ServeFilesError::NotFound)?;
-            node.auto_compress = auto_compress;
+            let node = Self::find_file(&full_path, preferred)?.ok_or(ServeFilesError::NotFound)?;
             Ok(node)
         })
         .await
@@ -75,8 +72,16 @@ impl ServedDir {
 
         let mut headers = self.common_headers.clone();
         headers.insert(http::header::CONTENT_TYPE, content_type);
-        let e = node.into_file_entity(headers)?;
-        Ok(e)
+
+        // Add `Content-Encoding` and `Vary` headers for the encoding to `hdrs`.
+        if let Some(value) = node.content_encoding.get_header_value() {
+            headers.insert(header::CONTENT_ENCODING, value);
+        }
+        if self.auto_compress {
+            headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+        }
+
+        node.into_file_entity(headers)
     }
 
     fn get_content_type(&self, path: &Path) -> HeaderValue {
@@ -175,18 +180,12 @@ impl ServedDir {
                 match File::open(p) {
                     Ok(file) => {
                         let metadata = file.metadata().map_err(ServeFilesError::IOError)?;
-                        // TODO: simplify this, I think we want to fail with NotAFile earlier, and can trust that path is a file
-                        // if we get here
-                        if metadata.is_file()
-                            || (matches!(encoding, ContentEncoding::Identity) && metadata.is_dir())
-                        {
-                            return Ok(Some(Node {
-                                path: p.to_path_buf(),
-                                metadata,
-                                auto_compress: false, // will be set by caller
-                                content_encoding: encoding,
-                            }));
-                        }
+                        return Ok(Some(Node {
+                            path: p.to_path_buf(),
+                            file,
+                            metadata,
+                            content_encoding: encoding,
+                        }));
                     }
                     Err(ref e) if e.kind() == ErrorKind::NotFound => {}
                     Err(e) => return Err(ServeFilesError::IOError(e)),
@@ -353,7 +352,7 @@ impl ContentEncoding {
 struct Node {
     path: PathBuf,
     metadata: std::fs::Metadata,
-    auto_compress: bool,
+    file: File,
     content_encoding: ContentEncoding,
 }
 
@@ -363,7 +362,7 @@ impl Node {
     /// may be useful.
     fn into_file_entity<D, E>(
         self,
-        mut headers: HeaderMap,
+        headers: HeaderMap,
     ) -> Result<crate::file::FileEntity<D, E>, ServeFilesError>
     where
         D: 'static + Send + Sync + bytes::Buf + From<Vec<u8>> + From<&'static [u8]>,
@@ -373,19 +372,7 @@ impl Node {
             + Into<Box<dyn std::error::Error + Send + Sync>>
             + From<Box<dyn std::error::Error + Send + Sync>>,
     {
-        if !self.metadata.is_file() {
-            return Err(ServeFilesError::NotAFile(self.path));
-        }
-
-        // Add `Content-Encoding` and `Vary` headers for the encoding to `hdrs`.
-        if let Some(val) = self.content_encoding.get_header_value() {
-            headers.insert(header::CONTENT_ENCODING, val);
-        }
-        if self.auto_compress {
-            headers.insert(header::VARY, HeaderValue::from_static("accept-encoding"));
-        }
-
-        crate::file::FileEntity::new_with_metadata(&self.path, &self.metadata, headers)
+        FileEntity::new_with_metadata(&self.path, self.file, &self.metadata, headers)
     }
 }
 

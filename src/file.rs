@@ -15,6 +15,7 @@ use futures_util::stream;
 use http::header::{HeaderMap, HeaderValue};
 use http::HeaderName;
 use std::error::Error as StdError;
+use std::fs::File;
 use std::io;
 use std::ops::Range;
 use std::path::Path;
@@ -80,17 +81,24 @@ where
     /// should be wrapped in [`tokio::task::block_in_place`] as well.
     pub fn new(path: impl AsRef<Path>, headers: HeaderMap) -> Result<Self, ServeFilesError> {
         let path = path.as_ref();
-        let m = std::fs::metadata(path)?;
-        FileEntity::new_with_metadata(path, &m, headers)
+        let file = File::open(path)?;
+        let m = file.metadata()?;
+        FileEntity::new_with_metadata(path, file, &m, headers)
     }
 
-    /// Creates a new FileEntity, with presupplied metadata.
+    /// Creates a new FileEntity, with presupplied metadata and a pre-opened file.
     ///
-    /// This is an optimization for the case where the caller has already called `fstat(2)`.
-    /// Note that on Windows, this still may perform a blocking file operation, so it should
-    /// still be wrapped in [`tokio::task::block_in_place`].
+    /// This is an optimization for the case where the caller has already opened
+    /// the file and read the metadata from the opened file handle.  Note that
+    /// on Windows, this still may perform a blocking file operation, so it
+    /// should still be wrapped in [`tokio::task::block_in_place`].
+    ///
+    /// It is the caller's responsibility to ensure that the the path, file and metadata all
+    /// refer to the same file- the metadata should be retrieved from the opened file handle
+    /// to ensure this.
     pub(crate) fn new_with_metadata(
         path: impl AsRef<Path>,
+        file: std::fs::File,
         metadata: &::std::fs::Metadata,
         headers: HeaderMap,
     ) -> Result<Self, ServeFilesError> {
@@ -100,7 +108,6 @@ where
         if !metadata.is_file() {
             return Err(ServeFilesError::NotAFile(path.as_ref().to_path_buf()));
         }
-        let file = std::fs::File::open(path).map_err(ServeFilesError::IOError)?;
 
         let info = platform::file_info(&file, metadata).map_err(ServeFilesError::IOError)?;
         let etag: ETag = ETAG_CACHE
