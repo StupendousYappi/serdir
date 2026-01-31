@@ -15,9 +15,9 @@ use futures_util::stream;
 use http::header::{HeaderMap, HeaderValue};
 use http::HeaderName;
 use std::error::Error as StdError;
-use std::fmt::Display;
 use std::io;
 use std::ops::Range;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -42,10 +42,9 @@ static CHUNK_SIZE: u64 = 65_536;
 /// async fn serve_dictionary(req: Request<hyper::body::Incoming>) -> Result<Response<serve_files::Body>, BoxError> {
 ///     let f = tokio::task::block_in_place::<_, Result<_, BoxError>>(
 ///         move || {
-///             let f = std::fs::File::open("/usr/share/dict/words")?;
 ///             let mut headers = http::header::HeaderMap::new();
 ///             headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
-///             Ok(serve_files::FileEntity::new(f, headers)?)
+///             Ok(serve_files::FileEntity::new("/usr/share/dict/words", headers)?)
 ///         },
 ///     )?;
 ///     Ok(serve_files::serve(f, &req))
@@ -79,9 +78,10 @@ where
     /// block the tokio reactor thread on local disk I/O. Note that [`std::fs::File::open`] and
     /// this constructor (specifically, its call to `fstat(2)`) may also block, so they typically
     /// should be wrapped in [`tokio::task::block_in_place`] as well.
-    pub fn new(file: std::fs::File, headers: HeaderMap) -> Result<Self, io::Error> {
-        let m = file.metadata()?;
-        FileEntity::new_with_metadata(file, &m, headers)
+    pub fn new(path: impl AsRef<Path>, headers: HeaderMap) -> Result<Self, io::Error> {
+        let path = path.as_ref();
+        let m = std::fs::metadata(path)?;
+        FileEntity::new_with_metadata(path, &m, headers)
     }
 
     /// Creates a new FileEntity, with presupplied metadata.
@@ -90,7 +90,7 @@ where
     /// Note that on Windows, this still may perform a blocking file operation, so it should
     /// still be wrapped in [`tokio::task::block_in_place`].
     pub(crate) fn new_with_metadata(
-        file: ::std::fs::File,
+        path: impl AsRef<Path>,
         metadata: &::std::fs::Metadata,
         headers: HeaderMap,
     ) -> Result<Self, io::Error> {
@@ -100,6 +100,7 @@ where
         if !metadata.is_file() {
             return Err(io::Error::new(io::ErrorKind::Other, "expected a file"));
         }
+        let file = std::fs::File::open(path)?;
 
         let info = platform::file_info(&file, metadata)?;
         let etag: ETag = ETAG_CACHE.get_or_try_insert_with(info, |_info| ETag::from_file(&file))?;
@@ -254,7 +255,7 @@ mod tests {
             f.write_all(b"asdf").unwrap();
             let mut headers = HeaderMap::new();
             headers.insert(http::header::CONTENT_TYPE, "text/plain".parse().unwrap());
-            let crf1 = CRF::new(File::open(&p).unwrap(), headers).unwrap();
+            let crf1 = CRF::new(&p, headers).unwrap();
             assert_eq!(4, crf1.len());
             assert_eq!(
                 Some("text/plain"),
@@ -275,7 +276,7 @@ mod tests {
 
             // A FileEntity constructed from a modified file should have a different etag.
             f.write_all(b"jkl;").unwrap();
-            let crf2 = CRF::new(File::open(&p).unwrap(), HeaderMap::new()).unwrap();
+            let crf2 = CRF::new(&p, HeaderMap::new()).unwrap();
             assert_eq!(8, crf2.len());
         })
         .await
@@ -290,7 +291,7 @@ mod tests {
             let mut f = File::create(&p).unwrap();
 
             f.write_all(b"first value").unwrap();
-            let crf1 = CRF::new(File::open(&p).unwrap(), HeaderMap::new()).unwrap();
+            let crf1 = CRF::new(&p, HeaderMap::new()).unwrap();
             let etag1 = crf1.etag().expect("etag1 was None");
             assert_eq!(r#""928c5c44c1689e3f""#, etag1.to_str().unwrap());
 
@@ -298,7 +299,7 @@ mod tests {
             f.set_len(0).unwrap();
 
             f.write_all(b"another value").unwrap();
-            let crf2 = CRF::new(File::open(&p).unwrap(), HeaderMap::new()).unwrap();
+            let crf2 = CRF::new(&p, HeaderMap::new()).unwrap();
             let etag2 = crf2.etag().expect("etag2 was None");
             assert_eq!(r#""d712812bea51c2cf""#, etag2.to_str().unwrap());
 
@@ -320,14 +321,14 @@ mod tests {
             let mut f = File::create(&p).unwrap();
             f.write_all(b"blahblah").unwrap();
 
-            let crf1 = CRF::new(File::open(&p).unwrap(), HeaderMap::new()).unwrap();
+            let crf1 = CRF::new(&p, HeaderMap::new()).unwrap();
             let expected = f.metadata().unwrap().modified().ok();
             assert_eq!(expected, crf1.last_modified());
 
             let t = SystemTime::UNIX_EPOCH + Duration::from_hours(50);
             f.set_modified(t).unwrap();
 
-            let crf2 = CRF::new(File::open(&p).unwrap(), HeaderMap::new()).unwrap();
+            let crf2 = CRF::new(&p, HeaderMap::new()).unwrap();
             assert_eq!(Some(t), crf2.last_modified());
 
             assert_eq!(
@@ -348,7 +349,7 @@ mod tests {
             let mut f = File::create(&p).unwrap();
             f.write_all(b"asdf").unwrap();
 
-            let crf = CRF::new(File::open(&p).unwrap(), HeaderMap::new()).unwrap();
+            let crf = CRF::new(&p, HeaderMap::new()).unwrap();
             assert_eq!(4, crf.len());
             f.set_len(3).unwrap();
 

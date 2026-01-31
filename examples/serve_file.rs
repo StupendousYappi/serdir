@@ -42,13 +42,12 @@ async fn serve(
 ) -> Result<Response<serve_files::Body>, BoxError> {
     let f = tokio::task::block_in_place::<_, Result<FileEntity<Bytes, BoxError>, BoxError>>(
         move || {
-            let f = std::fs::File::open(&ctx.path)?;
             let mut headers = HeaderMap::new();
             headers.insert(
                 header::CONTENT_TYPE,
                 HeaderValue::from_static("application/octet-stream"),
             );
-            Ok(FileEntity::new(f, headers)?)
+            Ok(FileEntity::new(&ctx.path, headers)?)
         },
     )?;
     Ok(serve_files::serve(f, &req))

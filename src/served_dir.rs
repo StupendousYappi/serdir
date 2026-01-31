@@ -367,11 +367,6 @@ struct Node {
 }
 
 impl Node {
-    /// Converts this node to a `std::fs::File`.
-    fn into_file(self) -> Result<std::fs::File, IOError> {
-        File::open(&self.path)
-    }
-
     /// Converts this node (which must represent a plain file) into a `FileEntity`.
     /// The caller is expected to supply all headers. The function `add_encoding_headers`
     /// may be useful.
@@ -399,18 +394,7 @@ impl Node {
             headers.insert(header::VARY, HeaderValue::from_static("accept-encoding"));
         }
 
-        let file = File::open(&self.path)?;
-        crate::file::FileEntity::new_with_metadata(file, &self.metadata, headers)
-    }
-
-    /// Returns the (already fetched) metadata for this node.
-    fn metadata(&self) -> &std::fs::Metadata {
-        &self.metadata
-    }
-
-    /// Returns true iff the content varies with the request's `Accept-Encoding` header value.
-    fn encoding_varies(&self) -> bool {
-        self.auto_compress
+        crate::file::FileEntity::new_with_metadata(&self.path, &self.metadata, headers)
     }
 }
 

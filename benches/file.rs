@@ -26,9 +26,9 @@ async fn serve(
     req: Request<hyper::body::Incoming>,
 ) -> Result<Response<serve_files::Body<Bytes, BoxError>>, BoxError> {
     let f = tokio::task::block_in_place::<_, Result<_, BoxError>>(move || {
-        let f = std::fs::File::open(&*PATH.lock().unwrap())?;
+        let path = PATH.lock().unwrap();
         let headers = http::header::HeaderMap::new();
-        Ok(serve_files::FileEntity::new(f, headers)?)
+        Ok(serve_files::FileEntity::new(&*path, headers)?)
     })?;
     Ok(serve_files::serve(f, &req))
 }
