@@ -15,6 +15,7 @@ use futures_util::stream;
 use http::header::{HeaderMap, HeaderValue};
 use http::HeaderName;
 use std::error::Error as StdError;
+use std::fmt::Display;
 use std::io;
 use std::ops::Range;
 use std::pin::Pin;

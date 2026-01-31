@@ -2,6 +2,8 @@
 
 use std::{
     collections::HashMap,
+    error::Error,
+    fmt::Display,
     fs::File,
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -13,8 +15,9 @@ use std::io::Error as IOError;
 
 use crate::{BoxError, FileEntity};
 
-/// Provides servable `FileEntity` values for file paths within a directory.
+/// Returns `FileEntity` values for file paths within a directory.
 pub struct ServedDir {
+    /// Provides servable `FileEntity` values for file paths within a directory.
     auto_compress: bool,
     dirpath: PathBuf,
     strip_prefix: Option<String>,
@@ -176,9 +179,13 @@ impl ServedDir {
             match File::open(p) {
                 Ok(file) => {
                     let metadata = file.metadata()?;
-                    if metadata.is_file() {
+                    // TODO: simplify this, I think we want to fail with NotAFile earlier, and can trust that path is a file
+                    // if we get here
+                    if metadata.is_file()
+                        || (matches!(encoding, ContentEncoding::Identity) && metadata.is_dir())
+                    {
                         return Ok(Some(Node {
-                            file,
+                            path: p.to_path_buf(),
                             metadata,
                             auto_compress: false, // will be set by caller
                             content_encoding: encoding,
@@ -333,6 +340,18 @@ impl ContentEncoding {
     }
 }
 
+/// Error returned when creating a `FileEntity` for a path that is not a file.
+#[derive(Debug)]
+pub struct NotAFile(pub PathBuf);
+
+impl Display for NotAFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Path is not a file: {}", self.0.display())
+    }
+}
+
+impl Error for NotAFile {}
+
 /// An opened path (aka inode on Unix) as returned by `FsDir::open`.
 ///
 /// This is not necessarily a plain file; it could also be a directory, for example.
@@ -341,7 +360,7 @@ impl ContentEncoding {
 /// `into_file()` to `nix::dir::Dir::from`. If it is a plain file, the caller might create an
 /// `serve_files::Entity` with `into_file_entity()`.
 pub struct Node {
-    file: std::fs::File,
+    path: PathBuf,
     metadata: std::fs::Metadata,
     auto_compress: bool,
     content_encoding: ContentEncoding,
@@ -349,8 +368,8 @@ pub struct Node {
 
 impl Node {
     /// Converts this node to a `std::fs::File`.
-    pub fn into_file(self) -> std::fs::File {
-        self.file
+    pub fn into_file(self) -> Result<std::fs::File, IOError> {
+        File::open(&self.path)
     }
 
     /// Converts this node (which must represent a plain file) into a `FileEntity`.
@@ -368,6 +387,10 @@ impl Node {
             + Into<Box<dyn std::error::Error + Send + Sync>>
             + From<Box<dyn std::error::Error + Send + Sync>>,
     {
+        if !self.metadata.is_file() {
+            return Err(IOError::new(ErrorKind::Other, NotAFile(self.path)));
+        }
+
         // Add `Content-Encoding` and `Vary` headers for the encoding to `hdrs`.
         if let Some(val) = self.content_encoding.get_header_value() {
             headers.insert(header::CONTENT_ENCODING, val);
@@ -376,7 +399,8 @@ impl Node {
             headers.insert(header::VARY, HeaderValue::from_static("accept-encoding"));
         }
 
-        crate::file::FileEntity::new_with_metadata(self.file, &self.metadata, headers)
+        let file = File::open(&self.path)?;
+        crate::file::FileEntity::new_with_metadata(file, &self.metadata, headers)
     }
 
     /// Returns the (already fetched) metadata for this node.

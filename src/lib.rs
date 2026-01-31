@@ -75,7 +75,6 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 mod body;
 
-pub mod dir;
 pub mod served_dir;
 
 mod compression;
