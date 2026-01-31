@@ -125,7 +125,7 @@ where
     }
 
     /// Returns the value of the header with the given name, if it exists.
-    pub(crate) fn header(&self, name: &HeaderName) -> Option<&HeaderValue> {
+    pub fn header(&self, name: &HeaderName) -> Option<&HeaderValue> {
         self.headers.get(name)
     }
 }

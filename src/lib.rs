@@ -38,6 +38,8 @@
 
 use bytes::Buf;
 use futures_core::Stream;
+#[cfg(test)]
+use futures_util::StreamExt as _;
 use http::header::{HeaderMap, HeaderValue};
 use std::error::Error;
 use std::fmt::Display;
@@ -47,11 +49,6 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::SystemTime;
-#[cfg(test)]
-use {
-    bytes::{Bytes, BytesMut},
-    futures_util::StreamExt,
-};
 
 /// Returns a HeaderValue for the given formatted data.
 /// Caller must make two guarantees:
@@ -206,12 +203,15 @@ pub trait Entity: 'static + Send + Sync {
     ///
     /// This is a convenience method for testing and debugging.
     #[cfg(test)]
-    async fn read_body(&self) -> Result<Bytes, Self::Error>
+    #[allow(async_fn_in_trait)]
+    async fn read_body(&self) -> Result<bytes::Bytes, Self::Error>
     where
         Self: Sized,
     {
+        use futures_util::StreamExt;
+
         let chunks = self.get_range(0..self.len()).collect::<Vec<_>>().await;
-        let mut bytes = BytesMut::new();
+        let mut bytes = bytes::BytesMut::new();
         for chunk in chunks {
             match chunk {
                 Ok(chunk) => bytes.extend_from_slice(chunk.chunk()),
@@ -221,5 +221,3 @@ pub trait Entity: 'static + Send + Sync {
         Ok(bytes.freeze())
     }
 }
-
-// streaming_body and related types removed.
