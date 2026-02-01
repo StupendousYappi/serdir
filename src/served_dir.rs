@@ -106,11 +106,11 @@ impl ServedDir {
             "htm" => Some("text/html"),
             "hxt" => Some("text/html"),
             "css" => Some("text/css"),
-            "js" => Some("application/javascript"),
-            "es" => Some("application/javascript"),
-            "ecma" => Some("application/javascript"),
-            "jsm" => Some("application/javascript"),
-            "jsx" => Some("application/javascript"),
+            "js" => Some("text/javascript"),
+            "es" => Some("text/javascript"),
+            "ecma" => Some("text/javascript"),
+            "jsm" => Some("text/javascript"),
+            "jsx" => Some("text/javascript"),
             "png" => Some("image/png"),
             "apng" => Some("image/apng"),
             "avif" => Some("image/avif"),
@@ -442,10 +442,7 @@ mod tests {
         assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/css");
 
         let e = served_dir.get("script.js", &hdrs).await.unwrap();
-        assert_eq!(
-            e.header(&header::CONTENT_TYPE).unwrap(),
-            "application/javascript"
-        );
+        assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/javascript");
 
         let e = served_dir.get("image.webp", &hdrs).await.unwrap();
         assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "image/webp");
