@@ -33,7 +33,7 @@ struct FakeEntity {
 
 impl serve_files::Entity for &'static FakeEntity {
     type Data = bytes::Bytes;
-    type Error = Box<dyn std::error::Error + Send + Sync>;
+    type Error = std::io::Error;
 
     fn len(&self) -> u64 {
         BODY.len() as u64
@@ -60,9 +60,7 @@ impl serve_files::Entity for &'static FakeEntity {
     }
 }
 
-async fn serve(
-    req: Request<hyper::body::Incoming>,
-) -> Result<Response<Body<Bytes, BoxError>>, BoxError> {
+async fn serve(req: Request<hyper::body::Incoming>) -> Result<Response<Body<Bytes>>, BoxError> {
     let entity: &'static FakeEntity = match req.uri().path() {
         "/none" => &*ENTITY_NO_ETAG,
         "/strong" => &*ENTITY_STRONG_ETAG,

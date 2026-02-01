@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::compression::{CompressionStrategy, CompressionSupport, MatchedFile};
-use crate::{BoxError, FileEntity, ServeFilesError};
+use crate::{FileEntity, ServeFilesError};
 use bytes::Bytes;
 use http::{header, HeaderMap, HeaderValue};
 use std::io::Error as IOError;
@@ -45,7 +45,7 @@ impl ServedDir {
         &self,
         path: &str,
         req_hdrs: &HeaderMap,
-    ) -> Result<FileEntity<Bytes, BoxError>, ServeFilesError> {
+    ) -> Result<FileEntity<Bytes>, ServeFilesError> {
         let path = match self.strip_prefix.as_deref() {
             Some(prefix) => path.strip_prefix(prefix).ok_or(ServeFilesError::NotFound)?,
             None => path,

@@ -10,7 +10,6 @@ use super::Entity;
 use crate::body::Body;
 use crate::etag;
 use crate::range;
-use crate::BoxError;
 use bytes::Buf;
 use futures_util::stream::StreamExt as _;
 use http::header::{self, HeaderMap, HeaderValue};
@@ -69,10 +68,10 @@ fn parse_modified_hdrs(
 /// Handles conditional & subrange requests.
 /// The caller is expected to have already determined the correct entity and appended
 /// `Expires`, `Cache-Control`, and `Vary` headers if desired.
-pub fn serve<Ent: Entity, BI>(
+pub fn serve<Ent: Entity<Error = crate::IOError>, BI>(
     entity: Ent,
     req: &Request<BI>,
-) -> Response<Body<Ent::Data, Ent::Error>> {
+) -> Response<Body<Ent::Data>> {
     // serve takes entity itself for ownership, as needed for the multipart case. But to avoid
     // monomorphization code bloat when there are many implementations of Entity<Data, Error>,
     // delegate as much as possible to functions which take a reference to a trait object.
@@ -94,8 +93,8 @@ pub fn serve<Ent: Entity, BI>(
 }
 
 /// An instruction from `serve_inner` to `serve` on how to respond.
-enum ServeInner<D, E> {
-    Simple(Response<Body<D, E>>),
+enum ServeInner<D> {
+    Simple(Response<Body<D>>),
     Multipart {
         res: http::response::Builder,
         part_headers: Vec<Vec<u8>>,
@@ -105,14 +104,11 @@ enum ServeInner<D, E> {
 }
 
 /// Runs trait object-based inner logic for `serve`.
-fn serve_inner<
-    D: 'static + Buf + From<Vec<u8>> + From<&'static [u8]>,
-    E: 'static + From<BoxError>,
->(
-    ent: &dyn Entity<Error = E, Data = D>,
+fn serve_inner<D: 'static + Buf + From<Vec<u8>> + From<&'static [u8]>>(
+    ent: &dyn Entity<Error = crate::IOError, Data = D>,
     method: &http::Method,
     req_hdrs: &http::HeaderMap,
-) -> ServeInner<D, E> {
+) -> ServeInner<D> {
     if method != Method::GET && method != Method::HEAD {
         return ServeInner::Simple(
             Response::builder()
@@ -348,9 +344,9 @@ fn prepare_multipart(
     Ok((res, part_headers, body_len))
 }
 
-pub(crate) struct MultipartStream<D, E> {
+pub(crate) struct MultipartStream<D> {
     /// The current part's body stream, set in "send body" state.
-    cur: Option<crate::body::ExactLenStream<D, E>>,
+    cur: Option<crate::body::ExactLenStream<D>>,
 
     /// Current state:
     ///
@@ -361,13 +357,13 @@ pub(crate) struct MultipartStream<D, E> {
     state: usize,
     part_headers: Vec<Vec<u8>>,
     ranges: Vec<std::ops::Range<u64>>,
-    entity: Box<dyn Entity<Data = D, Error = E>>,
+    entity: Box<dyn Entity<Data = D, Error = crate::IOError>>,
     remaining: u64,
 }
 
-impl<D, E> MultipartStream<D, E> {
+impl<D> MultipartStream<D> {
     pub(crate) fn new(
-        entity: Box<dyn Entity<Data = D, Error = E>>,
+        entity: Box<dyn Entity<Data = D, Error = crate::IOError>>,
         part_headers: Vec<Vec<u8>>,
         ranges: Vec<std::ops::Range<u64>>,
         len: u64,
@@ -390,12 +386,11 @@ impl<D, E> MultipartStream<D, E> {
 /// The trailer after all `multipart/byteranges` body parts.
 const PART_TRAILER: &[u8] = b"\r\n--B--\r\n";
 
-impl<D, E> futures_core::Stream for MultipartStream<D, E>
+impl<D> futures_core::Stream for MultipartStream<D>
 where
     D: 'static + Buf + From<Vec<u8>> + From<&'static [u8]>,
-    E: 'static + From<BoxError>,
 {
-    type Item = Result<D, E>;
+    type Item = Result<D, crate::IOError>;
 
     fn poll_next(
         self: Pin<&mut Self>,

@@ -7,7 +7,6 @@
 // except according to those terms.
 
 use http::header::{self, HeaderMap, HeaderValue};
-use std::collections::HashSet;
 use std::fs::{File, Metadata};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -245,17 +244,12 @@ impl MatchedFile {
     /// Converts this MatchedFile (which must represent a plain file) into a `FileEntity`.
     /// The caller is expected to supply all headers. The function `add_encoding_headers`
     /// may be useful.
-    pub(crate) fn into_file_entity<D, E>(
+    pub(crate) fn into_file_entity<D>(
         self,
         headers: HeaderMap,
-    ) -> Result<FileEntity<D, E>, ServeFilesError>
+    ) -> Result<FileEntity<D>, ServeFilesError>
     where
         D: 'static + Send + Sync + bytes::Buf + From<Vec<u8>> + From<&'static [u8]>,
-        E: 'static
-            + Send
-            + Sync
-            + Into<Box<dyn std::error::Error + Send + Sync>>
-            + From<Box<dyn std::error::Error + Send + Sync>>,
     {
         FileEntity::new_with_metadata(self.file, &self.metadata, headers)
     }

@@ -17,7 +17,7 @@ use http::header::HeaderValue;
 use http::{Request, Response};
 use hyper_util::rt::TokioIo;
 use once_cell::sync::Lazy;
-use serve_files::BoxError;
+use serve_files::Body;
 use std::convert::TryInto;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr};
@@ -32,7 +32,7 @@ struct BytesEntity(Bytes);
 
 impl serve_files::Entity for BytesEntity {
     type Data = Bytes;
-    type Error = BoxError;
+    type Error = std::io::Error;
 
     fn len(&self) -> u64 {
         self.0.len() as u64
@@ -61,9 +61,9 @@ impl serve_files::Entity for BytesEntity {
     }
 }
 
-type Body = serve_files::Body;
+// type Body = serve_files::Body;
 
-async fn serve(req: Request<hyper::body::Incoming>) -> Result<Response<Body>, BoxError> {
+async fn serve(req: Request<hyper::body::Incoming>) -> Result<Response<Body>, std::io::Error> {
     let path = req.uri().path();
     let resp = match path.as_bytes()[1] {
         b's' => {

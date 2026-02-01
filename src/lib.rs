@@ -152,7 +152,7 @@ pub trait Entity: 'static + Send + Sync {
     /// Note that errors returned directly from the body to `hyper` just drop
     /// the stream abruptly without being logged. Callers might use an
     /// intermediary service for better observability.
-    type Error: 'static + From<BoxError>;
+    type Error: 'static + Send + Sync;
 
     /// The type of a data chunk.
     ///
