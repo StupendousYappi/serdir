@@ -235,7 +235,28 @@ impl Debug for BrotliCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use std::{collections::HashSet, io::Read};
+
+    static CAT_PHOTO_BYTES: &[u8] = include_bytes!("test-resources/cat.jpg");
+
+    /// Reads the contents of a file, optionally decompressing it if it's a brotli file.
+    fn read_bytes(f: &File, decompress: bool) -> Vec<u8> {
+        use std::io::{Seek, SeekFrom};
+        let mut f = f;
+        f.seek(SeekFrom::Start(0))
+            .expect("Failed to seek to beginning");
+        let mut raw_bytes = Vec::new();
+        if decompress {
+            let mut input = brotli::Decompressor::new(f, 4096);
+            let _ = input
+                .read_to_end(&mut raw_bytes)
+                .expect("Failed to decompress file");
+        } else {
+            let mut f = f;
+            f.read_to_end(&mut raw_bytes).expect("Failed to read file");
+        }
+        raw_bytes
+    }
 
     #[test]
     fn test_brotli_cache_builder_defaults() {
@@ -291,5 +312,69 @@ mod tests {
             .build();
 
         assert_eq!(cache.params.quality, 1);
+    }
+
+    #[test]
+    fn test_simple_compression() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.html");
+        let content = "<html><body><h1>Hello World</h1></body></html>";
+        {
+            let mut f = File::create(&path).unwrap();
+            f.write_all(content.as_bytes()).unwrap();
+        }
+
+        let cache = BrotliCache::builder().compression_level(1).build();
+
+        let matched = cache.get(&path).expect("Failed to get file from cache");
+
+        assert!(matches!(matched.content_encoding, ContentEncoding::Brotli));
+
+        // Verify FileInfo
+        let orig_info = crate::FileInfo::for_path(&path).unwrap();
+        assert_eq!(matched.file_info.len(), orig_info.len());
+        assert_eq!(matched.file_info.mtime(), orig_info.mtime());
+
+        // Verify decompressed content
+        let decompressed = read_bytes(&matched.file, true);
+        assert_eq!(decompressed, content.as_bytes());
+
+        // Verify second call returns cached version
+        let matched2 = cache
+            .get(&path)
+            .expect("Failed to get file from cache second time");
+        assert_eq!(matched2.file_info.mtime(), matched.file_info.mtime());
+    }
+
+    #[test]
+    fn test_skip_compression() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.jpg");
+        {
+            let mut f = File::create(&path).unwrap();
+            f.write_all(CAT_PHOTO_BYTES).unwrap();
+        }
+
+        // Initialize with default text types, which should NOT include jpg
+        let cache = BrotliCache::builder().build();
+
+        let matched = cache.get(&path).expect("Failed to get file from cache");
+
+        // JPG should skip compression
+        assert!(matches!(
+            matched.content_encoding,
+            ContentEncoding::Identity
+        ));
+
+        // Verify FileInfo
+        let orig_info = crate::FileInfo::for_path(&path).unwrap();
+        assert_eq!(matched.file_info.len(), orig_info.len());
+        assert_eq!(matched.file_info.mtime(), orig_info.mtime());
+
+        // Verify content
+        let bytes = read_bytes(&matched.file, false);
+        assert_eq!(bytes, CAT_PHOTO_BYTES);
     }
 }
