@@ -7,7 +7,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use crate::platform::{self, FileExt, FileInfo};
+use crate::platform::FileExt;
+use crate::FileInfo;
 use bytes::Buf;
 use fixed_cache::{static_cache, Cache};
 use futures_core::Stream;
@@ -50,7 +51,7 @@ static CHUNK_SIZE: u64 = 65_536;
 ///     Ok(serve_files::serve(f, &req))
 /// }
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FileEntity<D: 'static + Send + Buf + From<Vec<u8>> + From<&'static [u8]>> {
     len: u64,
     mtime: SystemTime,
@@ -73,11 +74,11 @@ where
     pub fn new(path: impl AsRef<Path>, headers: HeaderMap) -> Result<Self, ServeFilesError> {
         let path = path.as_ref();
         let file = File::open(&path)?;
-        let metadata = file.metadata()?;
-        if !metadata.is_file() {
+        let file_info = crate::FileInfo::new(path, &file)?;
+        if !file_info.is_file() {
             return Err(ServeFilesError::NotAFile(path.to_path_buf()));
         }
-        FileEntity::new_with_metadata(file, &metadata, headers)
+        FileEntity::new_with_metadata(Arc::new(file), file_info, headers)
     }
 
     /// Creates a new FileEntity, with presupplied metadata and a pre-opened file.
@@ -91,21 +92,19 @@ where
     /// refer to the same file- the metadata should be retrieved from the opened file handle
     /// to ensure this.
     pub(crate) fn new_with_metadata(
-        file: std::fs::File,
-        metadata: &::std::fs::Metadata,
+        file: Arc<std::fs::File>,
+        file_info: crate::FileInfo,
         headers: HeaderMap,
     ) -> Result<Self, ServeFilesError> {
-        debug_assert!(metadata.is_file());
-        let info = platform::file_info(&file, metadata).map_err(ServeFilesError::IOError)?;
-        let etag: ETag = ETAG_CACHE
-            .get_or_try_insert_with(info, |_info| ETag::from_file(&file))
-            .map_err(ServeFilesError::IOError)?;
+        debug_assert!(file_info.is_file());
+        let etag: ETag =
+            ETAG_CACHE.get_or_try_insert_with(file_info, |_info| ETag::from_file(&file))?;
 
         Ok(FileEntity {
-            len: info.len,
-            mtime: info.mtime,
+            len: file_info.len(),
+            mtime: file_info.mtime(),
             headers,
-            f: Arc::new(file),
+            f: file,
             etag,
             phantom: std::marker::PhantomData,
         })
@@ -114,6 +113,11 @@ where
     /// Returns the value of the header with the given name, if it exists.
     pub fn header(&self, name: &HeaderName) -> Option<&HeaderValue> {
         self.headers.get(name)
+    }
+
+    /// Returns the size of the file.
+    pub fn size(&self) -> u64 {
+        self.len
     }
 }
 

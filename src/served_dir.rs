@@ -4,9 +4,13 @@ use std::{
     collections::HashMap,
     io::ErrorKind,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
-use crate::compression::{CompressionStrategy, CompressionSupport, MatchedFile};
+use crate::{
+    brotli_cache::BrotliCache,
+    compression::{CompressionStrategy, CompressionSupport, MatchedFile},
+};
 use crate::{FileEntity, ServeFilesError};
 use bytes::Bytes;
 use http::{header, HeaderMap, HeaderValue};
@@ -227,6 +231,37 @@ impl ServedDirBuilder {
         } else {
             CompressionStrategy::None
         };
+        self
+    }
+
+    /// Enables use of pre-compressed files based on file extensions.
+    pub fn static_compression(mut self) -> Self {
+        self.compression_strategy = CompressionStrategy::Static;
+        self
+    }
+
+    /// Enables dynamic compression using Brotli.
+    ///
+    /// This will compress files on the fly and cache the results.
+    ///
+    /// # Arguments
+    ///
+    /// * `cache_size` - The number of files to cache. Must be a power of two and at least 4.
+    /// * `compression_level` - The compression level to use. 0 is fastest, 11 is best compression.
+    pub fn dynamic_compression(mut self, cache_size: u16, compression_level: u8) -> Self {
+        let brotli_cache = BrotliCache::builder()
+            .cache_size(cache_size)
+            .compression_level(compression_level)
+            .build();
+        let strategy = CompressionStrategy::Dynamic(Arc::new(brotli_cache));
+        self.compression_strategy = strategy;
+        self
+    }
+
+    /// Enables dynamic compression using a pre-built Brotli cache.
+    pub fn dynamic_compression_with_cache(mut self, cache: BrotliCache) -> Self {
+        let strategy = CompressionStrategy::Dynamic(Arc::new(cache));
+        self.compression_strategy = strategy;
         self
     }
 

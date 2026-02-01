@@ -7,11 +7,14 @@
 // except according to those terms.
 
 use http::header::{self, HeaderMap, HeaderValue};
-use std::fs::{File, Metadata};
+use std::fs::File;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 
+#[cfg(feature = "runtime-compression")]
+use crate::brotli_cache::BrotliCache;
 use crate::{FileEntity, ServeFilesError};
 
 /// Parses an RFC 7231 section 5.3.1 `qvalue` into an integer in [0, 1000].
@@ -146,6 +149,11 @@ pub(crate) enum CompressionStrategy {
     /// extension to the original file name.
     Static,
 
+    /// Compresses supported file types at runtime using Brotli, and caches the
+    /// compressed versions for reuse.
+    #[cfg(feature = "runtime-compression")]
+    Dynamic(Arc<BrotliCache>),
+
     /// Do not use compression, only return the original file, if available.
     None,
 }
@@ -176,6 +184,13 @@ impl CompressionStrategy {
                     }
                 }
             }
+            #[cfg(feature = "runtime-compression")]
+            CompressionStrategy::Dynamic(cache) => {
+                if supported.brotli() {
+                    let matched = cache.get(&path)?;
+                    return Ok(matched);
+                }
+            }
             CompressionStrategy::None => {}
         }
 
@@ -190,13 +205,13 @@ impl CompressionStrategy {
         // behavior for clients)
         match File::open(p) {
             Ok(file) => {
-                let metadata = file.metadata().map_err(ServeFilesError::IOError)?;
-                if !metadata.is_file() {
+                let file_info = crate::FileInfo::new(p, &file)?;
+                if !file_info.is_file() {
                     return Err(ServeFilesError::NotAFile(p.to_path_buf()));
                 }
                 Ok(MatchedFile {
-                    file,
-                    metadata,
+                    file: Arc::new(file),
+                    file_info,
                     content_encoding: encoding,
                 })
             }
@@ -206,6 +221,7 @@ impl CompressionStrategy {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum ContentEncoding {
     Gzip,
     Brotli,
@@ -234,9 +250,10 @@ impl ContentEncoding {
 /// The caller can inspect it as desired. If it is a directory, the caller might pass the result of
 /// `into_file()` to `nix::dir::Dir::from`. If it is a plain file, the caller might create an
 /// `serve_files::Entity` with `into_file_entity()`.
+#[derive(Clone)]
 pub(crate) struct MatchedFile {
-    pub(crate) metadata: Metadata,
-    pub(crate) file: File,
+    pub(crate) file_info: crate::FileInfo,
+    pub(crate) file: Arc<File>,
     pub(crate) content_encoding: ContentEncoding,
 }
 
@@ -251,7 +268,7 @@ impl MatchedFile {
     where
         D: 'static + Send + Sync + bytes::Buf + From<Vec<u8>> + From<&'static [u8]>,
     {
-        FileEntity::new_with_metadata(self.file, &self.metadata, headers)
+        FileEntity::new_with_metadata(self.file, self.file_info, headers)
     }
 }
 

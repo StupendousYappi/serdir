@@ -41,10 +41,12 @@ use futures_core::Stream;
 use http::header::{HeaderMap, HeaderValue};
 use std::error::Error;
 use std::fmt::Display;
+use std::fs::{File, FileType};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Error as IOError;
 use std::io::ErrorKind;
-use std::ops::Range;
-use std::path::PathBuf;
+use std::ops::{Deref, Range};
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::SystemTime;
 
@@ -82,6 +84,10 @@ pub enum ServeFilesError {
     NotADirectory(PathBuf),
     /// The requested file was not found.
     NotFound,
+
+    /// Error compressing file with Brotli.
+    CompressionError(String, IOError),
+
     /// The input path is invalid (e.g., contains NUL bytes or ".." segments).
     InvalidPath(String),
     /// An unexpected I/O error occurred.
@@ -100,6 +106,9 @@ impl Display for ServeFilesError {
             ServeFilesError::NotFound => write!(f, "File not found"),
             ServeFilesError::InvalidPath(msg) => write!(f, "Invalid path: {}", msg),
             ServeFilesError::IOError(err) => write!(f, "I/O error: {}", err),
+            ServeFilesError::CompressionError(msg, err) => {
+                write!(f, "Brotli compression error: {} (I/O error: {})", msg, err)
+            }
         }
     }
 }
@@ -108,6 +117,7 @@ impl Error for ServeFilesError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             ServeFilesError::IOError(err) => Some(err),
+            ServeFilesError::CompressionError(_, err) => Some(err),
             _ => None,
         }
     }
@@ -127,6 +137,8 @@ mod body;
 
 pub mod served_dir;
 
+#[cfg(feature = "runtime-compression")]
+mod brotli_cache;
 mod compression;
 mod etag;
 mod file;
@@ -138,6 +150,53 @@ pub use crate::body::Body;
 pub use crate::compression::CompressionSupport;
 pub use crate::file::FileEntity;
 pub use crate::serving::serve;
+
+/// Basic metadata about a particular version of a file, used as a cache key.
+#[derive(Hash, Eq, PartialEq, Clone, Copy)]
+pub(crate) struct FileInfo {
+    path_hash: u64,
+    len: u64,
+    mtime: SystemTime,
+    file_type: FileType,
+}
+
+impl FileInfo {
+    pub(crate) fn new(path: &Path, file: &File) -> std::io::Result<Self> {
+        let mut hasher = DefaultHasher::new();
+        path.hash(&mut hasher);
+        let path_hash: u64 = hasher.finish();
+        let metadata = file.metadata()?;
+        Ok(Self {
+            path_hash,
+            len: metadata.len(),
+            mtime: metadata.modified()?,
+            file_type: metadata.file_type(),
+        })
+    }
+
+    pub(crate) fn for_path(path: &Path) -> std::io::Result<Self> {
+        let file = File::open(path)?;
+        Self::new(path, &file)
+    }
+
+    /// Returns the length of the file in bytes.
+    pub(crate) fn len(&self) -> u64 {
+        self.len
+    }
+
+    /// Returns the last modification time of the file.
+    pub(crate) fn mtime(&self) -> SystemTime {
+        self.mtime
+    }
+}
+
+impl Deref for FileInfo {
+    type Target = FileType;
+
+    fn deref(&self) -> &Self::Target {
+        &self.file_type
+    }
+}
 
 /// A reusable, read-only, byte-rangeable HTTP entity for GET and HEAD serving.
 /// Must return exactly the same data on every call.
