@@ -165,9 +165,9 @@ impl BrotliCache {
 
         // If we have a cache entry for the file, return it.
         let file_info = crate::FileInfo::for_path(path)?;
-        let entity = self.cache.get(&file_info);
-        if entity.is_some() {
-            return Ok(entity.unwrap());
+        let matched: Option<MatchedFile> = self.cache.get(&file_info);
+        if matched.is_some() {
+            return Ok(matched.unwrap());
         }
 
         if let Ok(len) = usize::try_from(file_info.len()) {
@@ -238,6 +238,7 @@ mod tests {
     use std::{collections::HashSet, io::Read};
 
     static CAT_PHOTO_BYTES: &[u8] = include_bytes!("test-resources/cat.jpg");
+    static BOOK_BYTES: &[u8] = include_bytes!("test-resources/wonderland.txt");
 
     /// Reads the contents of a file, optionally decompressing it if it's a brotli file.
     fn read_bytes(f: &File, decompress: bool) -> Vec<u8> {
@@ -345,6 +346,41 @@ mod tests {
             .get(&path)
             .expect("Failed to get file from cache second time");
         assert_eq!(matched2.file_info.mtime(), matched.file_info.mtime());
+    }
+
+    #[test]
+    fn test_compression_levels() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wonderland.txt");
+        {
+            let mut f = File::create(&path).unwrap();
+            f.write_all(BOOK_BYTES).unwrap();
+        }
+
+        let cache0 = BrotliCache::builder().compression_level(0).build();
+        let cache5 = BrotliCache::builder().compression_level(5).build();
+
+        let matched0 = cache0.get(&path).expect("Failed to get file from cache0");
+        let matched5 = cache5.get(&path).expect("Failed to get file from cache5");
+
+        assert!(matches!(matched0.content_encoding, ContentEncoding::Brotli));
+        assert!(matches!(matched5.content_encoding, ContentEncoding::Brotli));
+
+        // Verify decompressed content for both
+        let decompressed0 = read_bytes(&matched0.file, true);
+        assert_eq!(decompressed0, BOOK_BYTES);
+
+        let decompressed5 = read_bytes(&matched5.file, true);
+        assert_eq!(decompressed5, BOOK_BYTES);
+
+        // Verify that level 5 is smaller than level 0
+        let size0 = matched0.file.metadata().unwrap().len();
+        let size5 = matched5.file.metadata().unwrap().len();
+        // the first output should be larger than the second
+        assert!(size0 > size5);
+        assert_eq!(83898, size0);
+        assert_eq!(59317, size5);
     }
 
     #[test]
