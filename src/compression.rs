@@ -7,6 +7,7 @@
 // except according to those terms.
 
 use http::header::{self, HeaderMap, HeaderValue};
+use std::collections::HashSet;
 use std::fs::{File, Metadata};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -138,9 +139,15 @@ impl CompressionSupport {
     }
 }
 
+/// The strategy used to obtain compressed files compatible with the request's
+/// supported encodings.
 #[derive(Debug, Clone)]
 pub(crate) enum CompressionStrategy {
+    /// Look for pre-compressed versions of the original file by adding the appropriate filename
+    /// extension to the original file name.
     Static,
+
+    /// Do not use compression, only return the original file, if available.
     None,
 }
 
