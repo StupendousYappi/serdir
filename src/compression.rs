@@ -209,10 +209,16 @@ impl CompressionStrategy {
                 if !file_info.is_file() {
                     return Err(ServeFilesError::NotAFile(p.to_path_buf()));
                 }
+                let extension = p
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default()
+                    .to_string();
                 Ok(MatchedFile {
                     file: Arc::new(file),
                     file_info,
                     content_encoding: encoding,
+                    extension,
                 })
             }
             Err(ref e) if e.kind() == ErrorKind::NotFound => Err(ServeFilesError::NotFound),
@@ -255,9 +261,14 @@ pub(crate) struct MatchedFile {
     pub(crate) file_info: crate::FileInfo,
     pub(crate) file: Arc<File>,
     pub(crate) content_encoding: ContentEncoding,
+    pub(crate) extension: String,
 }
 
 impl MatchedFile {
+    pub(crate) fn extension(&self) -> &str {
+        &self.extension
+    }
+
     /// Converts this MatchedFile (which must represent a plain file) into a `FileEntity`.
     /// The caller is expected to supply all headers. The function `add_encoding_headers`
     /// may be useful.

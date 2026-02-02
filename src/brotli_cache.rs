@@ -145,11 +145,14 @@ impl BrotliCache {
     /// the operating system and should be performed even after hard crashes of
     /// the application).
     pub(crate) fn get(&self, path: &Path) -> Result<MatchedFile, ServeFilesError> {
-        let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        let extension: &str = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
         // We don't bother compressing file types that are already compressed, and instead
         // just return a FileEntity for the original file.
         if !self.supported_extensions.contains(extension) {
-            return Self::wrap_orig(path);
+            return Self::wrap_orig(path, extension);
         }
 
         let mut params = self.params.clone();
@@ -170,7 +173,7 @@ impl BrotliCache {
             Ok(v) => v,
             Err(e) if e.kind() == ErrorKind::StorageFull => {
                 self.cache.clear_slow();
-                return Self::wrap_orig(path);
+                return Self::wrap_orig(path, extension);
             }
             Err(e) => {
                 let msg = format!("Brotli compression failed for {}", path.display());
@@ -182,6 +185,7 @@ impl BrotliCache {
             file: Arc::new(brotli_file),
             file_info,
             content_encoding: ContentEncoding::Brotli,
+            extension: extension.to_string(),
         };
         self.cache.insert(file_info, matched.clone());
         Ok(matched)
@@ -190,13 +194,15 @@ impl BrotliCache {
     /// Returns a FileEntity for the uncompressed file
     ///
     /// Used when skipping compression.
-    fn wrap_orig(path: &Path) -> Result<MatchedFile, ServeFilesError> {
+    fn wrap_orig(path: &Path, extension: &str) -> Result<MatchedFile, ServeFilesError> {
         let file = File::open(path)?;
         let file_info = crate::FileInfo::new(path, &file)?;
+        let extension = extension.to_string();
         Ok(MatchedFile {
             file: Arc::new(file),
             file_info,
             content_encoding: ContentEncoding::Identity,
+            extension,
         })
     }
 

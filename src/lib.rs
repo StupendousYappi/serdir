@@ -78,6 +78,8 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// Error returned by this crate's public APIs.
 #[derive(Debug)]
 pub enum ServeFilesError {
+    /// Returned by ServedDirBuilder if configuration is invalid.
+    ConfigError(String),
     /// The path exists but is not a regular file.
     NotAFile(PathBuf),
     /// The input path is not a directory.
@@ -97,6 +99,7 @@ pub enum ServeFilesError {
 impl Display for ServeFilesError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ServeFilesError::ConfigError(msg) => write!(f, "{}", msg),
             ServeFilesError::NotAFile(path) => {
                 write!(f, "Path is not a file: {}", path.display())
             }
