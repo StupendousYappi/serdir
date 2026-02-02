@@ -82,8 +82,6 @@ pub enum ServeFilesError {
     ConfigError(String),
     /// The path exists but is not a regular file.
     NotAFile(PathBuf),
-    /// The input path is not a directory.
-    NotADirectory(PathBuf),
     /// The requested file was not found.
     NotFound,
 
@@ -102,9 +100,6 @@ impl Display for ServeFilesError {
             ServeFilesError::ConfigError(msg) => write!(f, "{}", msg),
             ServeFilesError::NotAFile(path) => {
                 write!(f, "Path is not a file: {}", path.display())
-            }
-            ServeFilesError::NotADirectory(path) => {
-                write!(f, "Path is not a directory: {}", path.display())
             }
             ServeFilesError::NotFound => write!(f, "File not found"),
             ServeFilesError::InvalidPath(msg) => write!(f, "Invalid path: {}", msg),
