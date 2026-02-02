@@ -34,7 +34,6 @@ static DEFAULT_TEXT_TYPES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 pub struct BrotliCacheBuilder {
     cache_size: u16,
     compression_level: u8,
-    tempdir: Option<PathBuf>,
     supported_extensions: Option<HashSet<&'static str>>,
 }
 
@@ -44,7 +43,6 @@ impl BrotliCacheBuilder {
         Self {
             cache_size: 128,
             compression_level: 3,
-            tempdir: None,
             supported_extensions: None,
         }
     }
@@ -71,12 +69,6 @@ impl BrotliCacheBuilder {
     pub fn compression_level(mut self, level: u8) -> Self {
         assert!(level <= 11, "compression_level must be between 0 and 11");
         self.compression_level = level;
-        self
-    }
-
-    /// Sets the directory for temporary compressed files.
-    pub fn tempdir(mut self, tempdir: PathBuf) -> Self {
-        self.tempdir = Some(tempdir);
         self
     }
 
@@ -117,7 +109,7 @@ impl BrotliCache {
     }
 
     fn new(builder: BrotliCacheBuilder) -> Self {
-        let tempdir = builder.tempdir.unwrap_or_else(env::temp_dir);
+        let tempdir = env::temp_dir();
         let cache = Cache::new(builder.cache_size as usize, Default::default());
         let mut params = BrotliEncoderParams::default();
         params.quality = i32::from(builder.compression_level);
@@ -264,7 +256,6 @@ mod tests {
         let builder = BrotliCacheBuilder::new();
         assert_eq!(builder.cache_size, 128);
         assert_eq!(builder.compression_level, 3);
-        assert!(builder.tempdir.is_none());
         assert!(builder.supported_extensions.is_none());
     }
 
@@ -273,17 +264,13 @@ mod tests {
         let mut extensions = HashSet::new();
         extensions.insert("html");
 
-        let temp = env::temp_dir().join("test_brotli_cache");
-
         let builder = BrotliCacheBuilder::new()
             .cache_size(64)
             .compression_level(5)
-            .tempdir(temp.clone())
             .supported_extensions(Some(extensions.clone()));
 
         assert_eq!(builder.cache_size, 64);
         assert_eq!(builder.compression_level, 5);
-        assert_eq!(builder.tempdir.unwrap(), temp);
         assert_eq!(builder.supported_extensions.unwrap(), extensions);
     }
 
