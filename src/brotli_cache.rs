@@ -2,8 +2,9 @@ use std::{
     collections::HashSet,
     env,
     fmt::Debug,
-    fs::File,
-    io::ErrorKind,
+    fs::{File, FileType},
+    hash::Hash,
+    io::{ErrorKind, SeekFrom},
     path::{Path, PathBuf},
     sync::LazyLock,
 };
@@ -12,6 +13,7 @@ use brotli::enc::backward_references::BrotliEncoderMode;
 use brotli::enc::BrotliEncoderParams;
 // use bytes::Bytes; removed
 use fixed_cache::Cache;
+use log::{debug, error, info, warn};
 // use http::HeaderValue; removed
 use std::io::Write;
 use std::sync::Arc;
@@ -160,9 +162,10 @@ impl BrotliCache {
 
         // If we have a cache entry for the file, return it.
         let file_info = crate::FileInfo::for_path(path)?;
+
         let matched: Option<MatchedFile> = self.cache.get(&file_info);
-        if matched.is_some() {
-            return Ok(matched.unwrap());
+        if let Some(f) = matched {
+            return Ok(f);
         }
 
         if let Ok(len) = usize::try_from(file_info.len()) {
@@ -181,9 +184,25 @@ impl BrotliCache {
             }
         };
 
+        let brotli_metadata = brotli_file.metadata()?;
+
+        // The dynamic brotli tempfile literally doesn't have a filename, so we can't
+        // calculate a path hash for it. Instead, we reverse the bytes of the original
+        // file's path hash to create a pseudo path hash that is deterministic in the same
+        // ways as the original path hash, and just as unlikely to collide with any other
+        // value.
+        let pseudo_hash = file_info.get_hash().swap_bytes();
+
+        let brotli_file_info = crate::FileInfo {
+            path_hash: pseudo_hash,
+            len: brotli_metadata.len(),
+            mtime: brotli_metadata.modified()?,
+            file_type: brotli_metadata.file_type(),
+        };
+
         let matched = MatchedFile {
             file: Arc::new(brotli_file),
-            file_info,
+            file_info: brotli_file_info,
             content_encoding: ContentEncoding::Brotli,
             extension: extension.to_string(),
         };
@@ -197,6 +216,9 @@ impl BrotliCache {
     fn wrap_orig(path: &Path, extension: &str) -> Result<MatchedFile, ServeFilesError> {
         let file = File::open(path)?;
         let file_info = crate::FileInfo::new(path, &file)?;
+        if !file_info.is_file() {
+            return Err(ServeFilesError::NotAFile(path.into()));
+        }
         let extension = extension.to_string();
         Ok(MatchedFile {
             file: Arc::new(file),
@@ -214,7 +236,6 @@ impl BrotliCache {
         std::io::copy(&mut file, &mut compressor)?;
         compressor.flush()?;
         let brotli_file = compressor.into_inner();
-
         Ok(brotli_file)
     }
 }

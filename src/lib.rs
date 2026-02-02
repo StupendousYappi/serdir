@@ -205,6 +205,13 @@ impl FileInfo {
     pub(crate) fn mtime(&self) -> SystemTime {
         self.mtime
     }
+
+    pub(crate) fn get_hash(&self) -> u64 {
+        use std::hash::Hash;
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
 }
 
 impl Deref for FileInfo {
