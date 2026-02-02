@@ -1,0 +1,4 @@
+[alias]
+# This redefines 'cargo test' to always include your feature
+test-all = "test --all-features"
+ta = "test --all-features"
