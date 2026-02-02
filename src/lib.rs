@@ -162,6 +162,20 @@ pub(crate) struct FileInfo {
 
 impl FileInfo {
     pub(crate) fn new(path: &Path, file: &File) -> std::io::Result<Self> {
+        // Rust's default hasher is relatively secure... it uses a random seed
+        // and currently uses the siphash algorithm, which is secure as long as
+        // the seed is random. The file hash is only used internally in memory,
+        // and doesn't to be consistent across reboots or different machines.
+        // Because we throw away the full path and just use the hash instead, in
+        // theory, an attacker who has the ability to write new static files to
+        // one directory could force a collision with a file in another
+        // directory if this hash function were not secure.
+        // We use rapidhash (a non-cryptographic hash) to hash file contents
+        // because we need an algorithm with portable output (consistent across
+        // reboots and machines) and because performance matters more there, but
+        // because it's only used for etag values for a single resource, an
+        // attacker in that scenario wouldn't be able to change the observed
+        // contents of any file other than the one he modified.
         let mut hasher = DefaultHasher::new();
         path.hash(&mut hasher);
         let path_hash: u64 = hasher.finish();
