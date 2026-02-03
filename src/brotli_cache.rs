@@ -36,6 +36,7 @@ pub struct BrotliCacheBuilder {
     cache_size: u16,
     compression_level: u8,
     supported_extensions: Option<HashSet<&'static str>>,
+    max_file_size: u64,
 }
 
 impl BrotliCacheBuilder {
@@ -45,6 +46,7 @@ impl BrotliCacheBuilder {
             cache_size: 128,
             compression_level: 3,
             supported_extensions: None,
+            max_file_size: u64::MAX,
         }
     }
 
@@ -81,6 +83,15 @@ impl BrotliCacheBuilder {
         self
     }
 
+    /// Sets the maximum file size for compression.
+    ///
+    /// Files larger than this value will skip compression and be served
+    /// in their original form.
+    pub fn max_file_size(mut self, size: u64) -> Self {
+        self.max_file_size = size;
+        self
+    }
+
     /// Builds the `BrotliCache`.
     pub fn build(self) -> BrotliCache {
         BrotliCache::new(self)
@@ -101,6 +112,7 @@ pub struct BrotliCache {
     cache: Cache<CacheKey, MatchedFile>,
     params: BrotliEncoderParams,
     supported_extensions: HashSet<&'static str>,
+    max_file_size: u64,
 }
 
 impl BrotliCache {
@@ -123,6 +135,7 @@ impl BrotliCache {
             cache,
             params,
             supported_extensions,
+            max_file_size: builder.max_file_size,
         }
     }
 
@@ -156,16 +169,21 @@ impl BrotliCache {
             return Self::wrap_orig(path, extension);
         }
 
-        let mut params = self.params.clone();
-        params.mode = self.detect_brotli_mode(extension);
-
         // If we have a cache entry for the file, return it.
         let file_info = crate::FileInfo::for_path(path)?;
+
+        // Skip compression if the file is too large.
+        if file_info.len() > self.max_file_size {
+            return Self::wrap_orig(path, extension);
+        }
 
         let matched: Option<MatchedFile> = self.cache.get(&file_info);
         if let Some(f) = matched {
             return Ok(f);
         }
+
+        let mut params = self.params.clone();
+        params.mode = self.detect_brotli_mode(extension);
 
         if let Ok(len) = usize::try_from(file_info.len()) {
             params.size_hint = len;
@@ -434,5 +452,46 @@ mod tests {
         // Verify content
         let bytes = read_bytes(&matched.file, false);
         assert_eq!(bytes, CAT_PHOTO_BYTES);
+    }
+
+    #[test]
+    fn test_max_file_size() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("too_big.txt");
+        let content = "This is a test file that is larger than 10 bytes.";
+        {
+            let mut f = File::create(&path).unwrap();
+            f.write_all(content.as_bytes()).unwrap();
+        }
+
+        // Cache with max_file_size of 10 bytes
+        let cache = BrotliCache::builder().max_file_size(10).build();
+
+        let matched = cache.get(&path).expect("Failed to get file from cache");
+
+        // Should skip compression because size (49) > max_file_size (10)
+        assert!(matches!(
+            matched.content_encoding,
+            ContentEncoding::Identity
+        ));
+
+        // Now try a smaller file
+        let path_small = dir.path().join("small.txt");
+        let content_small = "small"; // 5 bytes
+        {
+            let mut f = File::create(&path_small).unwrap();
+            f.write_all(content_small.as_bytes()).unwrap();
+        }
+
+        let matched_small = cache
+            .get(&path_small)
+            .expect("Failed to get small file from cache");
+
+        // Should NOT skip compression
+        assert!(matches!(
+            matched_small.content_encoding,
+            ContentEncoding::Brotli
+        ));
     }
 }
