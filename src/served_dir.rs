@@ -14,7 +14,7 @@ use bytes::Bytes;
 use http::{header, HeaderMap, HeaderValue};
 use std::io::Error as IOError;
 
-/// Supports serving files from a local directory.
+/// Returns `FileEntity` values for file paths within a directory.
 pub struct ServedDir {
     compression_strategy: CompressionStrategy,
     dirpath: PathBuf,
@@ -49,6 +49,7 @@ impl ServedDir {
         req_hdrs: &HeaderMap,
     ) -> Result<FileEntity<Bytes>, ServeFilesError> {
         let path = match self.strip_prefix.as_deref() {
+            Some(prefix) if path == prefix => ".",
             Some(prefix) => path.strip_prefix(prefix).ok_or(ServeFilesError::NotFound)?,
             None => path,
         };

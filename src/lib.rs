@@ -84,10 +84,8 @@ pub enum ServeFilesError {
     IsDirectory(PathBuf),
     /// The requested file was not found.
     NotFound,
-
     /// Error compressing file with Brotli.
     CompressionError(String, IOError),
-
     /// The input path is invalid (e.g., contains NUL bytes or ".." segments).
     InvalidPath(String),
     /// An unexpected I/O error occurred.

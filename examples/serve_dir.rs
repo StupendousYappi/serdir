@@ -90,11 +90,8 @@ async fn serve(
     served_dir: &Arc<ServedDir>,
     req: http::Request<hyper::body::Incoming>,
 ) -> Result<http::Response<Body>, ServeFilesError> {
-    let p = if req.uri().path() == "/" {
-        "."
-    } else {
-        &req.uri().path()[1..]
-    };
+    debug_assert!(req.uri().path().starts_with('/'));
+    let p = &req.uri().path()[1..];
 
     let res = served_dir.get(p, req.headers()).await;
     match res {
