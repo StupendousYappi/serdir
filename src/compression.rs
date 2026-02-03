@@ -41,7 +41,8 @@ pub(crate) fn parse_qvalue(s: &str) -> Result<u16, ()> {
     Ok(q)
 }
 
-/// The compression styles supported by the client of a request.
+/// A struct representing which compression encodings are supported by the
+/// client or the server.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 pub struct CompressionSupport {
     gzip: bool,
@@ -50,6 +51,20 @@ pub struct CompressionSupport {
 }
 
 impl CompressionSupport {
+    /// Returns a new `CompressionSupport` with the given settings.
+    pub fn new(br: bool, gzip: bool, zstd: bool) -> Self {
+        Self { gzip, br, zstd }
+    }
+
+    /// Returns a `CompressionSupport` with no compression enabled.
+    pub fn none() -> Self {
+        Self {
+            gzip: false,
+            br: false,
+            zstd: false,
+        }
+    }
+
     /// Returns true if Brotli compression is supported.
     pub fn brotli(&self) -> bool {
         self.br
@@ -151,7 +166,7 @@ impl CompressionSupport {
 pub(crate) enum CompressionStrategy {
     /// Look for pre-compressed versions of the original file by adding the appropriate filename
     /// extension to the original file name.
-    Static,
+    Static(CompressionSupport),
 
     /// Compresses supported file types at runtime using Brotli, and caches the
     /// compressed versions for reuse.
@@ -163,14 +178,18 @@ pub(crate) enum CompressionStrategy {
 }
 
 impl CompressionStrategy {
+    pub(crate) fn is_none(&self) -> bool {
+        matches!(self, CompressionStrategy::None)
+    }
+
     pub(crate) fn find_file(
         &self,
         path: PathBuf,
         supported: crate::CompressionSupport,
     ) -> Result<MatchedFile, ServeFilesError> {
         match self {
-            CompressionStrategy::Static => {
-                if supported.brotli() {
+            CompressionStrategy::Static(server_support) => {
+                if supported.brotli() && server_support.brotli() {
                     let br_path = path.with_added_extension("br");
                     match Self::try_path(&br_path, ContentEncoding::Brotli) {
                         Ok(f) => return Ok(f),
@@ -179,7 +198,7 @@ impl CompressionStrategy {
                     }
                 }
 
-                if supported.zstd() {
+                if supported.zstd() && server_support.zstd() {
                     let zstd_path = path.with_added_extension("zstd");
                     match Self::try_path(&zstd_path, ContentEncoding::Zstd) {
                         Ok(f) => return Ok(f),
@@ -188,7 +207,7 @@ impl CompressionStrategy {
                     }
                 }
 
-                if supported.gzip() {
+                if supported.gzip() && server_support.gzip() {
                     let gz_path = path.with_added_extension("gz");
                     match Self::try_path(&gz_path, ContentEncoding::Gzip) {
                         Ok(f) => return Ok(f),
