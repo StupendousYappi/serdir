@@ -9,7 +9,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use http::HeaderMap;
 use serve_files::served_dir::ServedDir;
-use std::fs;
+use std::{fs, hint::black_box};
 
 fn criterion_benchmark(c: &mut Criterion) {
     let tmpdir = tempfile::tempdir().unwrap();
@@ -18,7 +18,10 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("metadata");
 
-    let served_dir = ServedDir::builder(tmpdir.path()).unwrap().build();
+    let served_dir = ServedDir::builder(tmpdir.path())
+        .unwrap()
+        .static_compression(false, false, false)
+        .build();
     let hdrs = HeaderMap::new();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -27,13 +30,15 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     group.bench_function("served_dir_exists", |b| {
         b.to_async(&rt).iter(|| async {
-            served_dir.get("exists", &hdrs).await.unwrap();
+            let result = served_dir.get("exists", &hdrs).await.unwrap();
+            black_box(result);
         })
     });
 
     group.bench_function("served_dir_missing", |b| {
         b.to_async(&rt).iter(|| async {
-            served_dir.get("missing", &hdrs).await.unwrap_err();
+            let result = served_dir.get("missing", &hdrs).await.unwrap_err();
+            black_box(result);
         })
     });
 
