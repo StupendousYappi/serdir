@@ -42,27 +42,27 @@ pub(crate) fn parse_qvalue(s: &str) -> Result<u16, ()> {
 }
 
 /// The compression styles supported by the client of a request.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum CompressionSupport {
-    /// Use gzip compression.
-    Gzip,
-    /// Use brotli compression
-    Brotli,
-    /// Use brotli if available, otherwise gzip
-    Both,
-    /// Do not use compression.
-    None,
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+pub struct CompressionSupport {
+    gzip: bool,
+    br: bool,
+    zstd: bool,
 }
 
 impl CompressionSupport {
     /// Returns true if Brotli compression is supported.
     pub fn brotli(&self) -> bool {
-        matches!(self, CompressionSupport::Brotli | CompressionSupport::Both)
+        self.br
     }
 
     /// Returns true if Gzip compression is supported.
     pub fn gzip(&self) -> bool {
-        matches!(self, CompressionSupport::Gzip | CompressionSupport::Both)
+        self.gzip
+    }
+
+    /// Returns true if Zstandard compression is supported.
+    pub fn zstd(&self) -> bool {
+        self.zstd
     }
 
     /// Returns the preferred compression to use when responding to the given request, if any.
@@ -73,14 +73,15 @@ impl CompressionSupport {
     /// Note that if both gzip and brotli are supported, brotli will be preferred by the server.
     pub fn detect(headers: &HeaderMap) -> CompressionSupport {
         let v = match headers.get(header::ACCEPT_ENCODING) {
-            None => return CompressionSupport::None,
-            Some(v) if v.is_empty() => return CompressionSupport::None,
+            None => return CompressionSupport::default(),
+            Some(v) if v.is_empty() => return CompressionSupport::default(),
             Some(v) => v,
         };
-        let (mut gzip_q, mut br_q, mut identity_q, mut star_q) = (None, None, None, None);
+        let (mut gzip_q, mut br_q, mut zstd_q, mut identity_q, mut star_q) =
+            (None, None, None, None, None);
         let parts = match v.to_str() {
             Ok(s) => s.split(','),
-            Err(_) => return CompressionSupport::None,
+            Err(_) => return CompressionSupport::default(),
         };
         for qi in parts {
             // Parse.
@@ -98,7 +99,7 @@ impl CompressionSupport {
                         .strip_prefix("q=")
                         .and_then(|q| parse_qvalue(q).ok())
                     else {
-                        return CompressionSupport::None; // unparseable.
+                        return CompressionSupport::default(); // unparseable.
                     };
                     quality = q;
                 }
@@ -108,6 +109,8 @@ impl CompressionSupport {
                 gzip_q = Some(quality);
             } else if coding == "br" {
                 br_q = Some(quality);
+            } else if coding == "zstd" {
+                zstd_q = Some(quality);
             } else if coding == "identity" {
                 identity_q = Some(quality);
             } else if coding == "*" {
@@ -117,6 +120,7 @@ impl CompressionSupport {
 
         let gzip_q = gzip_q.or(star_q).unwrap_or(0);
         let br_q = br_q.or(star_q).unwrap_or(0);
+        let zstd_q = zstd_q.or(star_q).unwrap_or(0);
 
         // "If the representation has no content-coding, then it is
         // acceptable by default unless specifically excluded by the
@@ -131,12 +135,12 @@ impl CompressionSupport {
         // that seems very unlikely in practice and we don't support that.
         let use_gzip = gzip_q > 0 && gzip_q >= identity_q;
         let use_br = br_q > 0 && br_q >= identity_q;
+        let use_zstd = zstd_q > 0 && zstd_q >= identity_q;
 
-        match (use_gzip, use_br) {
-            (true, false) => CompressionSupport::Gzip,
-            (false, true) => CompressionSupport::Brotli,
-            (true, true) => CompressionSupport::Both,
-            (false, false) => CompressionSupport::None,
+        CompressionSupport {
+            gzip: use_gzip,
+            br: use_br,
+            zstd: use_zstd,
         }
     }
 }
@@ -169,6 +173,15 @@ impl CompressionStrategy {
                 if supported.brotli() {
                     let br_path = path.with_added_extension("br");
                     match Self::try_path(&br_path, ContentEncoding::Brotli) {
+                        Ok(f) => return Ok(f),
+                        Err(ServeFilesError::NotFound) | Err(ServeFilesError::IsDirectory(_)) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+
+                if supported.zstd() {
+                    let zstd_path = path.with_added_extension("zstd");
+                    match Self::try_path(&zstd_path, ContentEncoding::Zstd) {
                         Ok(f) => return Ok(f),
                         Err(ServeFilesError::NotFound) | Err(ServeFilesError::IsDirectory(_)) => {}
                         Err(e) => return Err(e),
@@ -228,6 +241,7 @@ impl CompressionStrategy {
 pub(crate) enum ContentEncoding {
     Gzip,
     Brotli,
+    Zstd,
     Identity,
 }
 
@@ -241,6 +255,7 @@ impl ContentEncoding {
         match self {
             ContentEncoding::Gzip => Some(HeaderValue::from_static("gzip")),
             ContentEncoding::Brotli => Some(HeaderValue::from_static("br")),
+            ContentEncoding::Zstd => Some(HeaderValue::from_static("zstd")),
             ContentEncoding::Identity => None,
         }
     }
@@ -281,7 +296,6 @@ mod tests {
     use super::*;
     use http::header::HeaderValue;
     use http::{self, header};
-    use pretty_assertions::assert_matches;
 
     fn ae_hdrs(value: &'static str) -> http::HeaderMap {
         let mut h = http::HeaderMap::new();
@@ -318,92 +332,110 @@ mod tests {
         // this allows the server to use any content-coding in a response, it
         // does not imply that the user agent will be able to correctly process
         // all encodings." Identity seems safer; don't compress.
-        assert!(matches!(
-            CompressionSupport::detect(&header::HeaderMap::new()),
-            CompressionSupport::None
-        ));
+        let detect = CompressionSupport::detect(&header::HeaderMap::new());
+        assert!(!detect.gzip());
+        assert!(!detect.brotli());
+        assert!(!detect.zstd());
 
         // "If the representation's content-coding is one of the
         // content-codings listed in the Accept-Encoding field, then it is
         // acceptable unless it is accompanied by a qvalue of 0.  (As
         // defined in Section 5.3.1, a qvalue of 0 means "not acceptable".)"
-        assert_matches!(
-            CompressionSupport::detect(&ae_hdrs("gzip")),
-            CompressionSupport::Gzip
-        );
-        assert_matches!(
-            CompressionSupport::detect(&ae_hdrs("gzip;q=0.001")),
-            CompressionSupport::Gzip
-        );
-        assert_matches!(
-            CompressionSupport::detect(&ae_hdrs("br;q=0.001")),
-            CompressionSupport::Brotli
-        );
-        assert_matches!(
-            CompressionSupport::detect(&ae_hdrs("br, gzip")),
-            CompressionSupport::Both
-        );
+        let detect = CompressionSupport::detect(&ae_hdrs("gzip"));
+        assert!(detect.gzip());
+        assert!(!detect.brotli());
+        assert!(!detect.zstd());
 
-        assert_matches!(
-            CompressionSupport::detect(&ae_hdrs("gzip;q=0")),
-            CompressionSupport::None
-        );
+        let detect = CompressionSupport::detect(&ae_hdrs("gzip;q=0.001"));
+        assert!(detect.gzip());
+        assert!(!detect.brotli());
+        assert!(!detect.zstd());
+
+        let detect = CompressionSupport::detect(&ae_hdrs("br;q=0.001"));
+        assert!(!detect.gzip());
+        assert!(detect.brotli());
+        assert!(!detect.zstd());
+
+        let detect = CompressionSupport::detect(&ae_hdrs("zstd;q=0.001"));
+        assert!(!detect.gzip());
+        assert!(!detect.brotli());
+        assert!(detect.zstd());
+
+        let detect = CompressionSupport::detect(&ae_hdrs("br, gzip, zstd"));
+        assert!(detect.brotli());
+        assert!(detect.gzip());
+        assert!(detect.zstd());
+
+        let detect = CompressionSupport::detect(&ae_hdrs("gzip;q=0"));
+        assert!(!detect.gzip());
+        assert!(!detect.brotli());
+        assert!(!detect.gzip());
 
         // "An Accept-Encoding header field with a combined field-value that is
         // empty implies that the user agent does not want any content-coding in
         // response."
-        assert_matches!(
-            CompressionSupport::detect(&ae_hdrs("")),
-            CompressionSupport::None
-        );
+        let detect = CompressionSupport::detect(&ae_hdrs(""));
+        assert!(!detect.gzip());
+        assert!(!detect.brotli());
+        assert!(!detect.zstd());
 
         // The asterisk "*" symbol matches any available content-coding not
         // explicitly listed. identity is a content-coding.
         // If * is q=1000, then identity_q=1000, and neither gzip nor br is
         // strictly greater than 1000.
-        assert_matches!(
-            CompressionSupport::detect(&ae_hdrs("*")),
-            CompressionSupport::Both
-        );
-        assert_matches!(
-            CompressionSupport::detect(&ae_hdrs("gzip;q=0, *")),
-            CompressionSupport::Brotli
-        );
-        assert_matches!(
-            CompressionSupport::detect(&ae_hdrs("identity;q=0, *")),
-            CompressionSupport::Both
-        );
+        let detect = CompressionSupport::detect(&ae_hdrs("*"));
+        assert!(detect.gzip());
+        assert!(detect.brotli());
+        assert!(detect.zstd());
+
+        let detect = CompressionSupport::detect(&ae_hdrs("gzip;q=0, *"));
+        assert!(!detect.gzip());
+        assert!(detect.brotli());
+        assert!(detect.zstd());
+
+        let detect = CompressionSupport::detect(&ae_hdrs("identity;q=0, *"));
+        assert!(detect.gzip());
+        assert!(detect.brotli());
+        assert!(detect.zstd());
 
         // "If multiple content-codings are acceptable, then the acceptable
         // content-coding with the highest non-zero qvalue is preferred."
-        assert_matches!(
-            CompressionSupport::detect(&ae_hdrs("identity;q=0.5, gzip;q=1.0")),
-            CompressionSupport::Gzip
-        );
-        assert_matches!(
-            CompressionSupport::detect(&ae_hdrs("identity;q=1.0, gzip;q=0.5")),
-            CompressionSupport::None
-        );
-        assert_matches!(
-            CompressionSupport::detect(&ae_hdrs("br;q=1.0, gzip;q=0.5, identity;q=0.1")),
-            CompressionSupport::Both
-        );
-        assert_matches!(
-            CompressionSupport::detect(&ae_hdrs("br;q=0.5, gzip;q=1.0, identity;q=0.1")),
-            CompressionSupport::Both
-        );
+        let detect = CompressionSupport::detect(&ae_hdrs("identity;q=0.5, gzip;q=1.0"));
+        assert!(detect.gzip());
+
+        let detect = CompressionSupport::detect(&ae_hdrs("identity;q=1.0, gzip;q=0.5"));
+        assert!(!detect.gzip());
+
+        let detect = CompressionSupport::detect(&ae_hdrs("br;q=1.0, gzip;q=0.5, identity;q=0.1"));
+        assert!(detect.brotli());
+        assert!(detect.gzip());
+        assert!(!detect.zstd());
+
+        let detect = CompressionSupport::detect(&ae_hdrs("zstd;q=1.0, gzip;q=0.5, identity;q=0.1"));
+        assert!(!detect.brotli());
+        assert!(detect.gzip());
+        assert!(detect.zstd());
+
+        let detect = CompressionSupport::detect(&ae_hdrs("br;q=0.5, gzip;q=1.0, identity;q=0.1"));
+        assert!(detect.brotli());
+        assert!(detect.gzip());
+        assert!(!detect.zstd());
+
+        let detect = CompressionSupport::detect(&ae_hdrs("zstd;q=1.0, gzip;q=0.5, identity;q=0.1"));
+        assert!(detect.zstd());
+        assert!(detect.gzip());
+        assert!(!detect.brotli());
 
         // "If an Accept-Encoding header field is present in a request
         // and none of the available representations for the response have a
         // content-coding that is listed as acceptable, the origin server SHOULD
         // send a response without any content-coding."
-        assert_matches!(
-            CompressionSupport::detect(&ae_hdrs("*;q=0")),
-            CompressionSupport::None
-        );
-        assert_matches!(
-            CompressionSupport::detect(&ae_hdrs("gzip;q=0.002")), // q=2
-            CompressionSupport::Gzip
-        );
+        let detect = CompressionSupport::detect(&ae_hdrs("*;q=0"));
+        assert!(!detect.gzip());
+        assert!(!detect.brotli());
+        assert!(!detect.zstd());
+
+        let detect = CompressionSupport::detect(&ae_hdrs("gzip;q=0.002")); // q=2
+        assert!(detect.gzip());
     }
 }

@@ -641,4 +641,43 @@ mod tests {
         let err = served_dir.get("empty_subdir", &hdrs).await.unwrap_err();
         assert!(matches!(err, ServeFilesError::NotFound));
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_compression_priority() {
+        let context = TestContext::new();
+        context.write_file("test.txt", "raw content");
+        context.write_file("test.txt.gz", "fake gzip content");
+        context.write_file("test.txt.br", "fake brotli content");
+        context.write_file("test.txt.zstd", "fake zstd content");
+
+        let served_dir = context.builder.build();
+        let mut hdrs = HeaderMap::new();
+        hdrs.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("br, gzip, zstd"),
+        );
+
+        // 1. All 3 available -> Brotli used
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "br");
+        assert_eq!(e.read_body().await.unwrap(), "fake brotli content");
+
+        // 2. Zstandard and Gzip available -> Zstandard used
+        std::fs::remove_file(context.tmp.path().join("test.txt.br")).unwrap();
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "zstd");
+        assert_eq!(e.read_body().await.unwrap(), "fake zstd content");
+
+        // 3. Only Gzip available -> Gzip used
+        std::fs::remove_file(context.tmp.path().join("test.txt.zstd")).unwrap();
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "gzip");
+        assert_eq!(e.read_body().await.unwrap(), "fake gzip content");
+
+        // 4. None available -> Raw used
+        std::fs::remove_file(context.tmp.path().join("test.txt.gz")).unwrap();
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert!(e.header(&header::CONTENT_ENCODING).is_none());
+        assert_eq!(e.read_body().await.unwrap(), "raw content");
+    }
 }
