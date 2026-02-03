@@ -2,10 +2,10 @@ use std::{
     collections::HashSet,
     env,
     fmt::Debug,
-    fs::{File, FileType},
-    hash::Hash,
-    io::{ErrorKind, SeekFrom},
+    fs::File,
+    io::ErrorKind,
     path::{Path, PathBuf},
+    sync::Arc,
     sync::LazyLock,
 };
 
@@ -13,10 +13,9 @@ use brotli::enc::backward_references::BrotliEncoderMode;
 use brotli::enc::BrotliEncoderParams;
 // use bytes::Bytes; removed
 use fixed_cache::Cache;
-use log::{debug, error, info, warn};
+// use log::{debug, error, info, warn}; removed
 // use http::HeaderValue; removed
 use std::io::Write;
-use std::sync::Arc;
 use tempfile;
 
 use crate::compression::{ContentEncoding, MatchedFile};
@@ -202,7 +201,6 @@ impl BrotliCache {
             // for the original and compressed versions), I think it's more
             // consistent for the modification times to potentially differ too.
             mtime: brotli_metadata.modified()?,
-            file_type: brotli_metadata.file_type(),
         };
 
         let matched = MatchedFile {
@@ -220,10 +218,7 @@ impl BrotliCache {
     /// Used when skipping compression.
     fn wrap_orig(path: &Path, extension: &str) -> Result<MatchedFile, ServeFilesError> {
         let file = File::open(path)?;
-        let file_info = crate::FileInfo::new(path, &file)?;
-        if !file_info.is_file() {
-            return Err(ServeFilesError::NotAFile(path.into()));
-        }
+        let file_info = crate::FileInfo::open_file(path, &file)?;
         let extension = extension.to_string();
         Ok(MatchedFile {
             file: Arc::new(file),

@@ -170,7 +170,7 @@ impl CompressionStrategy {
                     let br_path = path.with_added_extension("br");
                     match Self::try_path(&br_path, ContentEncoding::Brotli) {
                         Ok(f) => return Ok(f),
-                        Err(ServeFilesError::NotFound) | Err(ServeFilesError::NotAFile(_)) => {}
+                        Err(ServeFilesError::NotFound) | Err(ServeFilesError::IsDirectory(_)) => {}
                         Err(e) => return Err(e),
                     }
                 }
@@ -179,7 +179,7 @@ impl CompressionStrategy {
                     let gz_path = path.with_added_extension("gz");
                     match Self::try_path(&gz_path, ContentEncoding::Gzip) {
                         Ok(f) => return Ok(f),
-                        Err(ServeFilesError::NotFound) | Err(ServeFilesError::NotAFile(_)) => {}
+                        Err(ServeFilesError::NotFound) | Err(ServeFilesError::IsDirectory(_)) => {}
                         Err(e) => return Err(e),
                     }
                 }
@@ -205,10 +205,7 @@ impl CompressionStrategy {
         // behavior for clients)
         match File::open(p) {
             Ok(file) => {
-                let file_info = crate::FileInfo::new(p, &file)?;
-                if !file_info.is_file() {
-                    return Err(ServeFilesError::NotAFile(p.to_path_buf()));
-                }
+                let file_info = crate::FileInfo::open_file(p, &file)?;
                 let extension = p
                     .extension()
                     .and_then(|s| s.to_str())
@@ -265,10 +262,6 @@ pub(crate) struct MatchedFile {
 }
 
 impl MatchedFile {
-    pub(crate) fn extension(&self) -> &str {
-        &self.extension
-    }
-
     /// Converts this MatchedFile (which must represent a plain file) into a `FileEntity`.
     /// The caller is expected to supply all headers. The function `add_encoding_headers`
     /// may be useful.

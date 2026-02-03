@@ -41,11 +41,11 @@ use futures_core::Stream;
 use http::header::{HeaderMap, HeaderValue};
 use std::error::Error;
 use std::fmt::Display;
-use std::fs::{File, FileType};
+use std::fs::File;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Error as IOError;
 use std::io::ErrorKind;
-use std::ops::{Deref, Range};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::SystemTime;
@@ -80,8 +80,8 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub enum ServeFilesError {
     /// Returned by ServedDirBuilder if configuration is invalid.
     ConfigError(String),
-    /// The path exists but is not a regular file.
-    NotAFile(PathBuf),
+    /// The path is a directory.
+    IsDirectory(PathBuf),
     /// The requested file was not found.
     NotFound,
 
@@ -98,8 +98,8 @@ impl Display for ServeFilesError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ServeFilesError::ConfigError(msg) => write!(f, "{}", msg),
-            ServeFilesError::NotAFile(path) => {
-                write!(f, "Path is not a file: {}", path.display())
+            ServeFilesError::IsDirectory(path) => {
+                write!(f, "Path is a directory: {}", path.display())
             }
             ServeFilesError::NotFound => write!(f, "File not found"),
             ServeFilesError::InvalidPath(msg) => write!(f, "Invalid path: {}", msg),
@@ -155,11 +155,11 @@ pub(crate) struct FileInfo {
     path_hash: u64,
     len: u64,
     mtime: SystemTime,
-    file_type: FileType,
 }
 
 impl FileInfo {
-    pub(crate) fn new(path: &Path, file: &File) -> std::io::Result<Self> {
+    /// Creates a new FileInfo if the path is a file, otherwise returns an error.
+    pub(crate) fn open_file(path: &Path, file: &File) -> Result<Self, ServeFilesError> {
         // Rust's default hasher is relatively secure... it uses a random seed
         // and currently uses the siphash algorithm, which is secure as long as
         // the seed is random. The file hash is only used internally in memory,
@@ -178,17 +178,25 @@ impl FileInfo {
         path.hash(&mut hasher);
         let path_hash: u64 = hasher.finish();
         let metadata = file.metadata()?;
+        let file_type = metadata.file_type();
+        if file_type.is_dir() {
+            return Err(ServeFilesError::IsDirectory(path.to_path_buf()));
+        }
+        // if it's not a directory and not a file, we don't want to handle it
+        // and behave as if it doesn't exist
+        if !file_type.is_file() {
+            return Err(ServeFilesError::NotFound);
+        }
         Ok(Self {
             path_hash,
             len: metadata.len(),
             mtime: metadata.modified()?,
-            file_type: metadata.file_type(),
         })
     }
 
-    pub(crate) fn for_path(path: &Path) -> std::io::Result<Self> {
+    pub(crate) fn for_path(path: &Path) -> Result<Self, ServeFilesError> {
         let file = File::open(path)?;
-        Self::new(path, &file)
+        Self::open_file(path, &file)
     }
 
     /// Returns the length of the file in bytes.
@@ -206,14 +214,6 @@ impl FileInfo {
         let mut hasher = DefaultHasher::new();
         self.hash(&mut hasher);
         hasher.finish()
-    }
-}
-
-impl Deref for FileInfo {
-    type Target = FileType;
-
-    fn deref(&self) -> &Self::Target {
-        &self.file_type
     }
 }
 

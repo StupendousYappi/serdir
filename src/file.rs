@@ -74,10 +74,7 @@ where
     pub fn new(path: impl AsRef<Path>, headers: HeaderMap) -> Result<Self, ServeFilesError> {
         let path = path.as_ref();
         let file = File::open(&path)?;
-        let file_info = crate::FileInfo::new(path, &file)?;
-        if !file_info.is_file() {
-            return Err(ServeFilesError::NotAFile(path.to_path_buf()));
-        }
+        let file_info = crate::FileInfo::open_file(path, &file)?;
         FileEntity::new_with_metadata(Arc::new(file), file_info, headers)
     }
 
@@ -96,7 +93,7 @@ where
         file_info: crate::FileInfo,
         headers: HeaderMap,
     ) -> Result<Self, ServeFilesError> {
-        debug_assert!(file_info.is_file());
+        debug_assert!(file.metadata().unwrap().is_file());
         let etag: ETag =
             ETAG_CACHE.get_or_try_insert_with(file_info, |_info| ETag::from_file(&file))?;
 

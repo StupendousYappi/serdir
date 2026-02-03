@@ -100,7 +100,7 @@ async fn serve(
     match res {
         Ok(f) => Ok(serve_files::serve(f, &req)),
         Err(e) => match e {
-            ServeFilesError::NotAFile(path) => directory_listing(req, &path),
+            ServeFilesError::IsDirectory(path) => directory_listing(req, &path),
             _ => Err(e),
         },
     }

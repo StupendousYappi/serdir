@@ -566,8 +566,8 @@ mod tests {
         let hdrs = HeaderMap::new();
 
         let err = served_dir.get("subdir", &hdrs).await.unwrap_err();
-        assert!(matches!(err, ServeFilesError::NotAFile(_)));
-        if let ServeFilesError::NotAFile(err_path) = err {
+        assert!(matches!(err, ServeFilesError::IsDirectory(_)));
+        if let ServeFilesError::IsDirectory(err_path) = err {
             assert_eq!(err_path, path.join("subdir"));
         }
     }
