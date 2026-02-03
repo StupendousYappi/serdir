@@ -21,7 +21,6 @@ pub struct ServedDir {
     known_extensions: Option<HashMap<String, HeaderValue>>,
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
-    not_found_path: Option<PathBuf>,
 }
 
 static OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-stream");
@@ -57,16 +56,7 @@ impl ServedDir {
         let preferred = CompressionSupport::detect(req_hdrs);
         let full_path = self.dirpath.join(path);
 
-        let result = self.find_file(full_path, preferred).await;
-        let matched_file: MatchedFile = match result {
-            Ok(file) => file,
-            Err(ServeFilesError::NotFound) => match self.not_found_path.as_deref() {
-                Some(not_found_path) => self.find_file(not_found_path, preferred).await?,
-                None => return Err(ServeFilesError::NotFound),
-            },
-            Err(e) => return Err(e),
-        };
-
+        let matched_file = self.find_file(full_path, preferred).await?;
         let content_type: HeaderValue = self.get_content_type(&matched_file.extension);
         let mut headers = self.common_headers.clone();
         headers.insert(http::header::CONTENT_TYPE, content_type);
@@ -212,7 +202,6 @@ pub struct ServedDirBuilder {
     known_extensions: Option<HashMap<String, HeaderValue>>,
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
-    not_found_path: Option<PathBuf>,
 }
 
 impl ServedDirBuilder {
@@ -228,7 +217,6 @@ impl ServedDirBuilder {
             known_extensions: None,
             default_content_type: OCTET_STREAM.clone(),
             common_headers: HeaderMap::new(),
-            not_found_path: None,
         })
     }
 
@@ -241,32 +229,6 @@ impl ServedDirBuilder {
             CompressionStrategy::None
         };
         self
-    }
-
-    /// Sets the path to the 404 page.
-    ///
-    /// The path is relative to the directory being served.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - The path to the 404 page.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err(ServeFilesError::ConfigError)` if the path is not a file.
-    pub fn not_found_path(mut self, path: impl Into<PathBuf>) -> Result<Self, ServeFilesError> {
-        let path = path.into();
-        if path.is_absolute() {
-            let msg = format!("not_found_path is absolute: {}", path.display());
-            return Err(ServeFilesError::ConfigError(msg));
-        }
-        let joined = self.dirpath.join(&path);
-        if !joined.is_file() {
-            let msg = format!("not_found_path was not found: {}", joined.display());
-            return Err(ServeFilesError::ConfigError(msg));
-        }
-        self.not_found_path = Some(joined);
-        Ok(self)
     }
 
     /// Enables use of pre-compressed files based on file extensions.
@@ -339,7 +301,6 @@ impl ServedDirBuilder {
             known_extensions: self.known_extensions,
             default_content_type: self.default_content_type,
             common_headers: self.common_headers,
-            not_found_path: self.not_found_path,
         }
     }
 }

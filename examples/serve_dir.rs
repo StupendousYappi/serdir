@@ -133,8 +133,6 @@ async fn main() {
         ServedDir::builder(&path)
             .unwrap()
             .dynamic_compression(16, 5)
-            .not_found_path("not_found.html")
-            .unwrap()
             .build(),
     )));
     let addr = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 1337));

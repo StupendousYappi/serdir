@@ -196,6 +196,11 @@ impl BrotliCache {
         let brotli_file_info = crate::FileInfo {
             path_hash: pseudo_hash,
             len: brotli_metadata.len(),
+            // arguably it would be more accurate and produce a higher browser
+            // cache hit rate to use the same modification time as the original
+            // file, but given that we use strong ETag values (i.e. different
+            // for the original and compressed versions), I think it's more
+            // consistent for the modification times to potentially differ too.
             mtime: brotli_metadata.modified()?,
             file_type: brotli_metadata.file_type(),
         };
@@ -348,8 +353,16 @@ mod tests {
 
         // Verify FileInfo
         let orig_info = crate::FileInfo::for_path(&path).unwrap();
-        assert_eq!(matched.file_info.len(), orig_info.len());
-        assert_eq!(matched.file_info.mtime(), orig_info.mtime());
+        assert!(matched.file_info.mtime() > orig_info.mtime());
+        assert_ne!(matched.file_info.get_hash(), orig_info.get_hash());
+        let delta_nanos = matched
+            .file_info
+            .mtime()
+            .duration_since(orig_info.mtime())
+            .unwrap()
+            .as_nanos();
+        // between 0 and 10ms
+        assert!(delta_nanos > 0 && delta_nanos < 10_000_000);
 
         // Verify decompressed content
         let decompressed = read_bytes(&matched.file, true);
