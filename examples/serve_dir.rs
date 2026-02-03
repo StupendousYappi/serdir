@@ -132,6 +132,7 @@ async fn main() {
     let served_dir: &'static Arc<ServedDir> = Box::leak(Box::new(Arc::new(
         ServedDir::builder(&path)
             .unwrap()
+            .append_index_html(true)
             .dynamic_compression(16, 5)
             .build(),
     )));

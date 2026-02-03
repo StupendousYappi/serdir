@@ -1,6 +1,8 @@
 //! Serves files from a local directory.
 
-use std::{collections::HashMap, io::ErrorKind, path::PathBuf, sync::Arc};
+#[cfg(feature = "runtime-compression")]
+use std::sync::Arc;
+use std::{collections::HashMap, io::ErrorKind, path::PathBuf};
 
 use crate::compression::{CompressionStrategy, CompressionSupport, MatchedFile};
 
@@ -12,15 +14,15 @@ use bytes::Bytes;
 use http::{header, HeaderMap, HeaderValue};
 use std::io::Error as IOError;
 
-/// Returns `FileEntity` values for file paths within a directory.
+/// Supports serving files from a local directory.
 pub struct ServedDir {
-    /// Provides servable `FileEntity` values for file paths within a directory.
     compression_strategy: CompressionStrategy,
     dirpath: PathBuf,
     strip_prefix: Option<String>,
     known_extensions: Option<HashMap<String, HeaderValue>>,
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
+    append_index_html: bool,
 }
 
 static OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-stream");
@@ -56,7 +58,15 @@ impl ServedDir {
         let preferred = CompressionSupport::detect(req_hdrs);
         let full_path = self.dirpath.join(path);
 
-        let matched_file = self.find_file(full_path, preferred).await?;
+        let res = self.find_file(full_path.clone(), preferred).await;
+        let matched_file = match res {
+            Ok(mf) => mf,
+            Err(ServeFilesError::IsDirectory(_)) if self.append_index_html => {
+                let index_path = full_path.join("index.html");
+                self.find_file(index_path, preferred).await?
+            }
+            Err(e) => return Err(e),
+        };
         let content_type: HeaderValue = self.get_content_type(&matched_file.extension);
         let mut headers = self.common_headers.clone();
         headers.insert(http::header::CONTENT_TYPE, content_type);
@@ -202,6 +212,7 @@ pub struct ServedDirBuilder {
     known_extensions: Option<HashMap<String, HeaderValue>>,
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
+    append_index_html: bool,
 }
 
 impl ServedDirBuilder {
@@ -217,6 +228,7 @@ impl ServedDirBuilder {
             known_extensions: None,
             default_content_type: OCTET_STREAM.clone(),
             common_headers: HeaderMap::new(),
+            append_index_html: false,
         })
     }
 
@@ -234,6 +246,12 @@ impl ServedDirBuilder {
     /// Enables use of pre-compressed files based on file extensions.
     pub fn static_compression(mut self) -> Self {
         self.compression_strategy = CompressionStrategy::Static;
+        self
+    }
+
+    /// Appends "/index.html" to directory paths.
+    pub fn append_index_html(mut self, append: bool) -> Self {
+        self.append_index_html = append;
         self
     }
 
@@ -301,6 +319,7 @@ impl ServedDirBuilder {
             known_extensions: self.known_extensions,
             default_content_type: self.default_content_type,
             common_headers: self.common_headers,
+            append_index_html: self.append_index_html,
         }
     }
 }
@@ -592,5 +611,33 @@ mod tests {
         let e = served_dir.get("link.txt", &hdrs).await.unwrap();
         assert_eq!(e.read_body().await.unwrap(), "target content");
         assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/plain");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_append_index_html() {
+        let context = TestContext::new();
+        let path = context.tmp.path();
+        std::fs::create_dir(path.join("subdir")).unwrap();
+        std::fs::write(path.join("subdir").join("index.html"), b"index content").unwrap();
+
+        let builder = ServedDir::builder(path.to_path_buf()).unwrap();
+
+        // 1. append_index_html disabled (default)
+        let served_dir = builder.build();
+        let hdrs = HeaderMap::new();
+        let err = served_dir.get("subdir", &hdrs).await.unwrap_err();
+        assert!(matches!(err, ServeFilesError::IsDirectory(_)));
+
+        // 2. append_index_html enabled
+        let builder = ServedDir::builder(path.to_path_buf()).unwrap();
+        let served_dir = builder.append_index_html(true).build();
+        let e = served_dir.get("subdir", &hdrs).await.unwrap();
+        assert_eq!(e.read_body().await.unwrap(), "index content");
+        assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/html");
+
+        // 3. append_index_html enabled, but index.html missing
+        std::fs::create_dir(path.join("empty_subdir")).unwrap();
+        let err = served_dir.get("empty_subdir", &hdrs).await.unwrap_err();
+        assert!(matches!(err, ServeFilesError::NotFound));
     }
 }
