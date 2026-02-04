@@ -128,6 +128,9 @@ impl From<IOError> for ServeFilesError {
 mod body;
 
 pub mod served_dir;
+#[cfg(feature = "tower")]
+/// Tower Service integration.
+pub mod tower;
 
 mod compression;
 mod etag;

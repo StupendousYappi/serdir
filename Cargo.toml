@@ -13,6 +13,7 @@ rust-version = "1.88"
 
 [features]
 mime_guess = ["dep:mime_guess"]
+tower = ["dep:tower"]
 
 
 [package.metadata.docs.rs]
@@ -32,6 +33,7 @@ rapidhash = "4.2"
 sync_wrapper = "1.0"
 tokio = { version = "1.49", features = ["rt-multi-thread"] }
 mime_guess = { version = "2.0", optional = true }
+tower = { version = "0.4", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3.6", features = [

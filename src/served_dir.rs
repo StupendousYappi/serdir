@@ -376,6 +376,14 @@ impl Node {
     }
 }
 
+#[cfg(feature = "tower")]
+impl ServedDir {
+    /// Converts this `ServedDir` into a `tower::Service`.
+    pub fn into_tower_service(self) -> crate::tower::ServedDirService {
+        crate::tower::ServedDirService::new(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,4 +596,5 @@ mod tests {
         assert_eq!(e.header(&header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(), "*");
         assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/plain");
     }
+
 }
