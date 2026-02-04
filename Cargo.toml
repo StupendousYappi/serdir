@@ -14,6 +14,7 @@ rust-version = "1.91"
 [features]
 mime_guess = ["dep:mime_guess"]
 runtime-compression = ["dep:brotli", "dep:tempfile"]
+tower = ["dep:tower", "dep:http-body-util"]
 
 
 [package.metadata.docs.rs]
@@ -36,6 +37,8 @@ mime_guess = { version = "2.0", optional = true }
 brotli = { version = "7.0", optional = true }
 tempfile = { version = "3.11", optional = true }
 log = { version = "0.4.29", features = ["std"] }
+tower = { version = "0.4", optional = true }
+http-body-util = { version = "0.1", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3.6", features = [

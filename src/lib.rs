@@ -133,6 +133,10 @@ mod body;
 
 pub mod served_dir;
 
+#[cfg(feature = "tower")]
+/// Tower service integration.
+pub mod tower;
+
 #[cfg(feature = "runtime-compression")]
 mod brotli_cache;
 mod compression;
