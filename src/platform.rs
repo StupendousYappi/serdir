@@ -7,10 +7,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::fs::{File, Metadata};
 use std::io;
-use std::time::SystemTime;
-
 pub trait FileExt {
     /// Reads at least 1, at most `chunk_size` bytes beginning at `offset`, or fails.
     ///
@@ -110,13 +107,6 @@ impl FileExt for std::fs::File {
     }
 }
 
-#[derive(Hash, Eq, PartialEq, Clone, Copy)]
-pub struct FileInfo {
-    pub inode: u64,
-    pub len: u64,
-    pub mtime: SystemTime,
-}
-
 #[cfg(windows)]
 /// Converts a Windows `FILETIME` to a Rust `SystemTime`
 ///
@@ -136,57 +126,6 @@ fn filetime_to_systemtime(time: winapi::shared::minwindef::FILETIME) -> SystemTi
     UNIX_EPOCH + duration
 }
 
-#[cfg(unix)]
-pub fn file_info(_file: &File, metadata: &Metadata) -> io::Result<FileInfo> {
-    use std::os::unix::fs::MetadataExt;
-
-    let info = FileInfo {
-        inode: metadata.ino(),
-        len: metadata.len(),
-        mtime: metadata.modified()?,
-    };
-
-    Ok(info)
-}
-
-// TODO: switch to using std::os::windows::fs::MetadataExt when the accessors
-// we need are stable: https://github.com/rust-lang/rust/issues/63010
-// This will reduce the number of system calls and eliminate the winapi crate dependency.
-#[cfg(windows)]
-pub fn file_info(file: &File, _metadata: &Metadata) -> io::Result<FileInfo> {
-    use std::os::windows::io::AsRawHandle;
-    use winapi::shared::minwindef::FILETIME;
-    use winapi::um::fileapi::{self, BY_HANDLE_FILE_INFORMATION};
-
-    let handle = file.as_raw_handle();
-    let zero_time = FILETIME {
-        dwLowDateTime: 0,
-        dwHighDateTime: 0,
-    };
-    let mut info = BY_HANDLE_FILE_INFORMATION {
-        dwFileAttributes: 0,
-        ftCreationTime: zero_time,
-        ftLastAccessTime: zero_time,
-        ftLastWriteTime: zero_time,
-        dwVolumeSerialNumber: 0,
-        nFileSizeHigh: 0,
-        nFileSizeLow: 0,
-        nNumberOfLinks: 0,
-        nFileIndexHigh: 0,
-        nFileIndexLow: 0,
-    };
-
-    let inode = if unsafe { fileapi::GetFileInformationByHandle(handle, &mut info) } != 0 {
-        (info.nFileIndexHigh as u64) << 32 | info.nFileIndexLow as u64
-    } else {
-        return Err(io::Error::last_os_error());
-    };
-    let mtime = filetime_to_systemtime(info.ftLastWriteTime);
-    let len = (info.nFileSizeHigh as u64) << 32 | info.nFileSizeLow as u64;
-
-    let info = FileInfo { inode, len, mtime };
-    Ok(info)
-}
 #[cfg(test)]
 mod test {
     use super::*;

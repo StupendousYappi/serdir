@@ -1,26 +1,28 @@
 //! Serves files from a local directory.
 
-use std::{
-    collections::HashMap,
-    fs::File,
-    io::ErrorKind,
-    path::{Path, PathBuf},
-};
+#[cfg(feature = "runtime-compression")]
+use std::sync::Arc;
+use std::{collections::HashMap, io::ErrorKind, path::PathBuf};
 
-use crate::{BoxError, FileEntity, ServeFilesError};
+use crate::compression::{CompressionStrategy, CompressionSupport, MatchedFile};
+
+#[cfg(feature = "runtime-compression")]
+use crate::brotli_cache::BrotliCache;
+
+use crate::{FileEntity, ServeFilesError};
 use bytes::Bytes;
 use http::{header, HeaderMap, HeaderValue};
 use std::io::Error as IOError;
 
 /// Returns `FileEntity` values for file paths within a directory.
 pub struct ServedDir {
-    /// Provides servable `FileEntity` values for file paths within a directory.
-    auto_compress: bool,
+    compression_strategy: CompressionStrategy,
     dirpath: PathBuf,
     strip_prefix: Option<String>,
     known_extensions: Option<HashMap<String, HeaderValue>>,
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
+    append_index_html: bool,
 }
 
 static OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-stream");
@@ -45,51 +47,55 @@ impl ServedDir {
         &self,
         path: &str,
         req_hdrs: &HeaderMap,
-    ) -> Result<FileEntity<Bytes, BoxError>, ServeFilesError> {
+    ) -> Result<FileEntity<Bytes>, ServeFilesError> {
         let path = match self.strip_prefix.as_deref() {
+            Some(prefix) if path == prefix => ".",
             Some(prefix) => path.strip_prefix(prefix).ok_or(ServeFilesError::NotFound)?,
             None => path,
         };
 
         self.validate_path(path)?;
 
+        let preferred = CompressionSupport::detect(req_hdrs);
         let full_path = self.dirpath.join(path);
-        let preferred = if self.auto_compress {
-            crate::detect_compression_support(req_hdrs)
-        } else {
-            crate::CompressionSupport::None
+
+        let res = self.find_file(full_path.clone(), preferred).await;
+        let matched_file = match res {
+            Ok(mf) => mf,
+            Err(ServeFilesError::IsDirectory(_)) if self.append_index_html => {
+                let index_path = full_path.join("index.html");
+                self.find_file(index_path, preferred).await?
+            }
+            Err(e) => return Err(e),
         };
-        let content_type: HeaderValue = self.get_content_type(&full_path);
-
-        let node: Node = tokio::task::spawn_blocking(move || -> Result<Node, ServeFilesError> {
-            let node = Self::find_file(&full_path, preferred)?.ok_or(ServeFilesError::NotFound)?;
-            Ok(node)
-        })
-        .await
-        .unwrap_or_else(|e: tokio::task::JoinError| {
-            Err(IOError::new(ErrorKind::Other, e).into())
-        })?;
-
+        let content_type: HeaderValue = self.get_content_type(&matched_file.extension);
         let mut headers = self.common_headers.clone();
         headers.insert(http::header::CONTENT_TYPE, content_type);
 
         // Add `Content-Encoding` and `Vary` headers for the encoding to `hdrs`.
-        if let Some(value) = node.content_encoding.get_header_value() {
+        if let Some(value) = matched_file.content_encoding.get_header_value() {
             headers.insert(header::CONTENT_ENCODING, value);
         }
-        if self.auto_compress {
+        if !self.compression_strategy.is_none() {
             headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
         }
 
-        node.into_file_entity(headers)
+        matched_file.into_file_entity(headers)
     }
 
-    fn get_content_type(&self, path: &Path) -> HeaderValue {
-        let extension = path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default();
+    async fn find_file(
+        &self,
+        path: impl Into<PathBuf>,
+        preferred: CompressionSupport,
+    ) -> Result<MatchedFile, ServeFilesError> {
+        let path = path.into();
+        let strategy = self.compression_strategy.clone();
+        tokio::task::spawn_blocking(move || strategy.find_file(path, preferred))
+            .await
+            .map_err(|e: tokio::task::JoinError| IOError::new(ErrorKind::Other, e))?
+    }
 
+    fn get_content_type(&self, extension: &str) -> HeaderValue {
         self.known_extensions
             .as_ref()
             .and_then(|exts| exts.get(extension).cloned())
@@ -111,11 +117,11 @@ impl ServedDir {
             "htm" => Some("text/html"),
             "hxt" => Some("text/html"),
             "css" => Some("text/css"),
-            "js" => Some("application/javascript"),
-            "es" => Some("application/javascript"),
-            "ecma" => Some("application/javascript"),
-            "jsm" => Some("application/javascript"),
-            "jsx" => Some("application/javascript"),
+            "js" => Some("text/javascript"),
+            "es" => Some("text/javascript"),
+            "ecma" => Some("text/javascript"),
+            "jsm" => Some("text/javascript"),
+            "jsx" => Some("text/javascript"),
             "png" => Some("image/png"),
             "apng" => Some("image/apng"),
             "avif" => Some("image/avif"),
@@ -171,55 +177,6 @@ impl ServedDir {
         guess.map(|s| HeaderValue::from_str(s).unwrap())
     }
 
-    fn find_file(
-        path: &Path,
-        supported: crate::CompressionSupport,
-    ) -> Result<Option<Node>, ServeFilesError> {
-        let try_path =
-            |p: &Path, encoding: ContentEncoding| -> Result<Option<Node>, ServeFilesError> {
-                match File::open(p) {
-                    Ok(file) => {
-                        let metadata = file.metadata().map_err(ServeFilesError::IOError)?;
-                        return Ok(Some(Node {
-                            path: p.to_path_buf(),
-                            file,
-                            metadata,
-                            content_encoding: encoding,
-                        }));
-                    }
-                    Err(ref e) if e.kind() == ErrorKind::NotFound => {}
-                    Err(e) => return Err(ServeFilesError::IOError(e)),
-                }
-                Ok(None)
-            };
-
-        if supported.brotli() {
-            let mut br_path = path.to_path_buf();
-            if let Some(name) = path.file_name() {
-                let mut new_name = name.to_os_string();
-                new_name.push(".br");
-                br_path.set_file_name(new_name);
-                if let Some(node) = try_path(&br_path, ContentEncoding::Brotli)? {
-                    return Ok(Some(node));
-                }
-            }
-        }
-
-        if supported.gzip() {
-            let mut gz_path = path.to_path_buf();
-            if let Some(name) = path.file_name() {
-                let mut new_name = name.to_os_string();
-                new_name.push(".gz");
-                gz_path.set_file_name(new_name);
-                if let Some(node) = try_path(&gz_path, ContentEncoding::Gzip)? {
-                    return Ok(Some(node));
-                }
-            }
-        }
-
-        try_path(path, ContentEncoding::Identity)
-    }
-
     /// Ensures path is safe: no NUL bytes, not absolute, no `..` segments.
     fn validate_path(&self, path: &str) -> Result<(), ServeFilesError> {
         if memchr::memchr(0, path.as_bytes()).is_some() {
@@ -251,32 +208,74 @@ impl ServedDir {
 /// A builder for [`ServedDir`].
 pub struct ServedDirBuilder {
     dirpath: PathBuf,
-    auto_compress: bool,
+    compression_strategy: CompressionStrategy,
     strip_prefix: Option<String>,
     known_extensions: Option<HashMap<String, HeaderValue>>,
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
+    append_index_html: bool,
 }
 
 impl ServedDirBuilder {
     fn new(dirpath: PathBuf) -> Result<Self, ServeFilesError> {
         if !dirpath.is_dir() {
-            return Err(ServeFilesError::NotADirectory(dirpath));
+            let msg = format!("path is not a directory: {}", dirpath.display());
+            return Err(ServeFilesError::ConfigError(msg));
         }
         Ok(Self {
             dirpath,
-            auto_compress: true,
+            compression_strategy: CompressionStrategy::None,
             strip_prefix: None,
             known_extensions: None,
             default_content_type: OCTET_STREAM.clone(),
             common_headers: HeaderMap::new(),
+            append_index_html: false,
         })
     }
 
-    /// Sets whether to automatically serve compressed versions of files.
-    /// Defaults to `true`.
-    pub fn auto_compress(mut self, auto_compress: bool) -> Self {
-        self.auto_compress = auto_compress;
+    /// Enables use of pre-compressed files based on file extensions.
+    ///
+    /// # Arguments
+    ///
+    /// * `br` - Whether to search for `.br` files.
+    /// * `gzip` - Whether to search for `.gz` files.
+    /// * `zstd` - Whether to search for `.zstd` files.
+    pub fn static_compression(mut self, br: bool, gzip: bool, zstd: bool) -> Self {
+        self.compression_strategy =
+            CompressionStrategy::Static(CompressionSupport::new(br, gzip, zstd));
+        self
+    }
+
+    /// Appends "/index.html" to directory paths.
+    pub fn append_index_html(mut self, append: bool) -> Self {
+        self.append_index_html = append;
+        self
+    }
+
+    /// Enables dynamic compression using Brotli.
+    ///
+    /// This will compress files on the fly and cache the results.
+    ///
+    /// # Arguments
+    ///
+    /// * `cache_size` - The number of files to cache. Must be a power of two and at least 4.
+    /// * `compression_level` - The compression level to use. 0 is fastest, 11 is best compression.
+    #[cfg(feature = "runtime-compression")]
+    pub fn dynamic_compression(mut self, cache_size: u16, compression_level: u8) -> Self {
+        let brotli_cache = BrotliCache::builder()
+            .cache_size(cache_size)
+            .compression_level(compression_level)
+            .build();
+        let strategy = CompressionStrategy::Dynamic(Arc::new(brotli_cache));
+        self.compression_strategy = strategy;
+        self
+    }
+
+    /// Enables dynamic compression using a pre-built Brotli cache.
+    #[cfg(feature = "runtime-compression")]
+    pub fn dynamic_compression_with_cache(mut self, cache: BrotliCache) -> Self {
+        let strategy = CompressionStrategy::Dynamic(Arc::new(cache));
+        self.compression_strategy = strategy;
         self
     }
 
@@ -312,67 +311,13 @@ impl ServedDirBuilder {
     pub fn build(self) -> ServedDir {
         ServedDir {
             dirpath: self.dirpath,
-            auto_compress: self.auto_compress,
+            compression_strategy: self.compression_strategy,
             strip_prefix: self.strip_prefix,
             known_extensions: self.known_extensions,
             default_content_type: self.default_content_type,
             common_headers: self.common_headers,
+            append_index_html: self.append_index_html,
         }
-    }
-}
-
-enum ContentEncoding {
-    Gzip,
-    Brotli,
-    Identity,
-}
-
-impl ContentEncoding {
-    /// Returns the encoding this file is assumed to have applied to the caller's request.
-    /// E.g., if automatic gzip compression is enabled and `index.html.gz` was found when the
-    /// caller requested `index.html`, this will return `Some("gzip")`. If the caller requests
-    /// `index.html.gz`, this will return `None` because the gzip encoding is built in to the
-    /// caller's request.
-    fn get_header_value(&self) -> Option<HeaderValue> {
-        match self {
-            ContentEncoding::Gzip => Some(HeaderValue::from_static("gzip")),
-            ContentEncoding::Brotli => Some(HeaderValue::from_static("br")),
-            ContentEncoding::Identity => None,
-        }
-    }
-}
-
-/// An opened path (aka inode on Unix) as returned by `FsDir::open`.
-///
-/// This is not necessarily a plain file; it could also be a directory, for example.
-///
-/// The caller can inspect it as desired. If it is a directory, the caller might pass the result of
-/// `into_file()` to `nix::dir::Dir::from`. If it is a plain file, the caller might create an
-/// `serve_files::Entity` with `into_file_entity()`.
-struct Node {
-    path: PathBuf,
-    metadata: std::fs::Metadata,
-    file: File,
-    content_encoding: ContentEncoding,
-}
-
-impl Node {
-    /// Converts this node (which must represent a plain file) into a `FileEntity`.
-    /// The caller is expected to supply all headers. The function `add_encoding_headers`
-    /// may be useful.
-    fn into_file_entity<D, E>(
-        self,
-        headers: HeaderMap,
-    ) -> Result<crate::file::FileEntity<D, E>, ServeFilesError>
-    where
-        D: 'static + Send + Sync + bytes::Buf + From<Vec<u8>> + From<&'static [u8]>,
-        E: 'static
-            + Send
-            + Sync
-            + Into<Box<dyn std::error::Error + Send + Sync>>
-            + From<Box<dyn std::error::Error + Send + Sync>>,
-    {
-        FileEntity::new_with_metadata(&self.path, self.file, &self.metadata, headers)
     }
 }
 
@@ -436,64 +381,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_served_dir_auto_compress() {
-        let context = TestContext::new();
-        context.write_file("test.txt", "plain text");
-        context.write_file("test.txt.gz", "fake gzip content");
-        context.write_file("test.txt.br", "fake brotli content");
-
-        // 1. auto_compress enabled (default), Accept-Encoding: gzip
-        let served_dir = context.builder.build();
-        let mut hdrs = HeaderMap::new();
-        hdrs.insert(
-            header::ACCEPT_ENCODING,
-            HeaderValue::from_static("gzip, deflate"),
-        );
-
-        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
-        assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "gzip");
-        assert_eq!(e.read_body().await.unwrap(), "fake gzip content");
-
-        // 2. auto_compress enabled (default), Accept-Encoding: br
-        let mut hdrs = HeaderMap::new();
-        hdrs.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("br"));
-        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
-        assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "br");
-        assert_eq!(e.read_body().await.unwrap(), "fake brotli content");
-
-        // 3. auto_compress enabled (default), Accept-Encoding: br, gzip (prioritizes br)
-        let mut hdrs = HeaderMap::new();
-        hdrs.insert(
-            header::ACCEPT_ENCODING,
-            HeaderValue::from_static("br, gzip"),
-        );
-        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
-        assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "br");
-        assert_eq!(e.read_body().await.unwrap(), "fake brotli content");
-
-        // 4. auto_compress enabled (default), no Accept-Encoding
-        let hdrs = HeaderMap::new();
-        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
-        assert!(e.header(&header::CONTENT_ENCODING).is_none());
-        assert_eq!(e.read_body().await.unwrap(), "plain text");
-
-        // 5. auto_compress disabled
-        let served_dir = ServedDir::builder(context.tmp.path().to_path_buf())
-            .unwrap()
-            .auto_compress(false)
-            .build();
-        let mut hdrs = HeaderMap::new();
-        hdrs.insert(
-            header::ACCEPT_ENCODING,
-            HeaderValue::from_static("br, gzip"),
-        );
-
-        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
-        assert!(e.header(&header::CONTENT_ENCODING).is_none());
-        assert_eq!(e.read_body().await.unwrap(), "plain text");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn test_served_dir_forbidden_paths() {
         let context = TestContext::new();
         let served_dir = context.builder.build();
@@ -547,10 +434,7 @@ mod tests {
         assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/css");
 
         let e = served_dir.get("script.js", &hdrs).await.unwrap();
-        assert_eq!(
-            e.header(&header::CONTENT_TYPE).unwrap(),
-            "application/javascript"
-        );
+        assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/javascript");
 
         let e = served_dir.get("image.webp", &hdrs).await.unwrap();
         assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "image/webp");
@@ -587,5 +471,198 @@ mod tests {
         );
         assert_eq!(e.header(&header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(), "*");
         assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/plain");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_unexpected_br_path() {
+        let context = TestContext::new();
+        let path = context.tmp.path();
+
+        // Create the raw file
+        context.write_file("test.txt", "raw content");
+
+        // Create a directory where the .br file is expected
+        std::fs::create_dir(path.join("test.txt.br")).unwrap();
+
+        let served_dir = context.builder.static_compression(true, true, true).build();
+        let mut hdrs = HeaderMap::new();
+        hdrs.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("br"));
+
+        // Should ignore the directory and serve the raw file
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert!(e.header(&header::CONTENT_ENCODING).is_none());
+        assert_eq!(e.read_body().await.unwrap(), "raw content");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_unexpected_gz_path() {
+        let context = TestContext::new();
+        let path = context.tmp.path();
+
+        // Create the raw file
+        context.write_file("test.txt", "raw content");
+
+        // Create a directory where the .gz file is expected
+        std::fs::create_dir(path.join("test.txt.gz")).unwrap();
+
+        let served_dir = context.builder.static_compression(true, true, true).build();
+        let mut hdrs = HeaderMap::new();
+        hdrs.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
+
+        // Should ignore the directory and serve the raw file
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert!(e.header(&header::CONTENT_ENCODING).is_none());
+        assert_eq!(e.read_body().await.unwrap(), "raw content");
+    }
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_get_directory() {
+        let context = TestContext::new();
+        let path = context.tmp.path();
+        std::fs::create_dir(path.join("subdir")).unwrap();
+
+        let served_dir = context.builder.build();
+        let hdrs = HeaderMap::new();
+
+        let err = served_dir.get("subdir", &hdrs).await.unwrap_err();
+        assert!(matches!(err, ServeFilesError::IsDirectory(_)));
+        if let ServeFilesError::IsDirectory(err_path) = err {
+            assert_eq!(err_path, path.join("subdir"));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg(unix)]
+    async fn test_served_dir_symlink() {
+        use std::os::unix::fs::symlink;
+        let context = TestContext::new();
+        let path = context.tmp.path();
+
+        // Create the raw file
+        context.write_file("target.txt", "target content");
+
+        // Create a symlink pointing to the target file
+        symlink(path.join("target.txt"), path.join("link.txt")).unwrap();
+
+        let served_dir = context.builder.build();
+        let hdrs = HeaderMap::new();
+
+        // Should follow the symlink and serve the target file
+        let e = served_dir.get("link.txt", &hdrs).await.unwrap();
+        assert_eq!(e.read_body().await.unwrap(), "target content");
+        assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/plain");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_append_index_html() {
+        let context = TestContext::new();
+        let path = context.tmp.path();
+        std::fs::create_dir(path.join("subdir")).unwrap();
+        std::fs::write(path.join("subdir").join("index.html"), b"index content").unwrap();
+
+        let builder = ServedDir::builder(path.to_path_buf()).unwrap();
+
+        // 1. append_index_html disabled (default)
+        let served_dir = builder.build();
+        let hdrs = HeaderMap::new();
+        let err = served_dir.get("subdir", &hdrs).await.unwrap_err();
+        assert!(matches!(err, ServeFilesError::IsDirectory(_)));
+
+        // 2. append_index_html enabled
+        let builder = ServedDir::builder(path.to_path_buf()).unwrap();
+        let served_dir = builder.append_index_html(true).build();
+        let e = served_dir.get("subdir", &hdrs).await.unwrap();
+        assert_eq!(e.read_body().await.unwrap(), "index content");
+        assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/html");
+
+        // 3. append_index_html enabled, but index.html missing
+        std::fs::create_dir(path.join("empty_subdir")).unwrap();
+        let err = served_dir.get("empty_subdir", &hdrs).await.unwrap_err();
+        assert!(matches!(err, ServeFilesError::NotFound));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_compression_priority() {
+        let context = TestContext::new();
+        context.write_file("test.txt", "raw content");
+        context.write_file("test.txt.gz", "fake gzip content");
+        context.write_file("test.txt.br", "fake brotli content");
+        context.write_file("test.txt.zstd", "fake zstd content");
+
+        let served_dir = context.builder.static_compression(true, true, true).build();
+        let mut hdrs = HeaderMap::new();
+        hdrs.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("br, gzip, zstd"),
+        );
+
+        // 1. All 3 available -> Brotli used
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "br");
+        assert_eq!(e.read_body().await.unwrap(), "fake brotli content");
+
+        // 2. Zstandard and Gzip available -> Zstandard used
+        std::fs::remove_file(context.tmp.path().join("test.txt.br")).unwrap();
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "zstd");
+        assert_eq!(e.read_body().await.unwrap(), "fake zstd content");
+
+        // 3. Only Gzip available -> Gzip used
+        std::fs::remove_file(context.tmp.path().join("test.txt.zstd")).unwrap();
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "gzip");
+        assert_eq!(e.read_body().await.unwrap(), "fake gzip content");
+
+        // 4. None available -> Raw used
+        std::fs::remove_file(context.tmp.path().join("test.txt.gz")).unwrap();
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert!(e.header(&header::CONTENT_ENCODING).is_none());
+        assert_eq!(e.read_body().await.unwrap(), "raw content");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_static_compression_config() {
+        let context = TestContext::new();
+        context.write_file("test.txt", "raw content");
+        context.write_file("test.txt.br", "fake brotli content");
+        context.write_file("test.txt.gz", "fake gzip content");
+        context.write_file("test.txt.zstd", "fake zstd content");
+
+        let mut hdrs = HeaderMap::new();
+        hdrs.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("br, gzip, zstd"),
+        );
+
+        // 1. Only Brotli enabled
+        let served_dir = context
+            .builder
+            .static_compression(true, false, false)
+            .build();
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "br");
+
+        // 2. Only Zstandard enabled
+        let builder = ServedDir::builder(context.tmp.path().to_path_buf()).unwrap();
+        let served_dir = builder.static_compression(false, false, true).build();
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "zstd");
+
+        // 3. Only Gzip enabled
+        let builder = ServedDir::builder(context.tmp.path().to_path_buf()).unwrap();
+        let served_dir = builder.static_compression(false, true, false).build();
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "gzip");
+
+        // 4. None enabled (even if files exist and client supports them)
+        let builder = ServedDir::builder(context.tmp.path().to_path_buf()).unwrap();
+        let served_dir = builder.static_compression(false, false, false).build();
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert!(e.header(&header::CONTENT_ENCODING).is_none());
+
+        // 5. Both Brotli and Zstandard enabled (Brotli preferred)
+        let builder = ServedDir::builder(context.tmp.path().to_path_buf()).unwrap();
+        let served_dir = builder.static_compression(true, false, true).build();
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "br");
     }
 }

@@ -38,15 +38,15 @@
 
 use bytes::Buf;
 use futures_core::Stream;
-#[cfg(test)]
-use futures_util::StreamExt as _;
 use http::header::{HeaderMap, HeaderValue};
 use std::error::Error;
 use std::fmt::Display;
+use std::fs::File;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Error as IOError;
 use std::io::ErrorKind;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::SystemTime;
 
@@ -78,12 +78,14 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// Error returned by this crate's public APIs.
 #[derive(Debug)]
 pub enum ServeFilesError {
-    /// The path exists but is not a regular file.
-    NotAFile(PathBuf),
-    /// The input path is not a directory.
-    NotADirectory(PathBuf),
+    /// Returned by ServedDirBuilder if configuration is invalid.
+    ConfigError(String),
+    /// The path is a directory.
+    IsDirectory(PathBuf),
     /// The requested file was not found.
     NotFound,
+    /// Error compressing file with Brotli.
+    CompressionError(String, IOError),
     /// The input path is invalid (e.g., contains NUL bytes or ".." segments).
     InvalidPath(String),
     /// An unexpected I/O error occurred.
@@ -93,15 +95,16 @@ pub enum ServeFilesError {
 impl Display for ServeFilesError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ServeFilesError::NotAFile(path) => {
-                write!(f, "Path is not a file: {}", path.display())
-            }
-            ServeFilesError::NotADirectory(path) => {
-                write!(f, "Path is not a directory: {}", path.display())
+            ServeFilesError::ConfigError(msg) => write!(f, "{}", msg),
+            ServeFilesError::IsDirectory(path) => {
+                write!(f, "Path is a directory: {}", path.display())
             }
             ServeFilesError::NotFound => write!(f, "File not found"),
             ServeFilesError::InvalidPath(msg) => write!(f, "Invalid path: {}", msg),
             ServeFilesError::IOError(err) => write!(f, "I/O error: {}", err),
+            ServeFilesError::CompressionError(msg, err) => {
+                write!(f, "Brotli compression error: {} (I/O error: {})", msg, err)
+            }
         }
     }
 }
@@ -110,6 +113,7 @@ impl Error for ServeFilesError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             ServeFilesError::IOError(err) => Some(err),
+            ServeFilesError::CompressionError(_, err) => Some(err),
             _ => None,
         }
     }
@@ -129,6 +133,8 @@ mod body;
 
 pub mod served_dir;
 
+#[cfg(feature = "runtime-compression")]
+mod brotli_cache;
 mod compression;
 mod etag;
 mod file;
@@ -137,9 +143,77 @@ mod range;
 mod serving;
 
 pub use crate::body::Body;
-pub use crate::compression::{detect_compression_support, CompressionSupport};
+pub use crate::compression::CompressionSupport;
 pub use crate::file::FileEntity;
 pub use crate::serving::serve;
+
+/// Basic metadata about a particular version of a file, used as a cache key.
+#[derive(Hash, Eq, PartialEq, Clone, Copy)]
+pub(crate) struct FileInfo {
+    path_hash: u64,
+    len: u64,
+    mtime: SystemTime,
+}
+
+impl FileInfo {
+    /// Creates a new FileInfo if the path is a file, otherwise returns an error.
+    pub(crate) fn open_file(path: &Path, file: &File) -> Result<Self, ServeFilesError> {
+        // Rust's default hasher is relatively secure... it uses a random seed
+        // and currently uses the siphash algorithm, which is secure as long as
+        // the seed is random. The file hash is only used internally in memory,
+        // and doesn't to be consistent across reboots or different machines.
+        // Because we throw away the full path and just use the hash instead, in
+        // theory, an attacker who has the ability to write new static files to
+        // one directory could force a collision with a file in another
+        // directory if this hash function were not secure.
+        // We use rapidhash (a non-cryptographic hash) to hash file contents
+        // because we need an algorithm with portable output (consistent across
+        // reboots and machines) and because performance matters more there, but
+        // because it's only used for etag values for a single resource, an
+        // attacker in that scenario wouldn't be able to change the observed
+        // contents of any file other than the one he modified.
+        let mut hasher = DefaultHasher::new();
+        path.hash(&mut hasher);
+        let path_hash: u64 = hasher.finish();
+        let metadata = file.metadata()?;
+        let file_type = metadata.file_type();
+        if file_type.is_dir() {
+            return Err(ServeFilesError::IsDirectory(path.to_path_buf()));
+        }
+        // if it's not a directory and not a file, we don't want to handle it
+        // and behave as if it doesn't exist
+        if !file_type.is_file() {
+            return Err(ServeFilesError::NotFound);
+        }
+        Ok(Self {
+            path_hash,
+            len: metadata.len(),
+            mtime: metadata.modified()?,
+        })
+    }
+
+    pub(crate) fn for_path(path: &Path) -> Result<Self, ServeFilesError> {
+        let file = File::open(path)?;
+        Self::open_file(path, &file)
+    }
+
+    /// Returns the length of the file in bytes.
+    pub(crate) fn len(&self) -> u64 {
+        self.len
+    }
+
+    /// Returns the last modification time of the file.
+    pub(crate) fn mtime(&self) -> SystemTime {
+        self.mtime
+    }
+
+    pub(crate) fn get_hash(&self) -> u64 {
+        use std::hash::Hash;
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+}
 
 /// A reusable, read-only, byte-rangeable HTTP entity for GET and HEAD serving.
 /// Must return exactly the same data on every call.
@@ -154,7 +228,7 @@ pub trait Entity: 'static + Send + Sync {
     /// Note that errors returned directly from the body to `hyper` just drop
     /// the stream abruptly without being logged. Callers might use an
     /// intermediary service for better observability.
-    type Error: 'static + From<BoxError>;
+    type Error: 'static + Send + Sync;
 
     /// The type of a data chunk.
     ///

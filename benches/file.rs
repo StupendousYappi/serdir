@@ -24,7 +24,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 async fn serve(
     req: Request<hyper::body::Incoming>,
-) -> Result<Response<serve_files::Body<Bytes, BoxError>>, BoxError> {
+) -> Result<Response<serve_files::Body<Bytes>>, BoxError> {
     let f = tokio::task::block_in_place::<_, Result<_, BoxError>>(move || {
         let path = PATH.lock().unwrap();
         let headers = http::header::HeaderMap::new();

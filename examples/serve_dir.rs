@@ -90,17 +90,14 @@ async fn serve(
     served_dir: &Arc<ServedDir>,
     req: http::Request<hyper::body::Incoming>,
 ) -> Result<http::Response<Body>, ServeFilesError> {
-    let p = if req.uri().path() == "/" {
-        "."
-    } else {
-        &req.uri().path()[1..]
-    };
+    debug_assert!(req.uri().path().starts_with('/'));
+    let p = &req.uri().path()[1..];
 
     let res = served_dir.get(p, req.headers()).await;
     match res {
         Ok(f) => Ok(serve_files::serve(f, &req)),
         Err(e) => match e {
-            ServeFilesError::NotAFile(path) => directory_listing(req, &path),
+            ServeFilesError::IsDirectory(path) => directory_listing(req, &path),
             _ => Err(e),
         },
     }
@@ -127,11 +124,22 @@ async fn handle_request(
 
 #[tokio::main]
 async fn main() {
-    let served_dir: &'static Arc<ServedDir> =
-        Box::leak(Box::new(Arc::new(ServedDir::builder(".").unwrap().build())));
+    env_logger::init();
+    let path = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
+    let served_dir: &'static Arc<ServedDir> = Box::leak(Box::new(Arc::new(
+        ServedDir::builder(&path)
+            .unwrap()
+            .append_index_html(true)
+            .dynamic_compression(16, 5)
+            .build(),
+    )));
     let addr = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 1337));
     let listener = TcpListener::bind(addr).await.unwrap();
-    println!("Serving . on http://{}", listener.local_addr().unwrap());
+    println!(
+        "Serving {} on http://{}",
+        path,
+        listener.local_addr().unwrap()
+    );
     loop {
         let (tcp, _) = listener.accept().await.unwrap();
         tokio::spawn(async move {

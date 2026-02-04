@@ -40,16 +40,14 @@ async fn serve(
     ctx: &'static Context,
     req: Request<hyper::body::Incoming>,
 ) -> Result<Response<serve_files::Body>, BoxError> {
-    let f = tokio::task::block_in_place::<_, Result<FileEntity<Bytes, BoxError>, BoxError>>(
-        move || {
-            let mut headers = HeaderMap::new();
-            headers.insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("application/octet-stream"),
-            );
-            Ok(FileEntity::new(&ctx.path, headers)?)
-        },
-    )?;
+    let f = tokio::task::block_in_place::<_, Result<FileEntity<Bytes>, BoxError>>(move || {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/octet-stream"),
+        );
+        Ok(FileEntity::new(&ctx.path, headers)?)
+    })?;
     Ok(serve_files::serve(f, &req))
 }
 

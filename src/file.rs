@@ -7,14 +7,14 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use crate::platform::{self, FileExt, FileInfo};
+use crate::platform::FileExt;
+use crate::FileInfo;
 use bytes::Buf;
 use fixed_cache::{static_cache, Cache};
 use futures_core::Stream;
 use futures_util::stream;
 use http::header::{HeaderMap, HeaderValue};
 use http::HeaderName;
-use std::error::Error as StdError;
 use std::fs::File;
 use std::io;
 use std::ops::Range;
@@ -51,27 +51,19 @@ static CHUNK_SIZE: u64 = 65_536;
 ///     Ok(serve_files::serve(f, &req))
 /// }
 /// ```
-#[derive(Debug)]
-pub struct FileEntity<
-    D: 'static + Send + Buf + From<Vec<u8>> + From<&'static [u8]>,
-    E: 'static + Send + Into<Box<dyn StdError + Send + Sync>> + From<Box<dyn StdError + Send + Sync>>,
-> {
+#[derive(Debug, Clone)]
+pub struct FileEntity<D: 'static + Send + Buf + From<Vec<u8>> + From<&'static [u8]>> {
     len: u64,
     mtime: SystemTime,
     f: Arc<std::fs::File>,
     headers: HeaderMap,
     etag: ETag,
-    phantom: std::marker::PhantomData<(D, E)>,
+    phantom: std::marker::PhantomData<D>,
 }
 
-impl<D, E> FileEntity<D, E>
+impl<D> FileEntity<D>
 where
     D: 'static + Send + Sync + Buf + From<Vec<u8>> + From<&'static [u8]>,
-    E: 'static
-        + Send
-        + Sync
-        + Into<Box<dyn StdError + Send + Sync>>
-        + From<Box<dyn StdError + Send + Sync>>,
 {
     /// Creates a new FileEntity.
     ///
@@ -81,9 +73,9 @@ where
     /// should be wrapped in [`tokio::task::block_in_place`] as well.
     pub fn new(path: impl AsRef<Path>, headers: HeaderMap) -> Result<Self, ServeFilesError> {
         let path = path.as_ref();
-        let file = File::open(path)?;
-        let m = file.metadata()?;
-        FileEntity::new_with_metadata(path, file, &m, headers)
+        let file = File::open(&path)?;
+        let file_info = crate::FileInfo::open_file(path, &file)?;
+        FileEntity::new_with_metadata(Arc::new(file), file_info, headers)
     }
 
     /// Creates a new FileEntity, with presupplied metadata and a pre-opened file.
@@ -97,28 +89,19 @@ where
     /// refer to the same file- the metadata should be retrieved from the opened file handle
     /// to ensure this.
     pub(crate) fn new_with_metadata(
-        path: impl AsRef<Path>,
-        file: std::fs::File,
-        metadata: &::std::fs::Metadata,
+        file: Arc<std::fs::File>,
+        file_info: crate::FileInfo,
         headers: HeaderMap,
     ) -> Result<Self, ServeFilesError> {
-        // `file` might represent a directory. If so, it's better to realize that now (while
-        // we can still send a proper HTTP error) rather than during `get_range` (when all we can
-        // do is drop the HTTP connection).
-        if !metadata.is_file() {
-            return Err(ServeFilesError::NotAFile(path.as_ref().to_path_buf()));
-        }
-
-        let info = platform::file_info(&file, metadata).map_err(ServeFilesError::IOError)?;
-        let etag: ETag = ETAG_CACHE
-            .get_or_try_insert_with(info, |_info| ETag::from_file(&file))
-            .map_err(ServeFilesError::IOError)?;
+        debug_assert!(file.metadata().unwrap().is_file());
+        let etag: ETag =
+            ETAG_CACHE.get_or_try_insert_with(file_info, |_info| ETag::from_file(&file))?;
 
         Ok(FileEntity {
-            len: info.len,
-            mtime: info.mtime,
+            len: file_info.len(),
+            mtime: file_info.mtime(),
             headers,
-            f: Arc::new(file),
+            f: file,
             etag,
             phantom: std::marker::PhantomData,
         })
@@ -128,19 +111,19 @@ where
     pub fn header(&self, name: &HeaderName) -> Option<&HeaderValue> {
         self.headers.get(name)
     }
+
+    /// Returns the size of the file.
+    pub fn size(&self) -> u64 {
+        self.len
+    }
 }
 
-impl<D, E> Entity for FileEntity<D, E>
+impl<D> Entity for FileEntity<D>
 where
     D: 'static + Send + Sync + Buf + From<Vec<u8>> + From<&'static [u8]>,
-    E: 'static
-        + Send
-        + Sync
-        + Into<Box<dyn StdError + Send + Sync>>
-        + From<Box<dyn StdError + Send + Sync>>,
 {
     type Data = D;
-    type Error = E;
+    type Error = crate::IOError;
 
     fn len(&self) -> u64 {
         self.len
@@ -157,10 +140,7 @@ where
             let chunk_size = std::cmp::min(CHUNK_SIZE, left.end - left.start) as usize;
             Some(tokio::task::block_in_place(move || {
                 match f.read_range(chunk_size, left.start) {
-                    Err(e) => (
-                        Err(Box::<dyn StdError + Send + Sync + 'static>::from(e).into()),
-                        (left, f),
-                    ),
+                    Err(e) => (Err(e), (left, f)),
                     Ok(v) => {
                         let bytes_read = v.len();
                         (Ok(v.into()), (left.start + bytes_read as u64..left.end, f))
@@ -240,12 +220,11 @@ mod tests {
     use std::time::Duration;
     use std::time::SystemTime;
 
-    type BoxError = Box<dyn std::error::Error + Sync + Send>;
-    type CRF = FileEntity<Bytes, BoxError>;
+    type CRF = FileEntity<Bytes>;
 
     async fn to_bytes(
-        s: Pin<Box<dyn Stream<Item = Result<Bytes, BoxError>> + Send>>,
-    ) -> Result<Bytes, BoxError> {
+        s: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
+    ) -> Result<Bytes, std::io::Error> {
         let concat = Pin::from(s)
             .try_fold(Vec::new(), |mut acc, item| async move {
                 acc.extend(&item[..]);
@@ -364,7 +343,6 @@ mod tests {
 
             // Test that
             let e = to_bytes(crf.get_range(0..4)).await.unwrap_err();
-            let e = e.downcast::<std::io::Error>().unwrap();
             assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
         })
         .await

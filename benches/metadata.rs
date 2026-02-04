@@ -9,42 +9,19 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use http::HeaderMap;
 use serve_files::served_dir::ServedDir;
-use std::fs::{self, File};
-use std::path::Path;
-
-fn path_metadata(path: &Path) -> Option<fs::Metadata> {
-    fs::metadata(path).ok()
-}
-
-fn file_metadata(path: &Path) -> Option<fs::Metadata> {
-    File::open(path).and_then(|f| f.metadata()).ok()
-}
+use std::{fs, hint::black_box};
 
 fn criterion_benchmark(c: &mut Criterion) {
     let tmpdir = tempfile::tempdir().unwrap();
     let exists_path = tmpdir.path().join("exists");
     fs::write(&exists_path, "hello").unwrap();
-    let missing_path = tmpdir.path().join("missing");
 
     let mut group = c.benchmark_group("metadata");
 
-    group.bench_with_input("path_exists", &exists_path.as_path(), |b, path| {
-        b.iter(|| path_metadata(path))
-    });
-
-    group.bench_with_input("path_missing", &missing_path.as_path(), |b, path| {
-        b.iter(|| path_metadata(path))
-    });
-
-    group.bench_with_input("file_exists", &exists_path.as_path(), |b, path| {
-        b.iter(|| file_metadata(path))
-    });
-
-    group.bench_with_input("file_missing", &missing_path.as_path(), |b, path| {
-        b.iter(|| file_metadata(path))
-    });
-
-    let served_dir = ServedDir::builder(tmpdir.path()).unwrap().build();
+    let served_dir = ServedDir::builder(tmpdir.path())
+        .unwrap()
+        .static_compression(false, false, false)
+        .build();
     let hdrs = HeaderMap::new();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -53,13 +30,15 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     group.bench_function("served_dir_exists", |b| {
         b.to_async(&rt).iter(|| async {
-            served_dir.get("exists", &hdrs).await.unwrap();
+            let result = served_dir.get("exists", &hdrs).await.unwrap();
+            black_box(result);
         })
     });
 
     group.bench_function("served_dir_missing", |b| {
         b.to_async(&rt).iter(|| async {
-            served_dir.get("missing", &hdrs).await.unwrap_err();
+            let result = served_dir.get("missing", &hdrs).await.unwrap_err();
+            black_box(result);
         })
     });
 
