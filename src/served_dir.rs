@@ -8,6 +8,8 @@ use crate::compression::{CompressionStrategy, CompressionSupport, MatchedFile};
 
 #[cfg(feature = "runtime-compression")]
 use crate::brotli_cache::BrotliCache;
+#[cfg(feature = "tower")]
+use crate::tower::ServedDirService;
 
 use crate::{FileEntity, ServeFilesError};
 use bytes::Bytes;
@@ -305,6 +307,12 @@ impl ServedDirBuilder {
     pub fn common_header(mut self, name: header::HeaderName, value: HeaderValue) -> Self {
         self.common_headers.insert(name, value);
         self
+    }
+
+    /// Builds a tower service from the `ServedDirBuilder`.
+    #[cfg(feature = "tower")]
+    pub fn build_tower_service(self) -> ServedDirService {
+        ServedDirService::new(self.build())
     }
 
     /// Builds the [`ServedDir`].
