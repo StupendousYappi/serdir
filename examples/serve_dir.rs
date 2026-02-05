@@ -86,39 +86,34 @@ fn directory_listing(
     Ok(resp)
 }
 
-async fn serve(
-    served_dir: &Arc<ServedDir>,
-    req: http::Request<hyper::body::Incoming>,
-) -> Result<http::Response<Body>, ServeFilesError> {
-    debug_assert!(req.uri().path().starts_with('/'));
-    let p = &req.uri().path()[1..];
-
-    let res = served_dir.get(p, req.headers()).await;
-    match res {
-        Ok(f) => Ok(serve_files::serve(f, &req)),
-        Err(e) => match e {
-            ServeFilesError::IsDirectory(path) => directory_listing(req, &path),
-            _ => Err(e),
-        },
-    }
-}
-
 async fn handle_request(
     served_dir: &Arc<ServedDir>,
     req: http::Request<hyper::body::Incoming>,
 ) -> Result<http::Response<Body>, ::std::io::Error> {
-    let e = match serve(served_dir, req).await {
-        Ok(res) => return Ok(res),
+    debug_assert!(req.uri().path().starts_with('/'));
+    let p = &req.uri().path()[1..];
+
+    let err = match served_dir.get(p, req.headers()).await {
+        Ok(f) => return Ok(serve_files::serve(f, &req, http::StatusCode::OK)),
+        Err(ServeFilesError::IsDirectory(path)) => match directory_listing(req, &path) {
+            Ok(res) => return Ok(res),
+            Err(e) => e,
+        },
+        Err(ServeFilesError::NotFound(Some(f))) => {
+            return Ok(serve_files::serve(f, &req, http::StatusCode::NOT_FOUND))
+        }
         Err(e) => e,
     };
-    let status = match e {
-        ServeFilesError::NotFound => http::StatusCode::NOT_FOUND,
+
+    let status = match err {
+        ServeFilesError::NotFound(_) => http::StatusCode::NOT_FOUND,
         ServeFilesError::InvalidPath(_) => http::StatusCode::BAD_REQUEST,
         _ => http::StatusCode::INTERNAL_SERVER_ERROR,
     };
+    let reason = status.canonical_reason().unwrap_or_default();
     Ok(http::Response::builder()
         .status(status)
-        .body(serve_files::Body::from(format!("Error: {}", e)))
+        .body(serve_files::Body::from(reason))
         .unwrap())
 }
 

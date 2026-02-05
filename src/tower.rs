@@ -58,12 +58,16 @@ where
 
             match served_dir.get(path, req.headers()).await {
                 Ok(entity) => {
-                    let resp = crate::serving::serve(entity, &req);
+                    let resp = crate::serving::serve(entity, &req, StatusCode::OK);
                     Ok(resp)
                 }
                 Err(e) => {
                     let status = match e {
-                        ServeFilesError::NotFound => StatusCode::NOT_FOUND,
+                        ServeFilesError::NotFound(Some(entity)) => {
+                            let resp = crate::serving::serve(entity, &req, StatusCode::NOT_FOUND);
+                            return Ok(resp);
+                        }
+                        ServeFilesError::NotFound(None) => StatusCode::NOT_FOUND,
                         ServeFilesError::IsDirectory(_) => StatusCode::NOT_FOUND,
                         ServeFilesError::InvalidPath(_) => StatusCode::BAD_REQUEST,
                         _ => StatusCode::INTERNAL_SERVER_ERROR,

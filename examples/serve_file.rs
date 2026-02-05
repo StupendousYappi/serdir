@@ -48,7 +48,7 @@ async fn serve(
         );
         Ok(FileEntity::new(&ctx.path, headers)?)
     })?;
-    Ok(serve_files::serve(f, &req))
+    Ok(serve_files::serve(f, &req, http::StatusCode::OK))
 }
 
 #[tokio::main]

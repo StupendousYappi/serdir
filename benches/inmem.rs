@@ -68,13 +68,17 @@ async fn serve(req: Request<hyper::body::Incoming>) -> Result<Response<Body>, st
     let resp = match path.as_bytes()[1] {
         b's' => {
             // static entity
-            serve_files::serve(BytesEntity(Bytes::from_static(WONDERLAND)), &req)
+            serve_files::serve(
+                BytesEntity(Bytes::from_static(WONDERLAND)),
+                &req,
+                http::StatusCode::OK,
+            )
         }
         b'c' => {
             // copied entity
             let mut b = BytesMut::with_capacity(WONDERLAND.len());
             b.extend_from_slice(WONDERLAND);
-            serve_files::serve(BytesEntity(b.freeze()), &req)
+            serve_files::serve(BytesEntity(b.freeze()), &req, http::StatusCode::OK)
         }
         _ => unreachable!(),
     };

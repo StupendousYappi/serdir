@@ -48,7 +48,7 @@ static CHUNK_SIZE: u64 = 65_536;
 ///             Ok(serve_files::FileEntity::new("/usr/share/dict/words", headers)?)
 ///         },
 ///     )?;
-///     Ok(serve_files::serve(f, &req))
+///     Ok(serve_files::serve(f, &req, http::StatusCode::OK))
 /// }
 /// ```
 #[derive(Debug, Clone)]

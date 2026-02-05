@@ -193,7 +193,8 @@ impl CompressionStrategy {
                     let br_path = path.with_added_extension("br");
                     match Self::try_path(&br_path, ContentEncoding::Brotli) {
                         Ok(f) => return Ok(f),
-                        Err(ServeFilesError::NotFound) | Err(ServeFilesError::IsDirectory(_)) => {}
+                        Err(ServeFilesError::NotFound(_))
+                        | Err(ServeFilesError::IsDirectory(_)) => {}
                         Err(e) => return Err(e),
                     }
                 }
@@ -202,7 +203,8 @@ impl CompressionStrategy {
                     let zstd_path = path.with_added_extension("zstd");
                     match Self::try_path(&zstd_path, ContentEncoding::Zstd) {
                         Ok(f) => return Ok(f),
-                        Err(ServeFilesError::NotFound) | Err(ServeFilesError::IsDirectory(_)) => {}
+                        Err(ServeFilesError::NotFound(_))
+                        | Err(ServeFilesError::IsDirectory(_)) => {}
                         Err(e) => return Err(e),
                     }
                 }
@@ -211,7 +213,8 @@ impl CompressionStrategy {
                     let gz_path = path.with_added_extension("gz");
                     match Self::try_path(&gz_path, ContentEncoding::Gzip) {
                         Ok(f) => return Ok(f),
-                        Err(ServeFilesError::NotFound) | Err(ServeFilesError::IsDirectory(_)) => {}
+                        Err(ServeFilesError::NotFound(_))
+                        | Err(ServeFilesError::IsDirectory(_)) => {}
                         Err(e) => return Err(e),
                     }
                 }
@@ -250,7 +253,7 @@ impl CompressionStrategy {
                     extension,
                 })
             }
-            Err(ref e) if e.kind() == ErrorKind::NotFound => Err(ServeFilesError::NotFound),
+            Err(ref e) if e.kind() == ErrorKind::NotFound => Err(ServeFilesError::NotFound(None)),
             Err(e) => Err(ServeFilesError::IOError(e)),
         }
     }

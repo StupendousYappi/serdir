@@ -67,7 +67,7 @@ async fn serve(req: Request<hyper::body::Incoming>) -> Result<Response<Body<Byte
         "/weak" => &*ENTITY_WEAK_ETAG,
         p => panic!("unexpected path {}", p),
     };
-    Ok(serve_files::serve(entity, &req))
+    Ok(serve_files::serve(entity, &req, http::StatusCode::OK))
 }
 
 fn new_server() -> String {

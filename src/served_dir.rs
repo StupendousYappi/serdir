@@ -54,7 +54,9 @@ impl ServedDir {
     ) -> Result<FileEntity<Bytes>, ServeFilesError> {
         let path = match self.strip_prefix.as_deref() {
             Some(prefix) if path == prefix => ".",
-            Some(prefix) => path.strip_prefix(prefix).ok_or(ServeFilesError::NotFound)?,
+            Some(prefix) => path
+                .strip_prefix(prefix)
+                .ok_or(ServeFilesError::NotFound(None))?,
             None => path,
         };
 
@@ -70,8 +72,21 @@ impl ServedDir {
                 let index_path = full_path.join("index.html");
                 self.find_file(index_path, preferred).await?
             }
+            Err(ServeFilesError::NotFound(_)) if self.not_found_path.is_some() => {
+                let not_found_path = self.not_found_path.as_ref().unwrap().clone();
+                let matched_file = self.find_file(not_found_path, preferred).await?;
+                let headers = self.prepare_headers(&matched_file);
+                let entity = matched_file.into_file_entity(headers)?;
+                return Err(ServeFilesError::NotFound(Some(entity)));
+            }
             Err(e) => return Err(e),
         };
+
+        let headers = self.prepare_headers(&matched_file);
+        matched_file.into_file_entity(headers)
+    }
+
+    fn prepare_headers(&self, matched_file: &MatchedFile) -> HeaderMap {
         let content_type: HeaderValue = self.get_content_type(&matched_file.extension);
         let mut headers = self.common_headers.clone();
         headers.insert(http::header::CONTENT_TYPE, content_type);
@@ -83,8 +98,7 @@ impl ServedDir {
         if !self.compression_strategy.is_none() {
             headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
         }
-
-        matched_file.into_file_entity(headers)
+        headers
     }
 
     async fn find_file(
@@ -412,7 +426,7 @@ mod tests {
         let hdrs = HeaderMap::new();
 
         let err = served_dir.get("non-existent.txt", &hdrs).await.unwrap_err();
-        assert!(matches!(err, ServeFilesError::NotFound));
+        assert!(matches!(err, ServeFilesError::NotFound(_)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -447,7 +461,7 @@ mod tests {
 
         // Should fail without the prefix
         let err = served_dir.get("real.txt", &hdrs).await.unwrap_err();
-        assert!(matches!(err, ServeFilesError::NotFound));
+        assert!(matches!(err, ServeFilesError::NotFound(_)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -612,7 +626,7 @@ mod tests {
         // 3. append_index_html enabled, but index.html missing
         std::fs::create_dir(path.join("empty_subdir")).unwrap();
         let err = served_dir.get("empty_subdir", &hdrs).await.unwrap_err();
-        assert!(matches!(err, ServeFilesError::NotFound));
+        assert!(matches!(err, ServeFilesError::NotFound(_)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -742,5 +756,28 @@ mod tests {
         let served_dir = builder.static_compression(true, false, true).build();
         let e = served_dir.get("test.txt", &hdrs).await.unwrap();
         assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "br");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_not_found_path_behavior() {
+        let context = TestContext::new();
+        context.write_file("404.html", "custom 404 content");
+        context.write_file("exists.txt", "found");
+
+        let served_dir = context.builder.not_found_path("404.html").unwrap().build();
+        let hdrs = HeaderMap::new();
+
+        // 1. Existing file -> Ok
+        let e = served_dir.get("exists.txt", &hdrs).await.unwrap();
+        assert_eq!(e.read_body().await.unwrap(), "found");
+
+        // 2. Non-existent file -> NotFound(Some(entity))
+        let err = served_dir.get("missing.txt", &hdrs).await.unwrap_err();
+        if let ServeFilesError::NotFound(Some(entity)) = err {
+            assert_eq!(entity.read_body().await.unwrap(), "custom 404 content");
+            assert_eq!(entity.header(&header::CONTENT_TYPE).unwrap(), "text/html");
+        } else {
+            panic!("expected NotFound(Some(_)), got {:?}", err);
+        }
     }
 }

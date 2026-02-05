@@ -83,7 +83,7 @@ pub enum ServeFilesError {
     /// The path is a directory.
     IsDirectory(PathBuf),
     /// The requested file was not found.
-    NotFound,
+    NotFound(Option<FileEntity<bytes::Bytes>>),
     /// Error compressing file with Brotli.
     CompressionError(String, IOError),
     /// The input path is invalid (e.g., contains NUL bytes or ".." segments).
@@ -99,7 +99,7 @@ impl Display for ServeFilesError {
             ServeFilesError::IsDirectory(path) => {
                 write!(f, "Path is a directory: {}", path.display())
             }
-            ServeFilesError::NotFound => write!(f, "File not found"),
+            ServeFilesError::NotFound(_) => write!(f, "File not found"),
             ServeFilesError::InvalidPath(msg) => write!(f, "Invalid path: {}", msg),
             ServeFilesError::IOError(err) => write!(f, "I/O error: {}", err),
             ServeFilesError::CompressionError(msg, err) => {
@@ -122,7 +122,7 @@ impl Error for ServeFilesError {
 impl From<IOError> for ServeFilesError {
     fn from(err: IOError) -> Self {
         if err.kind() == ErrorKind::NotFound {
-            ServeFilesError::NotFound
+            ServeFilesError::NotFound(None)
         } else {
             ServeFilesError::IOError(err)
         }
@@ -187,7 +187,7 @@ impl FileInfo {
         // if it's not a directory and not a file, we don't want to handle it
         // and behave as if it doesn't exist
         if !file_type.is_file() {
-            return Err(ServeFilesError::NotFound);
+            return Err(ServeFilesError::NotFound(None));
         }
         Ok(Self {
             path_hash,

@@ -71,11 +71,12 @@ fn parse_modified_hdrs(
 pub fn serve<Ent: Entity<Error = crate::IOError>, BI>(
     entity: Ent,
     req: &Request<BI>,
+    status_code: StatusCode,
 ) -> Response<Body<Ent::Data>> {
     // serve takes entity itself for ownership, as needed for the multipart case. But to avoid
     // monomorphization code bloat when there are many implementations of Entity<Data, Error>,
     // delegate as much as possible to functions which take a reference to a trait object.
-    match serve_inner(&entity, req.method(), req.headers()) {
+    match serve_inner(&entity, req.method(), req.headers(), status_code) {
         ServeInner::Simple(res) => res,
         ServeInner::Multipart {
             res,
@@ -108,6 +109,7 @@ fn serve_inner<D: 'static + Buf + From<Vec<u8>> + From<&'static [u8]>>(
     ent: &dyn Entity<Error = crate::IOError, Data = D>,
     method: &http::Method,
     req_hdrs: &http::HeaderMap,
+    status_code: StatusCode,
 ) -> ServeInner<D> {
     if method != Method::GET && method != Method::HEAD {
         return ServeInner::Simple(
@@ -167,8 +169,9 @@ fn serve_inner<D: 'static + Buf + From<Vec<u8>> + From<&'static [u8]>>(
         None => true,
     };
 
-    let mut res =
-        Response::builder().header(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    let mut res = Response::builder()
+        .status(status_code)
+        .header(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     if let Some(m) = last_modified {
         // See RFC 7232 section 2.2.1 <https://tools.ietf.org/html/rfc7232#section-2.2.1>: the
         // Last-Modified must not exceed the Date. To guarantee this, set the Date now rather than

@@ -30,7 +30,7 @@ async fn serve(
         let headers = http::header::HeaderMap::new();
         Ok(serve_files::FileEntity::new(&*path, headers)?)
     })?;
-    Ok(serve_files::serve(f, &req))
+    Ok(serve_files::serve(f, &req, http::StatusCode::OK))
 }
 
 /// Returns the hostport of a newly created, never-destructed server.
