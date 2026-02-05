@@ -13,13 +13,11 @@ async fn test_served_dir_service() {
 
     let mut service = ServedDir::builder(path.to_path_buf())
         .unwrap()
-        .build_tower_service();
+        .build()
+        .into_tower_service();
 
     // Successful request
-    let req = Request::builder()
-        .uri("/index.html")
-        .body(())
-        .unwrap();
+    let req = Request::builder().uri("/index.html").body(()).unwrap();
 
     let response = service.call(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -36,13 +34,11 @@ async fn test_not_found() {
 
     let mut service = ServedDir::builder(path.to_path_buf())
         .unwrap()
-        .build_tower_service();
+        .build()
+        .into_tower_service();
 
     // Not found request
-    let req = Request::builder()
-        .uri("/missing.txt")
-        .body(())
-        .unwrap();
+    let req = Request::builder().uri("/missing.txt").body(()).unwrap();
 
     let response = service.call(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -56,14 +52,12 @@ async fn test_directory_handling() {
 
     let mut service = ServedDir::builder(path.to_path_buf())
         .unwrap()
-        .build_tower_service();
+        .build()
+        .into_tower_service();
 
     // Directory request -> Should result in 404 (ServedDir::get returns IsDirectory, mapped to 404 in tower.rs)
     // unless index.html is present and append_index_html is true, but here it is not.
-    let req = Request::builder()
-        .uri("/subdir")
-        .body(())
-        .unwrap();
+    let req = Request::builder().uri("/subdir").body(()).unwrap();
 
     let response = service.call(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
