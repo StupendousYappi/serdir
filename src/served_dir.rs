@@ -17,6 +17,7 @@ use http::{header, HeaderMap, HeaderValue};
 use std::io::Error as IOError;
 
 /// Returns `FileEntity` values for file paths within a directory.
+#[derive(Debug)]
 pub struct ServedDir {
     compression_strategy: CompressionStrategy,
     dirpath: PathBuf,
@@ -25,6 +26,7 @@ pub struct ServedDir {
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
     append_index_html: bool,
+    not_found_path: Option<PathBuf>,
 }
 
 static OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-stream");
@@ -214,6 +216,7 @@ impl ServedDir {
 }
 
 /// A builder for [`ServedDir`].
+#[derive(Debug)]
 pub struct ServedDirBuilder {
     dirpath: PathBuf,
     compression_strategy: CompressionStrategy,
@@ -222,6 +225,7 @@ pub struct ServedDirBuilder {
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
     append_index_html: bool,
+    not_found_path: Option<PathBuf>,
 }
 
 impl ServedDirBuilder {
@@ -238,6 +242,7 @@ impl ServedDirBuilder {
             default_content_type: OCTET_STREAM.clone(),
             common_headers: HeaderMap::new(),
             append_index_html: false,
+            not_found_path: None,
         })
     }
 
@@ -315,6 +320,27 @@ impl ServedDirBuilder {
         self
     }
 
+    /// Sets a path to a file to serve for 404 Not Found errors.
+    ///
+    /// The path must be relative to the directory being served.
+    pub fn not_found_path(mut self, path: impl Into<PathBuf>) -> Result<Self, ServeFilesError> {
+        let path = path.into();
+        if path.is_absolute() {
+            return Err(ServeFilesError::ConfigError(
+                "not_found_path must be relative".to_string(),
+            ));
+        }
+        let full_path = self.dirpath.join(path);
+        if !full_path.is_file() {
+            return Err(ServeFilesError::ConfigError(format!(
+                "not_found_path is not a file: {}",
+                full_path.display()
+            )));
+        }
+        self.not_found_path = Some(full_path);
+        Ok(self)
+    }
+
     /// Builds the [`ServedDir`].
     pub fn build(self) -> ServedDir {
         ServedDir {
@@ -325,6 +351,7 @@ impl ServedDirBuilder {
             default_content_type: self.default_content_type,
             common_headers: self.common_headers,
             append_index_html: self.append_index_html,
+            not_found_path: self.not_found_path,
         }
     }
 }
@@ -625,6 +652,49 @@ mod tests {
         let e = served_dir.get("test.txt", &hdrs).await.unwrap();
         assert!(e.header(&header::CONTENT_ENCODING).is_none());
         assert_eq!(e.read_body().await.unwrap(), "raw content");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_not_found_path_config() {
+        let context = TestContext::new();
+        context.write_file("404.html", "not found");
+        std::fs::create_dir(context.tmp.path().join("subdir")).unwrap();
+
+        let path = context.tmp.path().to_path_buf();
+        let builder = ServedDir::builder(path).unwrap();
+
+        // 1. Successfully set relative path to file
+        let builder = builder
+            .not_found_path("404.html")
+            .expect("failed to set not_found_path");
+        let served_dir = builder.build();
+        assert_eq!(
+            served_dir.not_found_path,
+            Some(context.tmp.path().join("404.html"))
+        );
+
+        // 2. Error on absolute path
+        let err = ServedDir::builder(context.tmp.path().to_path_buf())
+            .unwrap()
+            .not_found_path("/abs/path")
+            .unwrap_err();
+        assert!(
+            matches!(err, ServeFilesError::ConfigError(msg) if msg.contains("must be relative"))
+        );
+
+        // 3. Error on directory
+        let err = ServedDir::builder(context.tmp.path().to_path_buf())
+            .unwrap()
+            .not_found_path("subdir")
+            .unwrap_err();
+        assert!(matches!(err, ServeFilesError::ConfigError(msg) if msg.contains("is not a file")));
+
+        // 4. Error on non-existent path
+        let err = ServedDir::builder(context.tmp.path().to_path_buf())
+            .unwrap()
+            .not_found_path("missing.html")
+            .unwrap_err();
+        assert!(matches!(err, ServeFilesError::ConfigError(msg) if msg.contains("not a file")));
     }
 
     #[tokio::test(flavor = "multi_thread")]
