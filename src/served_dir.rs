@@ -13,9 +13,9 @@ use crate::hyper::ServedDirHyperService;
 #[cfg(feature = "tower")]
 use crate::tower::{ServedDirLayer, ServedDirService};
 
-use crate::{FileEntity, ServeFilesError};
+use crate::{Body, FileEntity, ServeFilesError};
 use bytes::Bytes;
-use http::{header, HeaderMap, HeaderValue};
+use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 
 /// Returns `FileEntity` values for file paths within a directory.
 #[derive(Debug)]
@@ -87,6 +87,26 @@ impl ServedDir {
             let headers = self.prepare_headers(&matched_file);
             matched_file.into_file_entity(headers)
         })
+    }
+
+    /// Returns an HTTP response for a request path and headers.
+    pub async fn get_response<B>(
+        &self,
+        req: &Request<B>,
+    ) -> Result<Response<Body>, ServeFilesError> {
+        let path = Self::normalize_path(req.uri().path());
+        match self.get(path, req.headers()).await {
+            Ok(entity) => Ok(crate::serving::serve(entity, req, StatusCode::OK)),
+            Err(ServeFilesError::NotFound(Some(entity))) => {
+                Ok(crate::serving::serve(entity, req, StatusCode::NOT_FOUND))
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Strip the leading slash from the given path, if it has one.
+    fn normalize_path(path: &str) -> &str {
+        path.strip_prefix('/').unwrap_or(path)
     }
 
     fn prepare_headers(&self, matched_file: &MatchedFile) -> HeaderMap {

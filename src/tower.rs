@@ -66,17 +66,17 @@ where
 
     fn call(&mut self, req: Request<B>) -> Self::Future {
         let served_dir = self.0.clone();
-        let serving_req = request_head(&req);
+        let serving_req = crate::request_head(&req);
         Box::pin(async move {
-            match served_dir_response(&served_dir, &serving_req).await {
+            match served_dir.get_response(&serving_req).await {
                 Ok(resp) => Ok(resp),
                 Err(ServeFilesError::NotFound(None)) | Err(ServeFilesError::IsDirectory(_)) => {
-                    Ok(status_response(StatusCode::NOT_FOUND))
+                    Ok(crate::status_response(StatusCode::NOT_FOUND))
                 }
                 Err(ServeFilesError::InvalidPath(_)) => {
-                    Ok(status_response(StatusCode::BAD_REQUEST))
+                    Ok(crate::status_response(StatusCode::BAD_REQUEST))
                 }
-                Err(_) => Ok(status_response(StatusCode::INTERNAL_SERVER_ERROR)),
+                Err(_) => Ok(crate::status_response(StatusCode::INTERNAL_SERVER_ERROR)),
             }
         })
     }
@@ -100,13 +100,13 @@ where
 
     fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
         let served_dir = self.served_dir.clone();
-        let serving_req = request_head(&req);
+        let serving_req = crate::request_head(&req);
         // Drive the request with a clone while keeping `self.inner` available for readiness checks.
         let clone = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, clone);
 
         Box::pin(async move {
-            match served_dir_response(&served_dir, &serving_req).await {
+            match served_dir.get_response(&serving_req).await {
                 Ok(resp) => Ok(box_response(resp)),
                 Err(ServeFilesError::NotFound(None))
                 | Err(ServeFilesError::IsDirectory(_))
@@ -114,49 +114,12 @@ where
                     let response = inner.call(req).await?;
                     Ok(response.map(|body| body.map_err(Into::into).boxed_unsync()))
                 }
-                Err(_) => Ok(box_response(status_response(
+                Err(_) => Ok(box_response(crate::status_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                 ))),
             }
         })
     }
-}
-
-async fn served_dir_response<B>(
-    served_dir: &ServedDir,
-    req: &Request<B>,
-) -> Result<Response<Body>, ServeFilesError> {
-    let path = normalize_path(req.uri().path());
-    match served_dir.get(path, req.headers()).await {
-        Ok(entity) => Ok(crate::serving::serve(entity, req, StatusCode::OK)),
-        Err(ServeFilesError::NotFound(Some(entity))) => {
-            Ok(crate::serving::serve(entity, req, StatusCode::NOT_FOUND))
-        }
-        Err(err) => Err(err),
-    }
-}
-
-fn normalize_path(path: &str) -> &str {
-    path.strip_prefix('/').unwrap_or(path)
-}
-
-fn request_head<B>(req: &Request<B>) -> Request<()> {
-    let mut request = Request::builder()
-        .method(req.method().clone())
-        .uri(req.uri().clone())
-        .version(req.version())
-        .body(())
-        .expect("request head should be valid");
-    *request.headers_mut() = req.headers().clone();
-    request
-}
-
-fn status_response(status: StatusCode) -> Response<Body> {
-    let reason = status.canonical_reason().unwrap_or("Unknown");
-    Response::builder()
-        .status(status)
-        .body(Body::from(reason))
-        .expect("status response should be valid")
 }
 
 fn box_response(response: Response<Body>) -> Response<TowerBody> {
