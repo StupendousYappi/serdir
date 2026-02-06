@@ -2,7 +2,7 @@
 
 #[cfg(feature = "runtime-compression")]
 use std::sync::Arc;
-use std::{collections::HashMap, io::ErrorKind, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf};
 
 use crate::compression::{CompressionStrategy, CompressionSupport, MatchedFile};
 
@@ -14,7 +14,6 @@ use crate::tower::{ServedDirLayer, ServedDirService};
 use crate::{FileEntity, ServeFilesError};
 use bytes::Bytes;
 use http::{header, HeaderMap, HeaderValue};
-use std::io::Error as IOError;
 
 /// Returns `FileEntity` values for file paths within a directory.
 #[derive(Debug)]
@@ -65,25 +64,27 @@ impl ServedDir {
         let preferred = CompressionSupport::detect(req_hdrs);
         let full_path = self.dirpath.join(path);
 
-        let res = self.find_file(full_path.clone(), preferred).await;
-        let matched_file = match res {
-            Ok(mf) => mf,
-            Err(ServeFilesError::IsDirectory(_)) if self.append_index_html => {
-                let index_path = full_path.join("index.html");
-                self.find_file(index_path, preferred).await?
-            }
-            Err(ServeFilesError::NotFound(_)) if self.not_found_path.is_some() => {
-                let not_found_path = self.not_found_path.as_ref().unwrap().clone();
-                let matched_file = self.find_file(not_found_path, preferred).await?;
-                let headers = self.prepare_headers(&matched_file);
-                let entity = matched_file.into_file_entity(headers)?;
-                return Err(ServeFilesError::NotFound(Some(entity)));
-            }
-            Err(e) => return Err(e),
-        };
+        tokio::task::block_in_place(|| {
+            let res = self.find_file(full_path.clone(), preferred);
+            let matched_file = match res {
+                Ok(mf) => mf,
+                Err(ServeFilesError::IsDirectory(_)) if self.append_index_html => {
+                    let index_path = full_path.join("index.html");
+                    self.find_file(index_path, preferred)?
+                }
+                Err(ServeFilesError::NotFound(_)) if self.not_found_path.is_some() => {
+                    let not_found_path = self.not_found_path.as_ref().unwrap().clone();
+                    let matched_file = self.find_file(not_found_path, preferred)?;
+                    let headers = self.prepare_headers(&matched_file);
+                    let entity = matched_file.into_file_entity(headers)?;
+                    return Err(ServeFilesError::NotFound(Some(entity)));
+                }
+                Err(e) => return Err(e),
+            };
 
-        let headers = self.prepare_headers(&matched_file);
-        matched_file.into_file_entity(headers)
+            let headers = self.prepare_headers(&matched_file);
+            matched_file.into_file_entity(headers)
+        })
     }
 
     fn prepare_headers(&self, matched_file: &MatchedFile) -> HeaderMap {
@@ -101,16 +102,12 @@ impl ServedDir {
         headers
     }
 
-    async fn find_file(
+    fn find_file(
         &self,
         path: impl Into<PathBuf>,
         preferred: CompressionSupport,
     ) -> Result<MatchedFile, ServeFilesError> {
-        let path = path.into();
-        let strategy = self.compression_strategy.clone();
-        tokio::task::spawn_blocking(move || strategy.find_file(path, preferred))
-            .await
-            .map_err(|e: tokio::task::JoinError| IOError::new(ErrorKind::Other, e))?
+        self.compression_strategy.find_file(path.into(), preferred)
     }
 
     fn get_content_type(&self, extension: &str) -> HeaderValue {
