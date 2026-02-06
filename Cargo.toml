@@ -15,6 +15,7 @@ rust-version = "1.91"
 mime_guess = ["dep:mime_guess"]
 runtime-compression = ["dep:brotli", "dep:tempfile"]
 tower = ["dep:tower", "dep:http-body-util"]
+hyper = ["dep:hyper"]
 
 
 [package.metadata.docs.rs]
@@ -39,6 +40,7 @@ tempfile = { version = "3.11", optional = true }
 log = { version = "0.4.29", features = ["std"] }
 tower = { version = "0.4", optional = true }
 http-body-util = { version = "0.1", optional = true }
+hyper = { version = "1.0", default-features = false, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3.6", features = [

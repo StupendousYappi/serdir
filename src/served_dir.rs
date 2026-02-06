@@ -8,6 +8,8 @@ use crate::compression::{CompressionStrategy, CompressionSupport, MatchedFile};
 
 #[cfg(feature = "runtime-compression")]
 use crate::brotli_cache::BrotliCache;
+#[cfg(feature = "hyper")]
+use crate::hyper::ServedDirHyperService;
 #[cfg(feature = "tower")]
 use crate::tower::{ServedDirLayer, ServedDirService};
 
@@ -223,6 +225,12 @@ impl ServedDir {
     #[cfg(feature = "tower")]
     pub fn into_tower_service(self) -> ServedDirService {
         ServedDirService::new(self)
+    }
+
+    /// Returns a Hyper service that serves files from this `ServedDir`.
+    #[cfg(feature = "hyper")]
+    pub fn into_hyper_service(self) -> ServedDirHyperService {
+        ServedDirHyperService::new(self)
     }
 
     /// Returns a Tower layer that serves files from this `ServedDir` and
