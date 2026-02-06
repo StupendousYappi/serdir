@@ -1,18 +1,12 @@
-This is a Rust crate that helps users serve static files over HTTP.
+This is a Rust crate that helps users serve static files over HTTP. The two central APIs it offers
+are `ServedDir` and `FileEntity`. The `ServedDir` type accepts path strings and HTTP request
+headers, looks for a file in a directory matching those criteria, returning a `FileEntity` that can
+be turned into the body of an HTTP response. It offers APIs to expose a `ServedDir` via both
+[`Tower`](https://docs.rs/tower/latest/tower/) and [`Hyper`](https://docs.rs/hyper/latest/hyper/)
+APIs, allowing compatibility with much of the Rust web app ecosystem.
 
-The original version of this crate provided two main APIs:
-
-1. `serve` - a function that serves implementations of the `Entity` trait, such as files, that know their own size.
-   This function supports conditional requests (If-Modified-Since, If-None-Match) and range requests.
-2. `streaming_body` - a function that can add a body to an otherwise complete HTTP response, allowing the body
-    to be generated dynamically and streamed
-
-The original version of this crate is available at
-
-https://github.com/scottlamb/http-serve 
-
-The original version of this crate focused on compatibility with the `hyper` web server, which is a low-level API. I'm forking
-the crate, removing the `streaming_body` functionality, and adding integration with the `tower` network service ecosystem.
+This crate is derived from the [`http-serve`](https://github.com/scottlamb/http-serve ) crate, but 
+modified to focus purely on serving static files.
 
 ## The `serve` function
 
@@ -58,11 +52,18 @@ Responses returned by `serve` will add an `ETAG` header to the response if the i
 The project is organized as a library crate with the following modules:
 
 - `lib.rs` - crate-level documentation and re-exports
+- `compression.rs` - utilities for locating the compressed version of the file most appropriate for
+  the request
 - `etag.rs` - ETag parsing and comparison
+- `served_dir.rs` - The `ServedDir` type, including code for matching a path against a file, and
+  determining what compression strategy to use for the response.
+- `brotli_cache.rs` - code for performing Brotli compression at runtime and caching the compressed
+  result
 - `range.rs` - range header parsing and validation
-- `chunker.rs` - chunked encoding utilities
+- `platform.rs` - platform-specific code handling differences between Unix and Windows environments
 - `body.rs` - HTTP response body implementation
 - `file.rs` - file entity implementation
+- `tower.rs` - adapter code allowing crate functionality to be exposed using `tower` APIs
 
 ## Testing
 
