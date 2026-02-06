@@ -1,3 +1,5 @@
 target
 Cargo.lock
 *.trace
+test-content/*
+notes.md

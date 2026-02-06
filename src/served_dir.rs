@@ -9,7 +9,7 @@ use crate::compression::{CompressionStrategy, CompressionSupport, MatchedFile};
 #[cfg(feature = "runtime-compression")]
 use crate::brotli_cache::BrotliCache;
 #[cfg(feature = "tower")]
-use crate::tower::ServedDirService;
+use crate::tower::{ServedDirLayer, ServedDirService};
 
 use crate::{FileEntity, ServeFilesError};
 use bytes::Bytes;
@@ -226,6 +226,13 @@ impl ServedDir {
     #[cfg(feature = "tower")]
     pub fn into_tower_service(self) -> ServedDirService {
         ServedDirService::new(self)
+    }
+
+    /// Returns a Tower layer that serves files from this `ServedDir` and
+    /// delegates unmatched requests to an inner service.
+    #[cfg(feature = "tower")]
+    pub fn into_tower_layer(self) -> ServedDirLayer {
+        ServedDirLayer::new(self)
     }
 }
 

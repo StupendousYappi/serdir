@@ -1,11 +1,46 @@
 use crate::served_dir::ServedDir;
 use crate::{Body, ServeFilesError};
+use bytes::Bytes;
 use futures_core::future::BoxFuture;
 use http::{Request, Response, StatusCode};
+use http_body_util::combinators::UnsyncBoxBody;
+use http_body_util::BodyExt;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use tower::Layer;
 use tower::Service;
+
+type TowerBody = UnsyncBoxBody<Bytes, crate::BoxError>;
+
+/// A Tower layer that serves files from a [`ServedDir`] and otherwise
+/// passes requests to the wrapped service.
+#[derive(Clone)]
+pub struct ServedDirLayer(Arc<ServedDir>);
+
+impl ServedDirLayer {
+    pub(crate) fn new(served_dir: ServedDir) -> Self {
+        Self(Arc::new(served_dir))
+    }
+}
+
+impl<S> Layer<S> for ServedDirLayer {
+    type Service = ServedDirMiddleware<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        ServedDirMiddleware {
+            served_dir: self.0.clone(),
+            inner,
+        }
+    }
+}
+
+/// Tower middleware produced by [`ServedDirLayer`].
+#[derive(Clone)]
+pub struct ServedDirMiddleware<S> {
+    served_dir: Arc<ServedDir>,
+    inner: S,
+}
 
 /// A Tower service that serves files from a [`ServedDir`].
 #[derive(Clone)]
@@ -31,55 +66,102 @@ where
 
     fn call(&mut self, req: Request<B>) -> Self::Future {
         let served_dir = self.0.clone();
+        let serving_req = request_head(&req);
         Box::pin(async move {
-            // We ignore the request body as we are serving static files.
-            let (parts, _body) = req.into_parts();
-            let req = Request::from_parts(parts, ());
-            let path = req.uri().path();
-
-            // ServedDir::get expects a relative path, strip the leading slash,
-            // if any
-            let path = if let Some(p) = path.strip_prefix('/') {
-                p
-            } else {
-                path
-            };
-
-            // Handle root path "" -> "." for served_dir if needed?
-            // If path was "/", it becomes "".
-            // ServedDir::get: `match self.strip_prefix ...`.
-            // `validate_path` checks `..`.
-            // If path is empty, what happens? `validate_path` is fine.
-            // `full_path = self.dirpath.join(path)`. join("") is same dir.
-            // `find_file` calls `File::open`. `dirpath` is a directory.
-            // `find_file` checks metadata. If dir, returns IsDirectory.
-            // If `append_index_html` is true, it appends index.html.
-            // So empty path ("") should work if it maps to the directory and index.html logic applies.
-
-            match served_dir.get(path, req.headers()).await {
-                Ok(entity) => {
-                    let resp = crate::serving::serve(entity, &req, StatusCode::OK);
-                    Ok(resp)
+            match served_dir_response(&served_dir, &serving_req).await {
+                Ok(resp) => Ok(resp),
+                Err(ServeFilesError::NotFound(None)) | Err(ServeFilesError::IsDirectory(_)) => {
+                    Ok(status_response(StatusCode::NOT_FOUND))
                 }
-                Err(e) => {
-                    let status = match e {
-                        ServeFilesError::NotFound(Some(entity)) => {
-                            let resp = crate::serving::serve(entity, &req, StatusCode::NOT_FOUND);
-                            return Ok(resp);
-                        }
-                        ServeFilesError::NotFound(None) => StatusCode::NOT_FOUND,
-                        ServeFilesError::IsDirectory(_) => StatusCode::NOT_FOUND,
-                        ServeFilesError::InvalidPath(_) => StatusCode::BAD_REQUEST,
-                        _ => StatusCode::INTERNAL_SERVER_ERROR,
-                    };
-                    let reason = status.canonical_reason().unwrap();
-
-                    Ok(Response::builder()
-                        .status(status)
-                        .body(Body::from(reason))
-                        .unwrap())
+                Err(ServeFilesError::InvalidPath(_)) => {
+                    Ok(status_response(StatusCode::BAD_REQUEST))
                 }
+                Err(_) => Ok(status_response(StatusCode::INTERNAL_SERVER_ERROR)),
             }
         })
     }
+}
+
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for ServedDirMiddleware<S>
+where
+    S: Service<Request<ReqBody>, Response = Response<ResBody>> + Clone + Send + 'static,
+    S::Future: Send + 'static,
+    ReqBody: Send + 'static,
+    ResBody: http_body::Body<Data = Bytes> + Send + 'static,
+    ResBody::Error: Into<crate::BoxError> + 'static,
+{
+    type Response = Response<TowerBody>;
+    type Error = S::Error;
+    type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
+        let served_dir = self.served_dir.clone();
+        let serving_req = request_head(&req);
+        // Drive the request with a clone while keeping `self.inner` available for readiness checks.
+        let clone = self.inner.clone();
+        let mut inner = std::mem::replace(&mut self.inner, clone);
+
+        Box::pin(async move {
+            match served_dir_response(&served_dir, &serving_req).await {
+                Ok(resp) => Ok(box_response(resp)),
+                Err(ServeFilesError::NotFound(None))
+                | Err(ServeFilesError::IsDirectory(_))
+                | Err(ServeFilesError::InvalidPath(_)) => {
+                    let response = inner.call(req).await?;
+                    Ok(response.map(|body| body.map_err(Into::into).boxed_unsync()))
+                }
+                Err(_) => Ok(box_response(status_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                ))),
+            }
+        })
+    }
+}
+
+async fn served_dir_response<B>(
+    served_dir: &ServedDir,
+    req: &Request<B>,
+) -> Result<Response<Body>, ServeFilesError> {
+    let path = normalize_path(req.uri().path());
+    match served_dir.get(path, req.headers()).await {
+        Ok(entity) => Ok(crate::serving::serve(entity, req, StatusCode::OK)),
+        Err(ServeFilesError::NotFound(Some(entity))) => {
+            Ok(crate::serving::serve(entity, req, StatusCode::NOT_FOUND))
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn normalize_path(path: &str) -> &str {
+    path.strip_prefix('/').unwrap_or(path)
+}
+
+fn request_head<B>(req: &Request<B>) -> Request<()> {
+    let mut request = Request::builder()
+        .method(req.method().clone())
+        .uri(req.uri().clone())
+        .version(req.version())
+        .body(())
+        .expect("request head should be valid");
+    *request.headers_mut() = req.headers().clone();
+    request
+}
+
+fn status_response(status: StatusCode) -> Response<Body> {
+    let reason = status.canonical_reason().unwrap_or("Unknown");
+    Response::builder()
+        .status(status)
+        .body(Body::from(reason))
+        .expect("status response should be valid")
+}
+
+fn box_response(response: Response<Body>) -> Response<TowerBody> {
+    response.map(|body| {
+        body.map_err(|err| -> crate::BoxError { Box::new(err) })
+            .boxed_unsync()
+    })
 }
