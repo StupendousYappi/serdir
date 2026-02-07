@@ -110,25 +110,6 @@ impl FileExt for std::fs::File {
     }
 }
 
-#[cfg(windows)]
-/// Converts a Windows `FILETIME` to a Rust `SystemTime`
-///
-/// `FILETIME` is the number of 100 ns ticks since Jan 1 1601.
-/// Unix time is the number of seconds since Jan 1 1970.
-fn filetime_to_systemtime(time: winapi::shared::minwindef::FILETIME) -> SystemTime {
-    use std::time::{Duration, UNIX_EPOCH};
-
-    let ticks = (time.dwHighDateTime as u64) << 32 | time.dwLowDateTime as u64;
-
-    // Number of seconds between the Windows and the Unix epoch
-    const SECS_TO_UNIX_EPOCH: u64 = 11_644_473_600;
-    let secs = ticks / 10_000_000 - SECS_TO_UNIX_EPOCH;
-    let nanos = (ticks % 10_000_000 * 100) as u32;
-
-    let duration = Duration::new(secs, nanos);
-    UNIX_EPOCH + duration
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
