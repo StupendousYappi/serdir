@@ -92,6 +92,10 @@ harness = false
 name = "serve_dir"
 required-features = ["runtime-compression"]
 
+[[example]]
+name = "serve_file"
+required-features = ["hyper"]
+
 [[bench]]
 name = "hashing"
 harness = false

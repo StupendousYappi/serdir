@@ -12,67 +12,50 @@
 //! local disk. Supports HEAD, conditional GET, and byte range requests. Some commands to try:
 //!
 //! ```text
-//! $ curl --head http://127.0.0.1:1337/
-//! $ curl http://127.0.0.1:1337 > /dev/null
-//! $ curl -v -H 'Range: bytes=1-10' http://127.0.0.1:1337/
-//! $ curl -v -H 'Range: bytes=1-10,30-40' http://127.0.0.1:1337/
+//! $ curl --head http://127.0.0.1:1337/FILENAME
+//! $ curl http://127.0.0.1:1337/FILENAME > /dev/null
+//! $ curl -v -H 'Range: bytes=1-10' http://127.0.0.1:1337/FILENAME
+//! $ curl -v -H 'Range: bytes=1-10,30-40' http://127.0.0.1:1337/FILENAME
 //! ```
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 
-use bytes::Bytes;
-use http::{
-    header::{self, HeaderMap, HeaderValue},
-    Request, Response,
-};
-use hyper::{server::conn::http1, service::service_fn};
+use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
-use serve_files::FileEntity;
+use serve_files::ServedDir;
 use tokio::net::TcpListener;
-
-struct Context {
-    path: std::ffi::OsString,
-}
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-async fn serve(
-    ctx: &'static Context,
-    req: Request<hyper::body::Incoming>,
-) -> Result<Response<serve_files::Body>, BoxError> {
-    let f = tokio::task::block_in_place::<_, Result<FileEntity<Bytes>, BoxError>>(move || {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/octet-stream"),
-        );
-        Ok(FileEntity::new(&ctx.path, headers)?)
-    })?;
-    Ok(serve_files::serve(f, &req, http::StatusCode::OK))
-}
-
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
-    let mut args = std::env::args_os();
+    let mut args = std::env::args();
     if args.len() != 2 {
         eprintln!("Expected serve [FILENAME]");
         std::process::exit(1);
     }
-    let path = args.nth(1).unwrap();
-
-    let ctx: &'static Context = Box::leak(Box::new(Context { path: path }));
+    let path = PathBuf::from(args.nth(1).unwrap());
+    let filename = path
+        .file_name()
+        .ok_or_else(|| "expected a filename path, but received a directory root")?
+        .to_string_lossy()
+        .into_owned();
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+    let service = ServedDir::builder(parent)?.build().into_hyper_service();
 
     let addr: SocketAddr = (Ipv4Addr::LOCALHOST, 1337).into();
     let listener = TcpListener::bind(addr).await?;
-    println!("Serving {} on http://{}", ctx.path.to_string_lossy(), addr,);
+    println!("Serving {} on http://{}/{}", path.display(), addr, filename);
     loop {
         let (tcp, _) = listener.accept().await?;
+        let service = service.clone();
         let io = TokioIo::new(tcp);
         tokio::task::spawn(async move {
-            if let Err(e) = http1::Builder::new()
-                .serve_connection(io, service_fn(move |req| serve(ctx, req)))
-                .await
-            {
+            if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
                 eprintln!("Error serving connection: {}", e);
             }
         });
