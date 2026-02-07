@@ -1,5 +1,8 @@
 //! Serves files from a local directory.
 
+use std::convert::Infallible;
+use std::fmt::Debug;
+use std::path::Path;
 #[cfg(feature = "runtime-compression")]
 use std::sync::Arc;
 use std::{collections::HashMap, path::PathBuf};
@@ -18,16 +21,54 @@ use bytes::Bytes;
 use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 
 /// Returns `FileEntity` values for file paths within a directory.
-#[derive(Debug)]
+///
+/// A `ServedDir` is created using a [ServedDirBuilder], and must be configured with
+/// the path to the static file root directory. When [ServedDir::get] is called,
+/// it will attempt to find a file in the root directory with that relative path,
+/// detect its content type using the filename extension, and return a [FileEntity]
+/// that can be used to serve its content.
+///
+/// Its behavior can be optionally customized in the following ways:
+///
+/// - Defining a common prefix that should be stripped from all paths before performing
+///   path matching
+/// - Defining common headers that should be added to all successful responses
+/// - Defining custom mappings from filename extensions to HTTP content type headers
+/// - Auto-appending "/index.html" to any path that maps to a directory
+/// - Setting a file whose content will be used for 404 (file not found) responses
+/// - Response compression settings, including support for using pre-created compressed
+///   variants of files (i.e. "index.html.gz" can be served instead of "index.html"),
+///   and for performing runtime compression of files using Brotli and caching the
+///   compressed output for reuse
 pub struct ServedDir {
-    compression_strategy: CompressionStrategy,
     dirpath: PathBuf,
+    compression_strategy: CompressionStrategy,
     strip_prefix: Option<String>,
     known_extensions: Option<HashMap<String, HeaderValue>>,
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
     append_index_html: bool,
     not_found_path: Option<PathBuf>,
+}
+
+impl Debug for ServedDir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let strategy = match self.compression_strategy {
+            CompressionStrategy::Static(_) => "static",
+            CompressionStrategy::None => "none",
+            #[cfg(feature = "runtime-compression")]
+            CompressionStrategy::Dynamic(_) => "dynamic",
+        };
+
+        f.debug_struct("ServedDir")
+            .field("dirpath", &self.dirpath)
+            .field("strip_prefix", &self.strip_prefix)
+            .field("append_index_html", &self.append_index_html)
+            .field("not_found_path", &self.not_found_path)
+            .field("default_content_type", &self.default_content_type)
+            .field("compression_strategy", &strategy)
+            .finish()
+    }
 }
 
 static OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-stream");
@@ -38,13 +79,44 @@ impl ServedDir {
         ServedDirBuilder::new(path.into())
     }
 
+    /// Returns the static file root directory used by this `ServedDir`
+    pub fn dir(&self) -> &Path {
+        &self.dirpath
+    }
+
     /// Returns a `FileEntity` for the given path and request headers.
     ///
-    /// The `Accept-Encoding` request header is used to determine whether to serve the file
-    /// gzipped if possible. If gzip encoding is requested, and `auto_gzip` is enabled, this
-    /// method will look for a file with the same name but a `.gz` extension. If found, it will
-    /// serve that file instead of the primary file. If gzip encoding is not requested,
-    /// `auto_gzip` is disabled, or the file is not found, the primary file will be served.
+    /// This method searches for a file with the given relative path in this instance's
+    /// static files directory. If a file is found, a [FileEntity] will be returned that
+    /// can be used to serve its content in a HTTP response. This method will also
+    /// choose a `Content-Type` header value based on the extension of the matched file.
+    ///
+    /// If static compression is configured, you can provide pre-compressed variants of
+    /// any file by creating a file with the same name as the original, with the appropriate
+    /// extension added. For example, if you have a static file with path `settings/index.html`,
+    /// this method will look for:
+    /// - the file `settings/index.html.zstd` if the client supports zstandard compression
+    /// - the file `settings/index.html.br` if the client supports brotli compression
+    /// - the file `settings/index.html.gz` if the client supports gzip compression
+    ///
+    /// Under static compression, this method will always search for those variants in
+    /// the above order (zstd, then br, then gz), regardless of the prioritization the
+    /// `Accept-Encoding` header provided. If no compatible compressed version can be
+    /// found, the original file will be used (even if the `Accept-Encoding` header
+    /// explicitly rejects the `identity` encoding).
+    ///
+    /// If dynamic compression is configured, this method will perform Brotli compression of matched
+    /// files on the fly if the client supports Brotli compression, and will cache the compressed
+    /// versions for reuse (Brotli is the only compression algorithm for which runtime compression
+    /// is supported). The generated Brotli contents will be cached in unlinked tempfiles that have
+    /// no visible path on the filesystem, and will be cleaned up automatically by the operating
+    /// system when the application exits, regardless of how it exits (i.e. they will be cleaned up
+    /// even if Rust panics in abort mode). Disk usage can be controlled by limiting the maximum
+    /// size of files that should be compressed, and the maximum number of compressed files to
+    /// cache, using the [BrotliCacheBuilder] type and the
+    /// [ServedDirBuilder::dynamic_compression_with_cache] method. The Brotli compression level can
+    /// also be configured, allowing you to choose your own balance of compression speed and
+    /// compressed size.
     ///
     /// This method will return an error with kind `ErrorKind::NotFound` if the file is not found.
     /// It will return an error with kind `ErrorKind::InvalidInput` if the path is invalid.
@@ -60,6 +132,7 @@ impl ServedDir {
                 .ok_or(ServeFilesError::NotFound(None))?,
             None => path,
         };
+        let path = path.strip_prefix('/').unwrap_or(path);
 
         self.validate_path(path)?;
 
@@ -90,23 +163,31 @@ impl ServedDir {
     }
 
     /// Returns an HTTP response for a request path and headers.
-    pub async fn get_response<B>(
-        &self,
-        req: &Request<B>,
-    ) -> Result<Response<Body>, ServeFilesError> {
-        let path = Self::normalize_path(req.uri().path());
-        match self.get(path, req.headers()).await {
+    ///
+    /// A convenience wrapper method for [ServedDir::get], converting a HTTP request
+    /// into a HTTP response by serving static files using this `ServedDir`.
+    pub async fn get_response<B>(&self, req: &Request<B>) -> Result<Response<Body>, Infallible> {
+        match self.get(req.uri().path(), req.headers()).await {
             Ok(entity) => Ok(crate::serving::serve(entity, req, StatusCode::OK)),
             Err(ServeFilesError::NotFound(Some(entity))) => {
                 Ok(crate::serving::serve(entity, req, StatusCode::NOT_FOUND))
             }
-            Err(err) => Err(err),
+            Err(ServeFilesError::NotFound(None)) | Err(ServeFilesError::IsDirectory(_)) => {
+                Ok(Self::status_response(StatusCode::NOT_FOUND))
+            }
+            Err(ServeFilesError::InvalidPath(_)) => {
+                Ok(Self::status_response(StatusCode::BAD_REQUEST))
+            }
+            Err(_) => Ok(Self::status_response(StatusCode::INTERNAL_SERVER_ERROR)),
         }
     }
 
-    /// Strip the leading slash from the given path, if it has one.
-    fn normalize_path(path: &str) -> &str {
-        path.strip_prefix('/').unwrap_or(path)
+    pub(crate) fn status_response(status: StatusCode) -> Response<Body> {
+        let reason = status.canonical_reason().unwrap_or("Unknown");
+        Response::builder()
+            .status(status)
+            .body(Body::from(reason))
+            .expect("status response should be valid")
     }
 
     fn prepare_headers(&self, matched_file: &MatchedFile) -> HeaderMap {

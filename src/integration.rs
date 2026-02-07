@@ -17,15 +17,6 @@ pub(crate) fn request_head<B>(req: &Request<B>) -> Request<()> {
     request
 }
 
-/// Returns a basic `Response` with the given status code.
-pub(crate) fn status_response(status: StatusCode) -> Response<Body> {
-    let reason = status.canonical_reason().unwrap_or("Unknown");
-    Response::builder()
-        .status(status)
-        .body(Body::from(reason))
-        .expect("status response should be valid")
-}
-
 /// A Hyper service that serves files from a [`ServedDir`].
 #[cfg(feature = "hyper")]
 #[derive(Clone)]
@@ -51,18 +42,7 @@ where
         let served_dir = self.0.clone();
         let serving_req = request_head(&req);
 
-        Box::pin(async move {
-            match served_dir.get_response(&serving_req).await {
-                Ok(resp) => Ok(resp),
-                Err(ServeFilesError::NotFound(None)) | Err(ServeFilesError::IsDirectory(_)) => {
-                    Ok(status_response(StatusCode::NOT_FOUND))
-                }
-                Err(ServeFilesError::InvalidPath(_)) => {
-                    Ok(status_response(StatusCode::BAD_REQUEST))
-                }
-                Err(_) => Ok(status_response(StatusCode::INTERNAL_SERVER_ERROR)),
-            }
-        })
+        Box::pin(async move { served_dir.get_response(&serving_req).await })
     }
 }
 
@@ -130,18 +110,7 @@ where
     fn call(&mut self, req: Request<B>) -> Self::Future {
         let served_dir = self.0.clone();
         let serving_req = request_head(&req);
-        Box::pin(async move {
-            match served_dir.get_response(&serving_req).await {
-                Ok(resp) => Ok(resp),
-                Err(ServeFilesError::NotFound(None)) | Err(ServeFilesError::IsDirectory(_)) => {
-                    Ok(status_response(StatusCode::NOT_FOUND))
-                }
-                Err(ServeFilesError::InvalidPath(_)) => {
-                    Ok(status_response(StatusCode::BAD_REQUEST))
-                }
-                Err(_) => Ok(status_response(StatusCode::INTERNAL_SERVER_ERROR)),
-            }
-        })
+        Box::pin(async move { served_dir.get_response(&serving_req).await })
     }
 }
 
@@ -176,15 +145,25 @@ where
         let mut inner = std::mem::replace(&mut self.inner, clone);
 
         Box::pin(async move {
-            match served_dir.get_response(&serving_req).await {
-                Ok(resp) => Ok(box_response(resp)),
+            match served_dir
+                .get(serving_req.uri().path(), serving_req.headers())
+                .await
+            {
+                Ok(entity) => Ok(box_response(crate::serving::serve(
+                    entity,
+                    &serving_req,
+                    StatusCode::OK,
+                ))),
+                Err(ServeFilesError::NotFound(Some(entity))) => Ok(box_response(
+                    crate::serving::serve(entity, &serving_req, StatusCode::NOT_FOUND),
+                )),
                 Err(ServeFilesError::NotFound(None))
                 | Err(ServeFilesError::IsDirectory(_))
                 | Err(ServeFilesError::InvalidPath(_)) => {
                     let response = inner.call(req).await?;
                     Ok(response.map(|body| body.map_err(Into::into).boxed_unsync()))
                 }
-                Err(_) => Ok(box_response(status_response(
+                Err(_) => Ok(box_response(ServedDir::status_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                 ))),
             }
