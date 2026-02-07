@@ -138,8 +138,6 @@ mod served_dir;
 /// Hyper and Tower service integrations.
 pub mod integration;
 
-#[cfg(feature = "runtime-compression")]
-mod brotli_cache;
 mod compression;
 mod etag;
 mod file;
@@ -152,8 +150,13 @@ pub use crate::compression::CompressionSupport;
 pub use crate::file::FileEntity;
 pub use crate::served_dir::{ServedDir, ServedDirBuilder};
 pub use crate::serving::serve;
-pub use crate::brotli_cache::BrotliCache;
-pub use crate::brotli_cache::BrotliCacheBuilder;
+
+#[cfg(feature = "runtime-compression")]
+mod brotli_cache;
+#[cfg(feature = "runtime-compression")]
+pub use brotli_cache::BrotliCache;
+#[cfg(feature = "runtime-compression")]
+pub use brotli_cache::BrotliCacheBuilder;
 
 /// Basic metadata about a particular version of a file, used as a cache key.
 #[derive(Hash, Eq, PartialEq, Clone, Copy)]

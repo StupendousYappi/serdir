@@ -39,16 +39,6 @@ pub struct BrotliCacheBuilder {
 }
 
 impl BrotliCacheBuilder {
-    /// Returns a builder for `BrotliCache`.
-    pub fn new() -> Self {
-        Self {
-            cache_size: 128,
-            compression_level: 3,
-            supported_extensions: None,
-            max_file_size: u64::MAX,
-        }
-    }
-
     /// Sets the maximum number of items in the cache.
     ///
     /// Must be at least 4 and a power of 2.
@@ -99,7 +89,12 @@ impl BrotliCacheBuilder {
 
 impl Default for BrotliCacheBuilder {
     fn default() -> Self {
-        Self::new()
+        Self {
+            cache_size: 128,
+            compression_level: 3,
+            supported_extensions: None,
+            max_file_size: u64::MAX,
+        }
     }
 }
 
@@ -117,7 +112,7 @@ pub struct BrotliCache {
 impl BrotliCache {
     /// Returns a builder for `BrotliCache`.
     pub fn builder() -> BrotliCacheBuilder {
-        BrotliCacheBuilder::new()
+        BrotliCacheBuilder::default()
     }
 
     fn new(builder: BrotliCacheBuilder) -> Self {
@@ -300,7 +295,7 @@ mod tests {
 
     #[test]
     fn test_brotli_cache_builder_defaults() {
-        let builder = BrotliCacheBuilder::new();
+        let builder = BrotliCache::builder();
         assert_eq!(builder.cache_size, 128);
         assert_eq!(builder.compression_level, 3);
         assert!(builder.supported_extensions.is_none());
@@ -311,7 +306,7 @@ mod tests {
         let mut extensions = HashSet::new();
         extensions.insert("html");
 
-        let builder = BrotliCacheBuilder::new()
+        let builder = BrotliCache::builder()
             .cache_size(64)
             .compression_level(5)
             .supported_extensions(Some(extensions.clone()));
@@ -324,24 +319,24 @@ mod tests {
     #[test]
     #[should_panic(expected = "cache_size must be at least 4")]
     fn test_brotli_cache_builder_cache_size_too_small() {
-        BrotliCacheBuilder::new().cache_size(2);
+        BrotliCache::builder().cache_size(2);
     }
 
     #[test]
     #[should_panic(expected = "cache_size must be a power of two")]
     fn test_brotli_cache_builder_cache_size_not_power_of_two() {
-        BrotliCacheBuilder::new().cache_size(100);
+        BrotliCache::builder().cache_size(100);
     }
 
     #[test]
     #[should_panic(expected = "compression_level must be between 0 and 11")]
     fn test_brotli_cache_builder_compression_level_too_high() {
-        BrotliCacheBuilder::new().compression_level(12);
+        BrotliCache::builder().compression_level(12);
     }
 
     #[test]
     fn test_brotli_cache_build() {
-        let cache = BrotliCacheBuilder::new()
+        let cache = BrotliCache::builder()
             .cache_size(16)
             .compression_level(1)
             .build();
