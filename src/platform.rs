@@ -8,6 +8,9 @@
 // except according to those terms.
 
 use std::io;
+#[cfg(windows)]
+use std::time::SystemTime;
+
 pub trait FileExt {
     /// Reads at least 1, at most `chunk_size` bytes beginning at `offset`, or fails.
     ///
