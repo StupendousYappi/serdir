@@ -152,6 +152,8 @@ pub use crate::compression::CompressionSupport;
 pub use crate::file::FileEntity;
 pub use crate::served_dir::{ServedDir, ServedDirBuilder};
 pub use crate::serving::serve;
+pub use crate::brotli_cache::BrotliCache;
+pub use crate::brotli_cache::BrotliCacheBuilder;
 
 /// Basic metadata about a particular version of a file, used as a cache key.
 #[derive(Hash, Eq, PartialEq, Clone, Copy)]
