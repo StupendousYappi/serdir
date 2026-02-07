@@ -11,14 +11,11 @@ jobs:
       matrix:
         rust:
           - stable
-          - 1.79.0
+          - 1.91.0
         os:
           - ubuntu-20.04
           - windows-latest
-        # The dir feature requires a POSIX system (not Windows).
         include:
-          - os: ubuntu-20.04
-            features: "--features dir"
           - rust: stable
             extra_components: rustfmt
     runs-on: ${{ matrix.os }}
@@ -39,7 +36,7 @@ jobs:
         toolchain: ${{ matrix.rust }}
         components: ${{ matrix.extra_components }}
     - name: Test
-      run: cargo test ${{ matrix.features }} --all-targets
+      run: cargo test --all-features --all-targets
     - name: Check formatting
       if: matrix.rust == 'stable'
       run: cargo fmt -- --check
