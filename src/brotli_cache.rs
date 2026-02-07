@@ -16,7 +16,6 @@ use fixed_cache::Cache;
 // use log::{debug, error, info, warn}; removed
 // use http::HeaderValue; removed
 use std::io::Write;
-use tempfile;
 
 use crate::compression::{ContentEncoding, MatchedFile};
 use crate::ServeFilesError;
@@ -124,7 +123,10 @@ impl BrotliCache {
     fn new(builder: BrotliCacheBuilder) -> Self {
         let tempdir = env::temp_dir();
         let cache = Cache::new(builder.cache_size as usize, Default::default());
-        let mut params = BrotliEncoderParams::default();
+        let mut params = brotli::enc::BrotliEncoderParams {
+            quality: i32::from(builder.compression_level),
+            ..Default::default()
+        };
         params.quality = i32::from(builder.compression_level);
         let supported_extensions = builder
             .supported_extensions
