@@ -7,6 +7,41 @@
 // except according to those terms.
 
 use http::header::{self, HeaderMap, HeaderValue};
+use std::io;
+
+#[derive(Hash, Eq, PartialEq, Clone, Copy, Debug)]
+pub(crate) struct ETag(u64);
+
+impl ETag {
+    pub(crate) fn from_file(file: &std::fs::File) -> Result<Self, io::Error> {
+        tokio::task::block_in_place(move || {
+            let hash = rapidhash::v3::rapidhash_v3_file(file)?;
+            Ok(ETag(hash))
+        })
+    }
+
+    fn to_bytes(self) -> [u8; 16] {
+        let mut buf = [0u8; 16];
+        let hex_chars = b"0123456789abcdef";
+        let val = self.0;
+        for (i, slot) in buf.iter_mut().enumerate() {
+            let nibble = (val >> ((15 - i) * 4)) & 0xf;
+            *slot = hex_chars[nibble as usize];
+        }
+        buf
+    }
+}
+
+impl From<ETag> for HeaderValue {
+    fn from(etag: ETag) -> Self {
+        let mut buf = [0u8; 18];
+        buf[0] = b'"';
+        buf[17] = b'"';
+        let bytes = etag.to_bytes();
+        buf[1..17].copy_from_slice(&bytes);
+        HeaderValue::from_bytes(&buf).expect("failed to serialize etag")
+    }
+}
 
 /// Performs weak validation of two etags (such as `B"W/\"foo\""`` or `B"\"bar\""``)
 /// as in [RFC 7232 section 2.3.2](https://datatracker.ietf.org/doc/html/rfc7232#section-2.3.2).
