@@ -13,7 +13,7 @@ jobs:
           - stable
           - 1.85.0
         os:
-          - ubuntu-20.04
+          - ubuntu-24.04
           - windows-latest
         include:
           - rust: stable
@@ -21,9 +21,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
     - name: Cache
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: |
           ~/.cargo/registry
