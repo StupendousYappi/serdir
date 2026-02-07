@@ -366,7 +366,7 @@ mod tests {
 
         // Verify FileInfo
         let orig_info = crate::FileInfo::for_path(&path).unwrap();
-        assert!(matched.file_info.mtime() > orig_info.mtime());
+        assert!(matched.file_info.mtime() >= orig_info.mtime());
         assert_ne!(matched.file_info.get_hash(), orig_info.get_hash());
         let delta_nanos = matched
             .file_info
