@@ -8,6 +8,25 @@
 // except according to those terms.
 
 use std::io;
+use std::path::Path;
+
+#[cfg(unix)]
+pub(crate) fn open_file(path: &Path) -> io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
+#[cfg(windows)]
+pub(crate) fn open_file(path: &Path) -> io::Result<std::fs::File> {
+    use std::fs::OpenOptions;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    OpenOptions::new()
+        .read(true)
+        // Allow opening directory handles so callers can classify directories
+        // via metadata in a platform-consistent way.
+        .custom_flags(winapi::um::winbase::FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+}
 
 pub trait FileExt {
     /// Reads at least 1, at most `chunk_size` bytes beginning at `offset`, or fails.

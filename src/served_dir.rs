@@ -371,7 +371,7 @@ impl ServedDirBuilder {
     /// The path must be relative to the directory being served.
     pub fn not_found_path(mut self, path: impl Into<PathBuf>) -> Result<Self, ServeFilesError> {
         let path = path.into();
-        if path.is_absolute() {
+        if path.is_absolute() || path.has_root() {
             return Err(ServeFilesError::ConfigError(
                 "not_found_path must be relative".to_string(),
             ));

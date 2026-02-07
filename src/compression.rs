@@ -238,7 +238,7 @@ impl CompressionStrategy {
         // are consistent (otherwise, if the file is modified, there could be a race condition
         // that causes a mismatch between etag values and file contents, which could cause corrupt
         // behavior for clients)
-        match File::open(p) {
+        match crate::platform::open_file(p) {
             Ok(file) => {
                 let file_info = crate::FileInfo::open_file(p, &file)?;
                 let extension = p
@@ -253,7 +253,7 @@ impl CompressionStrategy {
                     extension,
                 })
             }
-            Err(ref e) if e.kind() == ErrorKind::NotFound => Err(ServeFilesError::NotFound(None)),
+            Err(e) if e.kind() == ErrorKind::NotFound => Err(ServeFilesError::NotFound(None)),
             Err(e) => Err(ServeFilesError::IOError(e)),
         }
     }
