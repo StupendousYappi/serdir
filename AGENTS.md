@@ -51,19 +51,22 @@ Responses returned by `serve` will add an `ETAG` header to the response if the i
 
 The project is organized as a library crate with the following modules:
 
-- `lib.rs` - crate-level documentation and re-exports
-- `compression.rs` - utilities for locating the compressed version of the file most appropriate for
-  the request
-- `etag.rs` - ETag parsing and comparison
-- `served_dir.rs` - The `ServedDir` type, including code for matching a path against a file, and
-  determining what compression strategy to use for the response.
+- `body.rs` - Custom HTTP response body type, allowing static files to be served efficiently as a
+stream of chunks
 - `brotli_cache.rs` - code for performing Brotli compression at runtime and caching the compressed
-  result
-- `range.rs` - range header parsing and validation
+- `compression.rs` - utilities for locating the compressed version of a file most appropriate for
+- `etag.rs` - ETag parsing and comparison
+- `file.rs` - implementation of `FileEntity`, the return type of `ServedDir`
+- `integration.rs` - adapter code allowing `ServedDir` to be called via `tower` and `hyper` APIs
+- `lib.rs` - crate-level documentation and re-exports
+  the request
 - `platform.rs` - platform-specific code handling differences between Unix and Windows environments
-- `body.rs` - HTTP response body implementation
-- `file.rs` - file entity implementation
-- `tower.rs` - adapter code allowing crate functionality to be exposed using `tower` APIs
+- `range.rs` - range header parsing and validation
+- `served_dir.rs` - The `ServedDir` type, including code for matching a path against a file, and
+  determining what compression strategy to use for the response and choosing a `Content-Type` header
+  result
+- `serving.rs` - wrapper code for converting a `http::Request` into `http::Response` by serving a
+static file
 
 ## Testing
 
