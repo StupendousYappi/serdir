@@ -74,15 +74,6 @@ impl CompressionSupport {
         Self { gzip, br, zstd }
     }
 
-    /// Returns a `CompressionSupport` with no compression enabled.
-    pub fn none() -> Self {
-        Self {
-            gzip: false,
-            br: false,
-            zstd: false,
-        }
-    }
-
     /// Returns true if Brotli compression is supported.
     pub fn brotli(&self) -> bool {
         self.br
