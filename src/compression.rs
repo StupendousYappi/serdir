@@ -13,6 +13,24 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
+trait PathBufExt {
+    fn with_added_extension(&self, extension: impl AsRef<std::ffi::OsStr>) -> PathBuf;
+}
+
+impl PathBufExt for Path {
+    fn with_added_extension(&self, extension: impl AsRef<std::ffi::OsStr>) -> PathBuf {
+        match self.file_name() {
+            Some(file_name) => {
+                let mut new_file_name = file_name.to_os_string();
+                new_file_name.push(".");
+                new_file_name.push(extension.as_ref());
+                self.with_file_name(new_file_name)
+            }
+            None => self.to_path_buf(),
+        }
+    }
+}
+
 #[cfg(feature = "runtime-compression")]
 use crate::brotli_cache::BrotliCache;
 use crate::{FileEntity, ServeFilesError};
