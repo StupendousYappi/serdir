@@ -11,7 +11,7 @@ jobs:
       matrix:
         rust:
           - stable
-          - 1.85.0
+          - 1.88.0
         os:
           - ubuntu-24.04
           - windows-latest
