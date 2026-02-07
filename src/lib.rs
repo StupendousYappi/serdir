@@ -39,7 +39,7 @@
 use bytes::Buf;
 use futures_core::Stream;
 use http::header::{HeaderMap, HeaderValue};
-use http::{Response, StatusCode};
+use http::{Request, Response, StatusCode};
 use std::error::Error;
 use std::fmt::Display;
 use std::fs::File;
@@ -155,6 +155,18 @@ pub use crate::body::Body;
 pub use crate::compression::CompressionSupport;
 pub use crate::file::FileEntity;
 pub use crate::serving::serve;
+
+/// Returns a Request based on the input request, but with an empty body.
+pub(crate) fn request_head<B>(req: &Request<B>) -> Request<()> {
+    let mut request = Request::builder()
+        .method(req.method().clone())
+        .uri(req.uri().clone())
+        .version(req.version())
+        .body(())
+        .expect("request head should be valid");
+    *request.headers_mut() = req.headers().clone();
+    request
+}
 
 /// Returns a basic `Response` with the given status code.
 pub(crate) fn status_response(status: StatusCode) -> Response<Body> {
