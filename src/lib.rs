@@ -132,7 +132,7 @@ impl From<IOError> for ServeFilesError {
 
 mod body;
 
-pub mod served_dir;
+mod served_dir;
 
 #[cfg(any(feature = "tower", feature = "hyper"))]
 /// Hyper and Tower service integrations.
@@ -150,6 +150,7 @@ mod serving;
 pub use crate::body::Body;
 pub use crate::compression::CompressionSupport;
 pub use crate::file::FileEntity;
+pub use crate::served_dir::{ServedDir, ServedDirBuilder};
 pub use crate::serving::serve;
 
 /// Basic metadata about a particular version of a file, used as a cache key.

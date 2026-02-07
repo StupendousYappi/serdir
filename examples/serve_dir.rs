@@ -10,7 +10,7 @@
 
 use http::header::{self, HeaderValue};
 use hyper_util::rt::TokioIo;
-use serve_files::served_dir::ServedDir;
+use serve_files::ServedDir;
 use serve_files::ServeFilesError;
 use std::fmt::Write;
 use std::net::SocketAddr;

@@ -2,7 +2,7 @@
 
 use http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use serve_files::served_dir::ServedDir;
+use serve_files::ServedDir;
 use serve_files::Body;
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicUsize, Ordering};
