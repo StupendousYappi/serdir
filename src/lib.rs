@@ -76,12 +76,12 @@ fn as_u64(len: usize) -> u64 {
 /// A type-erased error.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// Error returned by this crate's public APIs.
+/// An error returned by this crate's public APIs.
 #[derive(Debug)]
 pub enum ServeFilesError {
     /// Returned by ServedDirBuilder if configuration is invalid.
     ConfigError(String),
-    /// The path is a directory.
+    /// The path is a directory when it was expected to be a file
     IsDirectory(PathBuf),
     /// The requested file was not found.
     NotFound(Option<FileEntity<bytes::Bytes>>),
@@ -136,7 +136,7 @@ mod served_dir;
 
 #[cfg(any(feature = "tower", feature = "hyper"))]
 /// Hyper and Tower service integrations.
-pub mod integration;
+mod integration;
 
 mod compression;
 mod etag;
@@ -146,7 +146,6 @@ mod range;
 mod serving;
 
 pub use crate::body::Body;
-pub use crate::compression::CompressionSupport;
 pub use crate::file::FileEntity;
 pub use crate::served_dir::{ServedDir, ServedDirBuilder};
 pub use crate::serving::serve;

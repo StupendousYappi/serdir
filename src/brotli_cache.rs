@@ -46,7 +46,7 @@ impl BrotliCacheBuilder {
     /// # Panics
     ///
     /// Panics if the value is invalid.
-    pub fn cache_size(mut self, size: u16) -> Self {
+    pub fn max_size(mut self, size: u16) -> Self {
         assert!(size >= 4, "cache_size must be at least 4");
         assert!(size.is_power_of_two(), "cache_size must be a power of two");
         self.cache_size = size;
@@ -166,7 +166,6 @@ impl BrotliCache {
             return Self::wrap_orig(path, extension);
         }
 
-        // If we have a cache entry for the file, return it.
         let file_info = crate::FileInfo::for_path(path)?;
 
         // Skip compression if the file is too large.
@@ -174,6 +173,7 @@ impl BrotliCache {
             return Self::wrap_orig(path, extension);
         }
 
+        // If we have a cache entry for the file, return it.
         let matched: Option<MatchedFile> = self.cache.get(&file_info);
         if let Some(f) = matched {
             return Ok(f);
@@ -307,7 +307,7 @@ mod tests {
         extensions.insert("html");
 
         let builder = BrotliCache::builder()
-            .cache_size(64)
+            .max_size(64)
             .compression_level(5)
             .supported_extensions(Some(extensions.clone()));
 
@@ -319,13 +319,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "cache_size must be at least 4")]
     fn test_brotli_cache_builder_cache_size_too_small() {
-        BrotliCache::builder().cache_size(2);
+        BrotliCache::builder().max_size(2);
     }
 
     #[test]
     #[should_panic(expected = "cache_size must be a power of two")]
     fn test_brotli_cache_builder_cache_size_not_power_of_two() {
-        BrotliCache::builder().cache_size(100);
+        BrotliCache::builder().max_size(100);
     }
 
     #[test]
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn test_brotli_cache_build() {
         let cache = BrotliCache::builder()
-            .cache_size(16)
+            .max_size(16)
             .compression_level(1)
             .build();
 

@@ -32,10 +32,20 @@ static CHUNK_SIZE: u64 = 65_536;
 /// HTTP entity created from a [`std::fs::File`] which reads the file chunk-by-chunk within
 /// a [`tokio::task::block_in_place`] closure.
 ///
-/// `FileEntity` is cheap to clone and reuse for many requests.
-///
 /// Expects to be served from a tokio threadpool.
-///
+/// 
+/// A [FileEntity] references its file via an open [File] handle, not a [Path], so it will be
+/// resilient against attempts to delete or rename its file as long as it exists. Reading data
+/// from a [FileEntity] does not affects its file position, so it is [Sync] and can, if needed,
+/// be used to serve many requests at once (though this crate's own request handling code doesn't
+/// attempt that).
+/// 
+/// However, file metadata such as the length, last modified time and ETag are cached when the
+/// [FileEntity] is created, so if the underlying file is written to after the [FileEntity] is
+/// created, it's possible for it to return a corrupt response, with an ETag or last modified time
+/// that doesn't match the served contents. As such, while it is safe to replace existing static 
+/// content with new files at runtime, users of this crate should do that by moving files or
+/// directories, and not by writing to existing static content files after the server has started.
 /// ```
 /// # use bytes::Bytes;
 /// # use http::{Request, Response, header::{self, HeaderMap, HeaderValue}};
@@ -65,12 +75,15 @@ impl<D> FileEntity<D>
 where
     D: 'static + Send + Sync + Buf + From<Vec<u8>> + From<&'static [u8]>,
 {
-    /// Creates a new FileEntity.
+    /// Creates a new FileEntity that serves the file at the given path.
+    /// 
+    /// The `headers` value specifies HTTP response headers that should be included whenever serving
+    /// this file, such as the `Content-Type`, `Encoding` and `Vary` headers.
     ///
-    /// `read(2)` calls will be wrapped in [`tokio::task::block_in_place`] calls so that they don't
-    /// block the tokio reactor thread on local disk I/O. Note that [`std::fs::File::open`] and
-    /// this constructor (specifically, its call to `fstat(2)`) may also block, so they typically
-    /// should be wrapped in [`tokio::task::block_in_place`] as well.
+    /// This function performs blocking disk IO- calls to it from an async context should be wrapped in a
+    /// call to [`tokio::task::block_in_place`] to avoid blocking the tokio reactor thread. Attempts
+    /// to read file data via [Entity::get_range] will also block, and should also be wrapped
+    /// in [`tokio::task::block_in_place`] if called from an async context.
     pub fn new(path: impl AsRef<Path>, headers: HeaderMap) -> Result<Self, ServeFilesError> {
         let path = path.as_ref();
         let file = File::open(path)?;
@@ -80,14 +93,16 @@ where
 
     /// Creates a new FileEntity, with presupplied metadata and a pre-opened file.
     ///
-    /// This is an optimization for the case where the caller has already opened
-    /// the file and read the metadata from the opened file handle.  Note that
-    /// on Windows, this still may perform a blocking file operation, so it
-    /// should still be wrapped in [`tokio::task::block_in_place`].
+    /// The `headers` value specifies HTTP response headers that should be included whenever serving
+    /// this file, such as the `Content-Type`, `Encoding` and `Vary` headers.
+    /// 
+    /// This is an optimization for the case where the caller has already opened the file and read
+    /// the metadata from the opened file handle.  Note that on Windows, this still may perform a
+    /// blocking file operation, so it should still be wrapped in [`tokio::task::block_in_place`].
     ///
-    /// It is the caller's responsibility to ensure that the the path, file and metadata all
-    /// refer to the same file- the metadata should be retrieved from the opened file handle
-    /// to ensure this.
+    /// It is the caller's responsibility to ensure that the the path, file and metadata all refer
+    /// to the same file- the metadata should be retrieved from the opened file handle to ensure
+    /// this.
     pub(crate) fn new_with_metadata(
         file: Arc<std::fs::File>,
         file_info: crate::FileInfo,
@@ -107,14 +122,9 @@ where
         })
     }
 
-    /// Returns the value of the header with the given name, if it exists.
+    /// Returns the value of the response header with the given name, if it exists.
     pub fn header(&self, name: &HeaderName) -> Option<&HeaderValue> {
         self.headers.get(name)
-    }
-
-    /// Returns the size of the file.
-    pub fn size(&self) -> u64 {
-        self.len
     }
 }
 
@@ -129,6 +139,7 @@ where
         self.len
     }
 
+    // Reads the bytes of the given range from this entity's file.
     fn get_range(
         &self,
         range: Range<u64>,

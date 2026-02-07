@@ -403,7 +403,7 @@ impl ServedDirBuilder {
     #[cfg(feature = "runtime-compression")]
     pub fn dynamic_compression(mut self, cache_size: u16, compression_level: u8) -> Self {
         let brotli_cache = BrotliCache::builder()
-            .cache_size(cache_size)
+            .max_size(cache_size)
             .compression_level(compression_level)
             .build();
         let strategy = CompressionStrategy::Dynamic(Arc::new(brotli_cache));
