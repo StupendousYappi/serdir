@@ -14,11 +14,13 @@ use serve_files::served_dir::ServedDir;
 use serve_files::ServeFilesError;
 use std::fmt::Write;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use serve_files::Body;
 
+#[cfg(unix)]
 fn is_dir(dir: &nix::dir::Dir, ent: &nix::dir::Entry) -> Result<bool, nix::Error> {
     // Many filesystems return file types in the directory entries.
     if let Some(t) = ent.file_type() {
@@ -37,9 +39,10 @@ fn is_dir(dir: &nix::dir::Dir, ent: &nix::dir::Entry) -> Result<bool, nix::Error
     Ok(mode.contains(SFlag::S_IFDIR))
 }
 
+#[cfg(unix)]
 fn directory_listing(
     req: http::Request<hyper::body::Incoming>,
-    path: &std::path::Path,
+    path: &Path,
 ) -> Result<http::Response<Body>, ServeFilesError> {
     if !req.uri().path().ends_with("/") {
         let mut loc = ::bytes::BytesMut::with_capacity(req.uri().path().len() + 1);
@@ -79,6 +82,66 @@ fn directory_listing(
         }
         listing.push_str("</a>\n");
     }
+    listing.push_str("</ul>\n");
+    let mut resp = http::Response::new(serve_files::Body::from(listing));
+    resp.headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
+    Ok(resp)
+}
+
+#[cfg(not(unix))]
+fn directory_listing(
+    req: http::Request<hyper::body::Incoming>,
+    path: &Path,
+) -> Result<http::Response<Body>, ServeFilesError> {
+    if !req.uri().path().ends_with("/") {
+        let mut loc = ::bytes::BytesMut::with_capacity(req.uri().path().len() + 1);
+        write!(loc, "{}/", req.uri().path()).unwrap();
+        let loc = HeaderValue::from_maybe_shared(loc.freeze()).unwrap();
+        return Ok(http::Response::builder()
+            .status(http::StatusCode::MOVED_PERMANENTLY)
+            .header(http::header::LOCATION, loc)
+            .body(serve_files::Body::empty())
+            .unwrap());
+    }
+
+    let mut listing = String::new();
+    listing.push_str("<!DOCTYPE html>\n<title>directory listing</title>\n<ul>\n");
+
+    let mut ents = std::fs::read_dir(path)
+        .map_err(ServeFilesError::IOError)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ServeFilesError::IOError)?;
+    ents.sort_unstable_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+    for ent in ents {
+        let file_name = ent.file_name();
+        let p = match file_name.to_str() {
+            None => continue, // skip non-UTF-8
+            Some(".") => continue,
+            Some(p) => p,
+        };
+        if p == ".." && req.uri().path() == "/" {
+            continue;
+        }
+
+        listing.push_str("<li><a href=\"");
+        listing.push_str(&htmlescape::encode_minimal(p));
+        let is_dir = ent
+            .file_type()
+            .map_err(ServeFilesError::IOError)?
+            .is_dir();
+        if is_dir {
+            listing.push('/');
+        }
+        listing.push_str("\">");
+        listing.push_str(&htmlescape::encode_minimal(p));
+        if is_dir {
+            listing.push('/');
+        }
+        listing.push_str("</a>\n");
+    }
+
     listing.push_str("</ul>\n");
     let mut resp = http::Response::new(serve_files::Body::from(listing));
     resp.headers_mut()
