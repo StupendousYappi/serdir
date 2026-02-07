@@ -163,7 +163,7 @@ where
                     let response = inner.call(req).await?;
                     Ok(response.map(|body| body.map_err(Into::into).boxed_unsync()))
                 }
-                Err(_) => Ok(box_response(ServedDir::status_response(
+                Err(_) => Ok(box_response(ServedDir::make_status_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                 ))),
             }
