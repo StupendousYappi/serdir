@@ -9,9 +9,9 @@ use crate::compression::{CompressionStrategy, CompressionSupport, MatchedFile};
 #[cfg(feature = "runtime-compression")]
 use crate::brotli_cache::BrotliCache;
 #[cfg(feature = "hyper")]
-use crate::hyper::ServedDirHyperService;
+use crate::integration::ServedDirHyperService;
 #[cfg(feature = "tower")]
-use crate::tower::{ServedDirLayer, ServedDirService};
+use crate::integration::{ServedDirLayer, ServedDirService};
 
 use crate::{Body, FileEntity, ServeFilesError};
 use bytes::Bytes;

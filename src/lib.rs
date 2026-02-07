@@ -35,11 +35,11 @@
 
 #![deny(missing_docs, clippy::print_stderr, clippy::print_stdout)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![allow(clippy::result_large_err)]
 
 use bytes::Buf;
 use futures_core::Stream;
 use http::header::{HeaderMap, HeaderValue};
-use http::{Request, Response, StatusCode};
 use std::error::Error;
 use std::fmt::Display;
 use std::fs::File;
@@ -134,13 +134,9 @@ mod body;
 
 pub mod served_dir;
 
-#[cfg(feature = "hyper")]
-/// Hyper service integration.
-pub mod hyper;
-
-#[cfg(feature = "tower")]
-/// Tower service integration.
-pub mod tower;
+#[cfg(any(feature = "tower", feature = "hyper"))]
+/// Hyper and Tower service integrations.
+pub mod integration;
 
 #[cfg(feature = "runtime-compression")]
 mod brotli_cache;
@@ -155,27 +151,6 @@ pub use crate::body::Body;
 pub use crate::compression::CompressionSupport;
 pub use crate::file::FileEntity;
 pub use crate::serving::serve;
-
-/// Returns a Request based on the input request, but with an empty body.
-pub(crate) fn request_head<B>(req: &Request<B>) -> Request<()> {
-    let mut request = Request::builder()
-        .method(req.method().clone())
-        .uri(req.uri().clone())
-        .version(req.version())
-        .body(())
-        .expect("request head should be valid");
-    *request.headers_mut() = req.headers().clone();
-    request
-}
-
-/// Returns a basic `Response` with the given status code.
-pub(crate) fn status_response(status: StatusCode) -> Response<Body> {
-    let reason = status.canonical_reason().unwrap_or("Unknown");
-    Response::builder()
-        .status(status)
-        .body(Body::from(reason))
-        .expect("status response should be valid")
-}
 
 /// Basic metadata about a particular version of a file, used as a cache key.
 #[derive(Hash, Eq, PartialEq, Clone, Copy)]
@@ -222,11 +197,6 @@ impl FileInfo {
         })
     }
 
-    pub(crate) fn for_path(path: &Path) -> Result<Self, ServeFilesError> {
-        let file = File::open(path)?;
-        Self::open_file(path, &file)
-    }
-
     /// Returns the length of the file in bytes.
     pub(crate) fn len(&self) -> u64 {
         self.len
@@ -237,6 +207,13 @@ impl FileInfo {
         self.mtime
     }
 
+    #[cfg(feature = "runtime-compression")]
+    pub(crate) fn for_path(path: &Path) -> Result<Self, ServeFilesError> {
+        let file = File::open(path)?;
+        Self::open_file(path, &file)
+    }
+
+    #[cfg(feature = "runtime-compression")]
     pub(crate) fn get_hash(&self) -> u64 {
         use std::hash::Hash;
         let mut hasher = DefaultHasher::new();

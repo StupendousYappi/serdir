@@ -180,9 +180,9 @@ impl ETag {
         let mut buf = [0u8; 16];
         let hex_chars = b"0123456789abcdef";
         let val = self.0;
-        for i in 0..16 {
+        for (i, slot) in buf.iter_mut().enumerate() {
             let nibble = (val >> ((15 - i) * 4)) & 0xf;
-            buf[i] = hex_chars[nibble as usize];
+            *slot = hex_chars[nibble as usize];
         }
         buf
     }
