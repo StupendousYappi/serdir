@@ -168,6 +168,7 @@ mod test {
             .unwrap();
         // This should fail because it's not open for reading.
         let err = f.read_range(10, 0).unwrap_err();
+        println!("test_read_at_io_error: {}", err.to_string());
         assert!(err.to_string().starts_with("Bad file descriptor "));
     }
 
