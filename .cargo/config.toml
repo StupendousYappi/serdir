@@ -3,3 +3,5 @@
 test-all = "test --all-features"
 ta = "test --all-features"
 run-serve = "run --example serve_dir --features runtime-compression"
+
+check-windows = "check --all-features --target x86_64-pc-windows-msvc"

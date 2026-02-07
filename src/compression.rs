@@ -14,11 +14,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 trait PathBufExt {
-    fn with_added_extension(&self, extension: impl AsRef<std::ffi::OsStr>) -> PathBuf;
+    fn append_extension(&self, extension: impl AsRef<std::ffi::OsStr>) -> PathBuf;
 }
 
 impl PathBufExt for Path {
-    fn with_added_extension(&self, extension: impl AsRef<std::ffi::OsStr>) -> PathBuf {
+    fn append_extension(&self, extension: impl AsRef<std::ffi::OsStr>) -> PathBuf {
         match self.file_name() {
             Some(file_name) => {
                 let mut new_file_name = file_name.to_os_string();
@@ -208,7 +208,7 @@ impl CompressionStrategy {
         match self {
             CompressionStrategy::Static(server_support) => {
                 if supported.brotli() && server_support.brotli() {
-                    let br_path = path.with_added_extension("br");
+                    let br_path = path.append_extension("br");
                     match Self::try_path(&br_path, ContentEncoding::Brotli) {
                         Ok(f) => return Ok(f),
                         Err(ServeFilesError::NotFound(_))
@@ -218,7 +218,7 @@ impl CompressionStrategy {
                 }
 
                 if supported.zstd() && server_support.zstd() {
-                    let zstd_path = path.with_added_extension("zstd");
+                    let zstd_path = path.append_extension("zstd");
                     match Self::try_path(&zstd_path, ContentEncoding::Zstd) {
                         Ok(f) => return Ok(f),
                         Err(ServeFilesError::NotFound(_))
@@ -228,7 +228,7 @@ impl CompressionStrategy {
                 }
 
                 if supported.gzip() && server_support.gzip() {
-                    let gz_path = path.with_added_extension("gz");
+                    let gz_path = path.append_extension("gz");
                     match Self::try_path(&gz_path, ContentEncoding::Gzip) {
                         Ok(f) => return Ok(f),
                         Err(ServeFilesError::NotFound(_))
