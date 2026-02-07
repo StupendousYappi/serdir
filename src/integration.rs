@@ -154,7 +154,8 @@ where
     ResBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
     ResBody::Error: Into<crate::BoxError> + 'static,
 {
-    type Response = Response<http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, crate::BoxError>>;
+    type Response =
+        Response<http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, crate::BoxError>>;
     type Error = S::Error;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
@@ -183,7 +184,9 @@ where
                     let response = inner.call(req).await?;
                     Ok(response.map(|body| body.map_err(Into::into).boxed_unsync()))
                 }
-                Err(_) => Ok(box_response(status_response(StatusCode::INTERNAL_SERVER_ERROR))),
+                Err(_) => Ok(box_response(status_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                ))),
             }
         })
     }
