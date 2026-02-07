@@ -58,7 +58,7 @@ impl FileExt for std::fs::File {
     }
 
     #[cfg(windows)]
-    fn read_at(&self, chunk_size: usize, offset: u64) -> io::Result<Vec<u8>> {
+    fn read_range(&self, chunk_size: usize, offset: u64) -> io::Result<Vec<u8>> {
         // References:
         // https://github.com/rust-lang/rust/blob/5ffebc2cb3a089c27a4c7da13d09fd2365c288aa/library/std/src/sys/windows/handle.rs#L230
         // https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile
