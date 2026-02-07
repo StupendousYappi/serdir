@@ -127,10 +127,7 @@ fn directory_listing(
 
         listing.push_str("<li><a href=\"");
         listing.push_str(&htmlescape::encode_minimal(p));
-        let is_dir = ent
-            .file_type()
-            .map_err(ServeFilesError::IOError)?
-            .is_dir();
+        let is_dir = ent.file_type().map_err(ServeFilesError::IOError)?.is_dir();
         if is_dir {
             listing.push('/');
         }

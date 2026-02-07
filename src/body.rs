@@ -232,11 +232,9 @@ where
                     Poll::Ready(Some(Ok(d)))
                 } else {
                     let remaining = std::mem::take(&mut this.remaining); // fuse.
-                    Poll::Ready(Some(Err(crate::IOError::other(
-                        StreamTooLongError {
-                            extra: d_len - remaining,
-                        },
-                    ))))
+                    Poll::Ready(Some(Err(crate::IOError::other(StreamTooLongError {
+                        extra: d_len - remaining,
+                    }))))
                 }
             }
             Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
