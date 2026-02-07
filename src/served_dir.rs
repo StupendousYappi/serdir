@@ -178,7 +178,9 @@ impl ServedDir {
             Err(ServeFilesError::InvalidPath(_)) => {
                 Ok(Self::make_status_response(StatusCode::BAD_REQUEST))
             }
-            Err(_) => Ok(Self::make_status_response(StatusCode::INTERNAL_SERVER_ERROR)),
+            Err(_) => Ok(Self::make_status_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )),
         }
     }
 
@@ -420,7 +422,7 @@ impl ServedDirBuilder {
     }
 
     /// Sets a prefix to strip from the request path.
-    /// 
+    ///
     /// If this value is defined, [ServedDir::get] will return a [ServeFilesError::InvalidPath]
     /// error for any path that doesn't begin with the given prefix.
     pub fn strip_prefix(mut self, prefix: impl Into<String>) -> Self {
@@ -453,7 +455,7 @@ impl ServedDirBuilder {
     /// Sets a path to a file to serve for 404 Not Found errors.
     ///
     /// The path must be relative to the directory being served.
-    /// 
+    ///
     /// The extension of the file will be used to determine the content type of all 404 responses.
     pub fn not_found_path(mut self, path: impl Into<PathBuf>) -> Result<Self, ServeFilesError> {
         let path = path.into();

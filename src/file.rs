@@ -33,17 +33,17 @@ static CHUNK_SIZE: u64 = 65_536;
 /// a [`tokio::task::block_in_place`] closure.
 ///
 /// Expects to be served from a tokio threadpool.
-/// 
+///
 /// A [FileEntity] references its file via an open [File] handle, not a [Path], so it will be
 /// resilient against attempts to delete or rename its file as long as it exists. Reading data
 /// from a [FileEntity] does not affects its file position, so it is [Sync] and can, if needed,
 /// be used to serve many requests at once (though this crate's own request handling code doesn't
 /// attempt that).
-/// 
+///
 /// However, file metadata such as the length, last modified time and ETag are cached when the
 /// [FileEntity] is created, so if the underlying file is written to after the [FileEntity] is
 /// created, it's possible for it to return a corrupt response, with an ETag or last modified time
-/// that doesn't match the served contents. As such, while it is safe to replace existing static 
+/// that doesn't match the served contents. As such, while it is safe to replace existing static
 /// content with new files at runtime, users of this crate should do that by moving files or
 /// directories, and not by writing to existing static content files after the server has started.
 /// ```
@@ -76,7 +76,7 @@ where
     D: 'static + Send + Sync + Buf + From<Vec<u8>> + From<&'static [u8]>,
 {
     /// Creates a new FileEntity that serves the file at the given path.
-    /// 
+    ///
     /// The `headers` value specifies HTTP response headers that should be included whenever serving
     /// this file, such as the `Content-Type`, `Encoding` and `Vary` headers.
     ///
@@ -95,7 +95,7 @@ where
     ///
     /// The `headers` value specifies HTTP response headers that should be included whenever serving
     /// this file, such as the `Content-Type`, `Encoding` and `Vary` headers.
-    /// 
+    ///
     /// This is an optimization for the case where the caller has already opened the file and read
     /// the metadata from the opened file handle.  Note that on Windows, this still may perform a
     /// blocking file operation, so it should still be wrapped in [`tokio::task::block_in_place`].
