@@ -10,108 +10,95 @@
 
 use http::header::{self, HeaderValue};
 use hyper_util::rt::TokioIo;
+use hyper_util::service::TowerToHyperService;
 use serve_files::ServedDir;
-use serve_files::ServeFilesError;
 use std::fmt::Write;
+use std::future::Future;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use tokio::net::TcpListener;
+use tower::{Layer, Service};
 
 use serve_files::Body;
 
-#[cfg(unix)]
-fn is_dir(dir: &nix::dir::Dir, ent: &nix::dir::Entry) -> Result<bool, nix::Error> {
-    // Many filesystems return file types in the directory entries.
-    if let Some(t) = ent.file_type() {
-        return Ok(t == nix::dir::Type::Directory);
-    }
+type ResponseFuture =
+    Pin<Box<dyn Future<Output = Result<http::Response<Body>, std::convert::Infallible>> + Send>>;
 
-    // ...but some require an fstat call.
-    use nix::sys::stat::{fstatat, SFlag};
-    use std::os::unix::io::AsRawFd;
-    let stat = fstatat(
-        Some(dir.as_raw_fd()),
-        ent.file_name(),
-        nix::fcntl::AtFlags::empty(),
-    )?;
-    let mode = SFlag::from_bits(stat.st_mode).unwrap();
-    Ok(mode.contains(SFlag::S_IFDIR))
+#[derive(Clone)]
+struct DirectoryFallbackService {
+    root: Arc<PathBuf>,
 }
 
-#[cfg(unix)]
+impl DirectoryFallbackService {
+    fn new(root: PathBuf) -> Self {
+        Self {
+            root: Arc::new(root),
+        }
+    }
+}
+
+impl Service<http::Request<hyper::body::Incoming>> for DirectoryFallbackService {
+    type Response = http::Response<Body>;
+    type Error = std::convert::Infallible;
+    type Future = ResponseFuture;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: http::Request<hyper::body::Incoming>) -> Self::Future {
+        let root = self.root.clone();
+        Box::pin(async move {
+            Ok(match path_for_request(root.as_path(), req.uri().path()) {
+                Some(path) if path.is_dir() => directory_listing(&req, &path),
+                _ => not_found_response(),
+            })
+        })
+    }
+}
+
+fn path_for_request(root: &Path, request_path: &str) -> Option<PathBuf> {
+    let rel = request_path.trim_start_matches('/');
+    let path = Path::new(rel);
+
+    for component in path.components() {
+        if matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        ) {
+            return None;
+        }
+    }
+
+    Some(root.join(path))
+}
+
 fn directory_listing(
-    req: http::Request<hyper::body::Incoming>,
+    req: &http::Request<hyper::body::Incoming>,
     path: &Path,
-) -> Result<http::Response<Body>, ServeFilesError> {
+) -> http::Response<Body> {
     if !req.uri().path().ends_with("/") {
         let mut loc = ::bytes::BytesMut::with_capacity(req.uri().path().len() + 1);
         write!(loc, "{}/", req.uri().path()).unwrap();
         let loc = HeaderValue::from_maybe_shared(loc.freeze()).unwrap();
-        return Ok(http::Response::builder()
+        return http::Response::builder()
             .status(http::StatusCode::MOVED_PERMANENTLY)
             .header(http::header::LOCATION, loc)
             .body(serve_files::Body::empty())
-            .unwrap());
-    }
-    let mut listing = String::new();
-    let file = std::fs::File::open(path).map_err(ServeFilesError::IOError)?;
-    let mut dir = nix::dir::Dir::from(file).unwrap(); // TODO: don't unwrap.
-    listing.push_str("<!DOCTYPE html>\n<title>directory listing</title>\n<ul>\n");
-    let mut ents: Vec<_> = dir.iter().map(|e| e.unwrap()).collect();
-    ents.sort_unstable_by(|a, b| a.file_name().cmp(b.file_name()));
-    for ent in ents {
-        let p = match ent.file_name().to_str() {
-            Err(_) => continue, // skip non-UTF-8
-            Ok(".") => continue,
-            Ok(p) => p,
-        };
-        if p == ".." && req.uri().path() == "/" {
-            continue;
-        };
-        listing.push_str("<li><a href=\"");
-        listing.push_str(&htmlescape::encode_minimal(p));
-        let is_dir = is_dir(&dir, &ent).unwrap(); // TODO: don't unwrap.
-        if is_dir {
-            listing.push('/');
-        }
-        listing.push_str("\">");
-        listing.push_str(&htmlescape::encode_minimal(p));
-        if is_dir {
-            listing.push('/');
-        }
-        listing.push_str("</a>\n");
-    }
-    listing.push_str("</ul>\n");
-    let mut resp = http::Response::new(serve_files::Body::from(listing));
-    resp.headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
-    Ok(resp)
-}
-
-#[cfg(not(unix))]
-fn directory_listing(
-    req: http::Request<hyper::body::Incoming>,
-    path: &Path,
-) -> Result<http::Response<Body>, ServeFilesError> {
-    if !req.uri().path().ends_with("/") {
-        let mut loc = ::bytes::BytesMut::with_capacity(req.uri().path().len() + 1);
-        write!(loc, "{}/", req.uri().path()).unwrap();
-        let loc = HeaderValue::from_maybe_shared(loc.freeze()).unwrap();
-        return Ok(http::Response::builder()
-            .status(http::StatusCode::MOVED_PERMANENTLY)
-            .header(http::header::LOCATION, loc)
-            .body(serve_files::Body::empty())
-            .unwrap());
+            .unwrap();
     }
 
     let mut listing = String::new();
     listing.push_str("<!DOCTYPE html>\n<title>directory listing</title>\n<ul>\n");
 
-    let mut ents = std::fs::read_dir(path)
-        .map_err(ServeFilesError::IOError)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(ServeFilesError::IOError)?;
+    let mut ents =
+        match std::fs::read_dir(path).and_then(|iter| iter.collect::<Result<Vec<_>, _>>()) {
+            Ok(ents) => ents,
+            Err(_) => return not_found_response(),
+        };
     ents.sort_unstable_by(|a, b| a.file_name().cmp(&b.file_name()));
 
     for ent in ents {
@@ -127,7 +114,7 @@ fn directory_listing(
 
         listing.push_str("<li><a href=\"");
         listing.push_str(&htmlescape::encode_minimal(p));
-        let is_dir = ent.file_type().map_err(ServeFilesError::IOError)?.is_dir();
+        let is_dir = ent.file_type().map(|t| t.is_dir()).unwrap_or(false);
         if is_dir {
             listing.push('/');
         }
@@ -143,68 +130,45 @@ fn directory_listing(
     let mut resp = http::Response::new(serve_files::Body::from(listing));
     resp.headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
-    Ok(resp)
+    resp
 }
 
-async fn handle_request(
-    served_dir: &Arc<ServedDir>,
-    req: http::Request<hyper::body::Incoming>,
-) -> Result<http::Response<Body>, ::std::io::Error> {
-    debug_assert!(req.uri().path().starts_with('/'));
-    let p = &req.uri().path()[1..];
-
-    let err = match served_dir.get(p, req.headers()).await {
-        Ok(f) => return Ok(serve_files::serve(f, &req, http::StatusCode::OK)),
-        Err(ServeFilesError::IsDirectory(path)) => match directory_listing(req, &path) {
-            Ok(res) => return Ok(res),
-            Err(e) => e,
-        },
-        Err(ServeFilesError::NotFound(Some(f))) => {
-            return Ok(serve_files::serve(f, &req, http::StatusCode::NOT_FOUND))
-        }
-        Err(e) => e,
-    };
-
-    let status = match err {
-        ServeFilesError::NotFound(_) => http::StatusCode::NOT_FOUND,
-        ServeFilesError::InvalidPath(_) => http::StatusCode::BAD_REQUEST,
-        _ => http::StatusCode::INTERNAL_SERVER_ERROR,
-    };
-    let reason = status.canonical_reason().unwrap_or_default();
-    Ok(http::Response::builder()
-        .status(status)
-        .body(serve_files::Body::from(reason))
-        .unwrap())
+fn not_found_response() -> http::Response<Body> {
+    http::Response::builder()
+        .status(http::StatusCode::NOT_FOUND)
+        .body(serve_files::Body::from("Not Found"))
+        .unwrap()
 }
 
 #[tokio::main]
 async fn main() {
     env_logger::init();
-    let path = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
-    let served_dir: &'static Arc<ServedDir> = Box::leak(Box::new(Arc::new(
-        ServedDir::builder(&path)
-            .unwrap()
-            .append_index_html(true)
-            .dynamic_compression(16, 5)
-            .build(),
-    )));
+    let root_path = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
+
+    let layer = ServedDir::builder(&root_path)
+        .unwrap()
+        .append_index_html(true)
+        .dynamic_compression(16, 5)
+        .build()
+        .into_tower_layer();
+    let service = layer.layer(DirectoryFallbackService::new(PathBuf::from(&root_path)));
+
     let addr = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 1337));
     let listener = TcpListener::bind(addr).await.unwrap();
     println!(
         "Serving {} on http://{}",
-        path,
+        root_path,
         listener.local_addr().unwrap()
     );
     loop {
         let (tcp, _) = listener.accept().await.unwrap();
+        let service = service.clone();
         tokio::spawn(async move {
             tcp.set_nodelay(true).unwrap();
             let io = TokioIo::new(tcp);
+            let hyper_service = TowerToHyperService::new(service);
             hyper::server::conn::http1::Builder::new()
-                .serve_connection(
-                    io,
-                    hyper::service::service_fn(move |req| handle_request(served_dir, req)),
-                )
+                .serve_connection(io, hyper_service)
                 .await
                 .unwrap();
         });
