@@ -6,32 +6,17 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, Criterion};
-use http::{Request, Response};
 use hyper_util::rt::TokioIo;
 use once_cell::sync::Lazy;
-use std::ffi::OsString;
 use std::fs::File;
 use std::io::Write;
 use std::net::SocketAddr;
-use std::sync::Mutex;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
-
-async fn serve(
-    req: Request<hyper::body::Incoming>,
-) -> Result<Response<serve_files::Body<Bytes>>, BoxError> {
-    let f = tokio::task::block_in_place::<_, Result<_, BoxError>>(move || {
-        let path = PATH.lock().unwrap();
-        let headers = http::header::HeaderMap::new();
-        Ok(serve_files::FileEntity::new(&*path, headers)?)
-    })?;
-    Ok(serve_files::serve(f, &req, http::StatusCode::OK))
-}
+static SERVED_DIR: Lazy<TempDir> = Lazy::new(|| tempfile::tempdir().unwrap());
 
 /// Returns the hostport of a newly created, never-destructed server.
 fn new_server() -> String {
@@ -39,6 +24,10 @@ fn new_server() -> String {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let _guard = rt.enter();
+        let service = serve_files::ServedDir::builder(SERVED_DIR.path())
+            .unwrap()
+            .build()
+            .into_hyper_service();
         rt.block_on(async {
             let addr = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0));
             let listener = TcpListener::bind(addr).await.unwrap();
@@ -46,9 +35,10 @@ fn new_server() -> String {
             loop {
                 let (tcp, _) = listener.accept().await.unwrap();
                 let io = TokioIo::new(tcp);
+                let service = service.clone();
                 tokio::task::spawn(async move {
                     hyper::server::conn::http1::Builder::new()
-                        .serve_connection(io, hyper::service::service_fn(serve))
+                        .serve_connection(io, service)
                         .await
                         .unwrap();
                 });
@@ -59,32 +49,25 @@ fn new_server() -> String {
     format!("http://{}:{}", addr.ip(), addr.port())
 }
 
-static PATH: Lazy<Mutex<OsString>> = Lazy::new(|| Mutex::new(OsString::new()));
 static SERVER: Lazy<String> = Lazy::new(new_server);
+static SERVER_PATH: Lazy<String> = Lazy::new(|| format!("{}/f", &*SERVER));
 
-/// Sets up the server to serve a `kib`-KiB file, until the returned `TempDir`
-/// goes out of scope and the file is deleted.
-fn setup(kib: usize) -> TempDir {
-    let tmpdir = tempfile::tempdir().unwrap();
-    let tmppath = tmpdir.path().join("f");
-    {
-        let p = &mut *PATH.lock().unwrap();
-        p.clear();
-        p.push(&tmppath);
-    }
+/// Sets up the server to serve a `kib`-KiB file at `/f`.
+fn setup(kib: usize) {
+    let tmppath = SERVED_DIR.path().join("f");
     let mut tmpfile = File::create(tmppath).unwrap();
     for _ in 0..kib {
         tmpfile.write_all(&[0; 1024]).unwrap();
     }
-    tmpdir
+    tmpfile.flush().unwrap();
 }
 
 fn serve_full_entity(b: &mut criterion::Bencher, kib: &usize) {
-    let _tmpdir = setup(*kib);
+    setup(*kib);
     let client = reqwest::Client::new();
     let rt = tokio::runtime::Runtime::new().unwrap();
     b.to_async(&rt).iter(|| async {
-        let resp = client.get(&*SERVER).send().await.unwrap();
+        let resp = client.get(&*SERVER_PATH).send().await.unwrap();
         assert_eq!(reqwest::StatusCode::OK, resp.status());
         let b = resp.bytes().await.unwrap();
         assert_eq!(1024 * *kib, b.len());
@@ -92,12 +75,12 @@ fn serve_full_entity(b: &mut criterion::Bencher, kib: &usize) {
 }
 
 fn serve_last_byte_1mib(b: &mut criterion::Bencher) {
-    let _tmpdir = setup(1024);
+    setup(1024);
     let client = reqwest::Client::new();
     let rt = tokio::runtime::Runtime::new().unwrap();
     b.to_async(&rt).iter(|| async {
         let resp = client
-            .get(&*SERVER)
+            .get(&*SERVER_PATH)
             .header("Range", "bytes=-1")
             .send()
             .await

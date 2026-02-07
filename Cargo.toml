@@ -78,6 +78,7 @@ debug = true
 [[bench]]
 name = "file"
 harness = false
+required-features = ["hyper"]
 
 [[bench]]
 name = "inmem"
