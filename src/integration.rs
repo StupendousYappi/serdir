@@ -4,6 +4,7 @@ use futures_core::future::BoxFuture;
 use http::{Request, Response, StatusCode};
 use std::convert::Infallible;
 use std::sync::Arc;
+use tower::BoxError;
 
 /// Returns a Request based on the input request, but with an empty body.
 pub(crate) fn request_head<B>(req: &Request<B>) -> Request<()> {
@@ -121,10 +122,9 @@ where
     S::Future: Send + 'static,
     ReqBody: Send + 'static,
     ResBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
-    ResBody::Error: Into<crate::BoxError> + 'static,
+    ResBody::Error: Into<BoxError> + 'static,
 {
-    type Response =
-        Response<http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, crate::BoxError>>;
+    type Response = Response<http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, BoxError>>;
     type Error = S::Error;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
@@ -172,11 +172,11 @@ where
 #[cfg(feature = "tower")]
 fn box_response(
     response: Response<Body>,
-) -> Response<http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, crate::BoxError>> {
+) -> Response<http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, BoxError>> {
     use http_body_util::BodyExt;
 
     response.map(|body| {
-        body.map_err(|err| -> crate::BoxError { Box::new(err) })
+        body.map_err(|err| -> BoxError { Box::new(err) })
             .boxed_unsync()
     })
 }

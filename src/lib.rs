@@ -73,9 +73,6 @@ fn as_u64(len: usize) -> u64 {
     len as u64
 }
 
-/// A type-erased error.
-pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
-
 /// An error returned by this crate's public APIs.
 #[derive(Debug)]
 pub enum ServeFilesError {
