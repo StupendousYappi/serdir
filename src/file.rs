@@ -46,21 +46,8 @@ static CHUNK_SIZE: u64 = 65_536;
 /// that doesn't match the served contents. As such, while it is safe to replace existing static
 /// content with new files at runtime, users of this crate should do that by moving files or
 /// directories, and not by writing to existing static content files after the server has started.
-/// ```
-/// # use bytes::Bytes;
-/// # use http::{Request, Response, header::{self, HeaderMap, HeaderValue}};
-/// type BoxError = Box<dyn std::error::Error + Send + Sync>;
-/// async fn serve_dictionary(req: Request<hyper::body::Incoming>) -> Result<Response<serve_files::Body>, BoxError> {
-///     let f = tokio::task::block_in_place::<_, Result<_, BoxError>>(
-///         move || {
-///             let mut headers = http::header::HeaderMap::new();
-///             headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
-///             Ok(serve_files::FileEntity::new("/usr/share/dict/words", headers)?)
-///         },
-///     )?;
-///     Ok(serve_files::serve(f, &req, http::StatusCode::OK))
-/// }
-/// ```
+///
+/// TODO: add example code once we have a `serve_request` method.
 #[derive(Debug, Clone)]
 pub struct FileEntity<D: 'static + Send + Buf + From<Vec<u8>> + From<&'static [u8]>> {
     len: u64,
