@@ -108,6 +108,7 @@ const DEFAULT_MAX_FILE_SIZE: u64 = 1024 * 1024;
 ///
 /// Lower levels are faster but compress less, while higher levels are slower but compress more.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default)]
 pub enum BrotliLevel {
     /// Level 0
     L0 = 0,
@@ -120,6 +121,7 @@ pub enum BrotliLevel {
     /// Level 4
     L4 = 4,
     /// Level 5
+    #[default]
     L5 = 5,
     /// Level 6
     L6 = 6,
@@ -135,11 +137,6 @@ pub enum BrotliLevel {
     L11 = 11,
 }
 
-impl Default for BrotliLevel {
-    fn default() -> Self {
-        Self::L5
-    }
-}
 
 impl From<BrotliLevel> for i32 {
     fn from(level: BrotliLevel) -> Self {
