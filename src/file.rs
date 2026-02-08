@@ -81,7 +81,7 @@ pub struct FileEntity {
     pub f: Arc<std::fs::File>,
     /// The HTTP response headers to include when serving this file
     pub headers: HeaderMap,
-    /// THe ETag for the file, if any
+    /// The ETag for the file, if any
     pub etag: Option<ETag>,
 }
 

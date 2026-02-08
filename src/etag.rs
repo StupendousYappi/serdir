@@ -26,6 +26,9 @@ pub(crate) type BuildHasher = std::hash::BuildHasherDefault<rapidhash::fast::Rap
 pub struct ETag(u64);
 
 /// Function pointer type used to calculate ETag hash values from opened files.
+///
+/// The function should return a u64 based on hashing the complete contents of the file,
+/// or None if no ETag should be used for this file.
 pub type FileHasher = fn(&File) -> Result<Option<u64>, io::Error>;
 
 /// A cache for ETag values, indexed by file metadata.
