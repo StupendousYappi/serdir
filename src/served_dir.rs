@@ -405,11 +405,13 @@ impl ServedDirBuilder {
 
     /// Convenience method for configuring cached runtime Brotli compression.
     #[cfg(feature = "runtime-compression")]
-    pub fn cached_compression(self, cache_size: u16, compression_level: u8) -> Self {
-        self.compression(CompressionStrategy::cached_compression(
-            cache_size,
-            compression_level,
-        ))
+    pub fn cached_compression(self, compression_level: u8) -> Self {
+        self.compression(CompressionStrategy::cached_compression(compression_level))
+    }
+
+    /// Convenience method for disabling compression.
+    pub fn no_compression(self) -> Self {
+        self.compression(CompressionStrategy::none())
     }
 
     /// Appends "/index.html" to directory paths.

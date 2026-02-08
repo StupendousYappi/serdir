@@ -70,6 +70,10 @@ impl StaticCompression {
     }
 }
 
+const DEFAULT_CACHE_SIZE: u16 = 1024;
+const DEFAULT_COMPRESSION_LEVEL: u8 = 5;
+const DEFAULT_MAX_FILE_SIZE: u64 = 1024 * 1024;
+
 /// Builder-style settings for runtime Brotli compression and caching.
 #[cfg(feature = "runtime-compression")]
 #[derive(Debug, Clone)]
@@ -134,10 +138,10 @@ impl CachedCompression {
 impl Default for CachedCompression {
     fn default() -> Self {
         Self {
-            cache_size: 128,
-            compression_level: 3,
+            cache_size: DEFAULT_CACHE_SIZE,
+            compression_level: DEFAULT_COMPRESSION_LEVEL,
             supported_extensions: None,
-            max_file_size: u64::MAX,
+            max_file_size: DEFAULT_MAX_FILE_SIZE,
         }
     }
 }
@@ -297,9 +301,8 @@ impl CompressionStrategy {
 
     /// Returns a strategy that performs runtime Brotli compression with caching.
     #[cfg(feature = "runtime-compression")]
-    pub fn cached_compression(cache_size: u16, compression_level: u8) -> Self {
+    pub fn cached_compression(compression_level: u8) -> Self {
         CachedCompression::new()
-            .max_size(cache_size)
             .compression_level(compression_level)
             .into()
     }
