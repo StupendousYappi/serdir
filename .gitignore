@@ -6,3 +6,4 @@ notes.md
 *.diff
 .agent/*
 test-content/*
+.vscode/*
