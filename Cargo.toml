@@ -1,6 +1,6 @@
 [package]
 name = "serve-files"
-version = "0.5.0-beta1"
+version = "0.2.0"
 authors = ["Greg Steffensen <greg.steffensen@gmail.com>"]
 license = "MIT/Apache-2.0"
 readme = "README.md"
