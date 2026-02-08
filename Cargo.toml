@@ -84,7 +84,7 @@ name = "metadata"
 harness = false
 
 [[example]]
-name = "serve_dir"
+name = "tower_middleware"
 required-features = ["runtime-compression", "tower"]
 
 [[bench]]
