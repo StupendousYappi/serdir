@@ -5,3 +5,4 @@ test-content/*
 notes.md
 *.diff
 .agent/*
+test-content/*
