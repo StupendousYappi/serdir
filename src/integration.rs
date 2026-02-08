@@ -20,17 +20,17 @@ pub(crate) fn request_head<B>(req: &Request<B>) -> Request<()> {
 /// A Hyper service that serves files from a [`ServedDir`].
 #[cfg(feature = "hyper")]
 #[derive(Clone)]
-pub struct ServedDirHyperService(Arc<ServedDir>);
+pub struct HyperService(Arc<ServedDir>);
 
 #[cfg(feature = "hyper")]
-impl ServedDirHyperService {
+impl HyperService {
     pub(crate) fn new(served_dir: ServedDir) -> Self {
         Self(Arc::new(served_dir))
     }
 }
 
 #[cfg(feature = "hyper")]
-impl<B> hyper::service::Service<Request<B>> for ServedDirHyperService
+impl<B> hyper::service::Service<Request<B>> for HyperService
 where
     B: Send + 'static,
 {
@@ -50,17 +50,17 @@ where
 /// passes requests to the wrapped service.
 #[cfg(feature = "tower")]
 #[derive(Clone)]
-pub struct ServedDirLayer(Arc<ServedDir>);
+pub struct TowerLayer(Arc<ServedDir>);
 
 #[cfg(feature = "tower")]
-impl ServedDirLayer {
+impl TowerLayer {
     pub(crate) fn new(served_dir: ServedDir) -> Self {
         Self(Arc::new(served_dir))
     }
 }
 
 #[cfg(feature = "tower")]
-impl<S> tower::Layer<S> for ServedDirLayer {
+impl<S> tower::Layer<S> for TowerLayer {
     type Service = ServedDirMiddleware<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
@@ -71,7 +71,7 @@ impl<S> tower::Layer<S> for ServedDirLayer {
     }
 }
 
-/// Tower middleware produced by [`ServedDirLayer`].
+/// Tower middleware produced by [`TowerLayer`].
 #[cfg(feature = "tower")]
 #[derive(Clone)]
 pub struct ServedDirMiddleware<S> {
@@ -82,17 +82,17 @@ pub struct ServedDirMiddleware<S> {
 /// A Tower service that serves files from a [`ServedDir`].
 #[cfg(feature = "tower")]
 #[derive(Clone)]
-pub struct ServedDirService(Arc<ServedDir>);
+pub struct TowerService(Arc<ServedDir>);
 
 #[cfg(feature = "tower")]
-impl ServedDirService {
+impl TowerService {
     pub(crate) fn new(served_dir: ServedDir) -> Self {
         Self(Arc::new(served_dir))
     }
 }
 
 #[cfg(feature = "tower")]
-impl<B> tower::Service<Request<B>> for ServedDirService
+impl<B> tower::Service<Request<B>> for TowerService
 where
     B: Send + 'static,
 {

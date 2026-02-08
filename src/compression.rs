@@ -80,10 +80,10 @@ const DEFAULT_MAX_FILE_SIZE: u64 = 1024 * 1024;
 #[cfg(feature = "runtime-compression")]
 #[derive(Debug, Clone)]
 pub struct CachedCompression {
-    cache_size: u16,
-    compression_level: u8,
-    supported_extensions: Option<HashSet<&'static str>>,
-    max_file_size: u64,
+    pub(crate) cache_size: u16,
+    pub(crate) compression_level: u8,
+    pub(crate) supported_extensions: Option<HashSet<&'static str>>,
+    pub(crate) max_file_size: u64,
 }
 
 #[cfg(feature = "runtime-compression")]
@@ -326,12 +326,7 @@ impl CompressionStrategy {
             )),
             #[cfg(feature = "runtime-compression")]
             Self::Cached(value) => {
-                let cache = BrotliCache::builder()
-                    .max_size(value.cache_size)
-                    .compression_level(value.compression_level)
-                    .supported_extensions(value.supported_extensions)
-                    .max_file_size(value.max_file_size)
-                    .build();
+                let cache = BrotliCache::from(value);
                 CompressionStrategyInner::Cached(Arc::new(cache))
             }
             Self::None => CompressionStrategyInner::None,

@@ -11,9 +11,9 @@ use crate::compression::{
     StaticCompression,
 };
 #[cfg(feature = "hyper")]
-use crate::integration::ServedDirHyperService;
+use crate::integration::HyperService;
 #[cfg(feature = "tower")]
-use crate::integration::{ServedDirLayer, ServedDirService};
+use crate::integration::{TowerLayer, TowerService};
 
 use crate::etag::EtagCache;
 use crate::{Body, ETag, FileEntity, FileHasher, FileInfo, ServeFilesError};
@@ -340,21 +340,21 @@ impl ServedDir {
 
     /// Returns a Tower service that serves files from this `ServedDir`.
     #[cfg(feature = "tower")]
-    pub fn into_tower_service(self) -> ServedDirService {
-        ServedDirService::new(self)
+    pub fn into_tower_service(self) -> TowerService {
+        TowerService::new(self)
     }
 
     /// Returns a Hyper service that serves files from this `ServedDir`.
     #[cfg(feature = "hyper")]
-    pub fn into_hyper_service(self) -> ServedDirHyperService {
-        ServedDirHyperService::new(self)
+    pub fn into_hyper_service(self) -> HyperService {
+        HyperService::new(self)
     }
 
     /// Returns a Tower layer that serves files from this `ServedDir` and
     /// delegates unmatched requests to an inner service.
     #[cfg(feature = "tower")]
-    pub fn into_tower_layer(self) -> ServedDirLayer {
-        ServedDirLayer::new(self)
+    pub fn into_tower_layer(self) -> TowerLayer {
+        TowerLayer::new(self)
     }
 }
 
