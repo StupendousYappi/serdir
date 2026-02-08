@@ -290,7 +290,8 @@ mod tests {
             let expected = f.metadata().unwrap().modified().ok();
             assert_eq!(expected, crf1.last_modified());
 
-            let t = SystemTime::UNIX_EPOCH + Duration::from_hours(50);
+            let fifty_hours = Duration::from_secs(50 * 60 * 60);
+            let t = SystemTime::UNIX_EPOCH + fifty_hours;
             f.set_modified(t).unwrap();
 
             let crf2 = CRF::new(&p, HeaderMap::new()).unwrap();
