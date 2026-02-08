@@ -6,7 +6,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+//! Response compression settings.
+
 use http::header::{self, HeaderMap, HeaderValue};
+#[cfg(feature = "runtime-compression")]
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -34,6 +38,216 @@ impl PathBufExt for Path {
 #[cfg(feature = "runtime-compression")]
 use crate::brotli_cache::BrotliCache;
 use crate::ServeFilesError;
+
+/// Settings for using static (i.e. pre-compressed) compression.
+///
+/// The static compression strategy allows you to provide pre-compressed
+/// versions of your files, by giving the compressed versions an appropriate
+/// extension. The supported compression algorithms and extensions are:
+///
+/// - GZip (`.gz`)
+/// - Brotli (`.br`)
+/// - ZStandard (`.zstd`)
+///
+/// For example, if you have a servable file at path `pages/mailbox.html`, you
+/// can enable it to be served with GZip compression by providing a pre-compressed file at
+/// `pages/mailbox.html.gz`, or with Brotli compression by providing a pre-compressed file at
+/// `pages/mailbox.html.br`.
+///
+/// Clients will only be served a compressed variant if they indicate support
+/// for that encoding via the `Accept-Encoding` request header. If multiple
+/// client-compatible compressed versions are provided, the prioritization will
+/// always be Brotli, then ZStandard, then GZip, regardless of what q-values the
+/// client's `Accept-Encoding` header provided.
+///
+/// Note that compression strategies are mutually exclusive; if you enable
+/// static compression, no cached (i.e.) runtime compression will be performed,
+/// and vice-versa.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+pub struct StaticCompression {
+    gzip: bool,
+    br: bool,
+    zstd: bool,
+}
+
+impl StaticCompression {
+    /// Creates a new static compression settings value with all encodings disabled.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Creates a new static compression settings value with all encodings enabled.
+    pub fn all() -> Self {
+        Self::default().gzip(true).brotli(true).zstd(true)
+    }
+
+    /// Sets whether Brotli (`.br`) files should be considered.
+    pub fn brotli(mut self, enabled: bool) -> Self {
+        self.br = enabled;
+        self
+    }
+
+    /// Sets whether gzip (`.gz`) files should be considered.
+    pub fn gzip(mut self, enabled: bool) -> Self {
+        self.gzip = enabled;
+        self
+    }
+
+    /// Sets whether zstandard (`.zstd`) files should be considered.
+    pub fn zstd(mut self, enabled: bool) -> Self {
+        self.zstd = enabled;
+        self
+    }
+}
+
+const DEFAULT_CACHE_SIZE: u16 = 1024;
+const DEFAULT_COMPRESSION_LEVEL: BrotliLevel = BrotliLevel::L5;
+const DEFAULT_MAX_FILE_SIZE: u64 = 1024 * 1024;
+
+/// Brotli compression level (0-11).
+///
+/// Lower levels are faster but compress less, while higher levels are slower but compress more.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum BrotliLevel {
+    /// Level 0
+    L0 = 0,
+    /// Level 1
+    L1 = 1,
+    /// Level 2
+    L2 = 2,
+    /// Level 3
+    L3 = 3,
+    /// Level 4
+    L4 = 4,
+    /// Level 5
+    #[default]
+    L5 = 5,
+    /// Level 6
+    L6 = 6,
+    /// Level 7
+    L7 = 7,
+    /// Level 8
+    L8 = 8,
+    /// Level 9
+    L9 = 9,
+    /// Level 10
+    L10 = 10,
+    /// Level 11
+    L11 = 11,
+}
+
+impl From<BrotliLevel> for i32 {
+    fn from(level: BrotliLevel) -> Self {
+        level as i32
+    }
+}
+
+impl TryFrom<u8> for BrotliLevel {
+    type Error = ServeFilesError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::L0),
+            1 => Ok(Self::L1),
+            2 => Ok(Self::L2),
+            3 => Ok(Self::L3),
+            4 => Ok(Self::L4),
+            5 => Ok(Self::L5),
+            6 => Ok(Self::L6),
+            7 => Ok(Self::L7),
+            8 => Ok(Self::L8),
+            9 => Ok(Self::L9),
+            10 => Ok(Self::L10),
+            11 => Ok(Self::L11),
+            _ => Err(ServeFilesError::ConfigError(format!(
+                "invalid Brotli level: {}, must be between 0 and 11",
+                value
+            ))),
+        }
+    }
+}
+
+impl TryFrom<u32> for BrotliLevel {
+    type Error = ServeFilesError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        u8::try_from(value)
+            .map_err(|_| {
+                ServeFilesError::ConfigError(format!(
+                    "invalid Brotli level: {}, must be between 0 and 11",
+                    value
+                ))
+            })?
+            .try_into()
+    }
+}
+
+/// Settings for cached Brotli compression at runtime.
+#[cfg(feature = "runtime-compression")]
+#[derive(Debug, Clone)]
+pub struct CachedCompression {
+    pub(crate) cache_size: u16,
+    pub(crate) compression_level: BrotliLevel,
+    pub(crate) supported_extensions: Option<HashSet<&'static str>>,
+    pub(crate) max_file_size: u64,
+}
+
+#[cfg(feature = "runtime-compression")]
+impl CachedCompression {
+    /// Creates runtime compression settings with default values.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the maximum number of items in the cache.
+    ///
+    /// Must be at least 4 and a power of 2.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the value is invalid.
+    pub fn max_size(mut self, size: u16) -> Self {
+        assert!(size >= 4, "cache_size must be at least 4");
+        assert!(size.is_power_of_two(), "cache_size must be a power of two");
+        self.cache_size = size;
+        self
+    }
+
+    /// Sets the Brotli compression level (0-11).
+    pub fn compression_level(mut self, level: BrotliLevel) -> Self {
+        self.compression_level = level;
+        self
+    }
+
+    /// Sets the file extensions that are eligible for compression.
+    ///
+    /// If `None`, all file extensions will be compressed.
+    pub fn supported_extensions(mut self, extensions: Option<HashSet<&'static str>>) -> Self {
+        self.supported_extensions = extensions;
+        self
+    }
+
+    /// Sets the maximum file size for compression.
+    ///
+    /// Files larger than this value will skip compression and be served
+    /// in their original form.
+    pub fn max_file_size(mut self, size: u64) -> Self {
+        self.max_file_size = size;
+        self
+    }
+}
+
+#[cfg(feature = "runtime-compression")]
+impl Default for CachedCompression {
+    fn default() -> Self {
+        Self {
+            cache_size: DEFAULT_CACHE_SIZE,
+            compression_level: DEFAULT_COMPRESSION_LEVEL,
+            supported_extensions: None,
+            max_file_size: DEFAULT_MAX_FILE_SIZE,
+        }
+    }
+}
 
 /// Parses an RFC 7231 section 5.3.1 `qvalue` into an integer in [0, 1000].
 /// ```text
@@ -172,7 +386,78 @@ impl CompressionSupport {
 /// The strategy used to obtain compressed files compatible with the request's
 /// supported encodings.
 #[derive(Debug, Clone)]
-pub(crate) enum CompressionStrategy {
+pub enum CompressionStrategy {
+    /// Look for pre-compressed versions of the original file by adding the appropriate filename
+    /// extension to the original file name.
+    Static(StaticCompression),
+
+    /// Compresses supported file types at runtime using Brotli, and caches the
+    /// compressed versions for reuse.
+    #[cfg(feature = "runtime-compression")]
+    Cached(CachedCompression),
+
+    /// Do not use compression, only return the original file, if available.
+    None,
+}
+
+impl CompressionStrategy {
+    /// Returns a strategy that only serves the original uncompressed file.
+    pub fn none() -> Self {
+        Self::None
+    }
+
+    /// Returns a static compression strategy with all encodings disabled.
+    ///
+    /// Enable specific encodings by converting a [`StaticCompression`] value
+    /// into a strategy.
+    pub fn static_compression() -> Self {
+        Self::Static(StaticCompression::none())
+    }
+
+    /// Returns a strategy that performs runtime Brotli compression with caching.
+    #[cfg(feature = "runtime-compression")]
+    pub fn cached_compression() -> Self {
+        Self::Cached(CachedCompression::new())
+    }
+
+    pub(crate) fn into_inner(self) -> CompressionStrategyInner {
+        match self {
+            Self::Static(value) => CompressionStrategyInner::Static(CompressionSupport::new(
+                value.br, value.gzip, value.zstd,
+            )),
+            #[cfg(feature = "runtime-compression")]
+            Self::Cached(value) => {
+                let cache = BrotliCache::from(value);
+                CompressionStrategyInner::Cached(Arc::new(cache))
+            }
+            Self::None => CompressionStrategyInner::None,
+        }
+    }
+}
+
+impl Default for CompressionStrategy {
+    fn default() -> Self {
+        Self::none()
+    }
+}
+
+impl From<StaticCompression> for CompressionStrategy {
+    fn from(value: StaticCompression) -> Self {
+        Self::Static(value)
+    }
+}
+
+#[cfg(feature = "runtime-compression")]
+impl From<CachedCompression> for CompressionStrategy {
+    fn from(value: CachedCompression) -> Self {
+        Self::Cached(value)
+    }
+}
+
+/// The internal strategy used to obtain compressed files compatible with the
+/// request's supported encodings.
+#[derive(Debug, Clone)]
+pub(crate) enum CompressionStrategyInner {
     /// Look for pre-compressed versions of the original file by adding the appropriate filename
     /// extension to the original file name.
     Static(CompressionSupport),
@@ -180,15 +465,15 @@ pub(crate) enum CompressionStrategy {
     /// Compresses supported file types at runtime using Brotli, and caches the
     /// compressed versions for reuse.
     #[cfg(feature = "runtime-compression")]
-    Dynamic(Arc<BrotliCache>),
+    Cached(Arc<BrotliCache>),
 
     /// Do not use compression, only return the original file, if available.
     None,
 }
 
-impl CompressionStrategy {
+impl CompressionStrategyInner {
     pub(crate) fn is_none(&self) -> bool {
-        matches!(self, CompressionStrategy::None)
+        matches!(self, CompressionStrategyInner::None)
     }
 
     pub(crate) fn find_file(
@@ -197,7 +482,7 @@ impl CompressionStrategy {
         supported: crate::compression::CompressionSupport,
     ) -> Result<MatchedFile, ServeFilesError> {
         match self {
-            CompressionStrategy::Static(server_support) => {
+            CompressionStrategyInner::Static(server_support) => {
                 if supported.brotli() && server_support.brotli() {
                     let br_path = path.append_extension("br");
                     match Self::try_path(&br_path, ContentEncoding::Brotli) {
@@ -229,13 +514,13 @@ impl CompressionStrategy {
                 }
             }
             #[cfg(feature = "runtime-compression")]
-            CompressionStrategy::Dynamic(cache) => {
+            CompressionStrategyInner::Cached(cache) => {
                 if supported.brotli() {
                     let matched = cache.get(&path)?;
                     return Ok(matched);
                 }
             }
-            CompressionStrategy::None => {}
+            CompressionStrategyInner::None => {}
         }
 
         Self::try_path(&path, ContentEncoding::Identity)
@@ -316,6 +601,21 @@ mod tests {
         let mut h = http::HeaderMap::new();
         h.insert(header::ACCEPT_ENCODING, HeaderValue::from_static(value));
         h
+    }
+
+    #[test]
+    fn test_brotli_level_conversions() {
+        assert_eq!(i32::from(BrotliLevel::L0), 0);
+        assert_eq!(i32::from(BrotliLevel::L11), 11);
+
+        assert_eq!(BrotliLevel::try_from(0u8).unwrap(), BrotliLevel::L0);
+        assert_eq!(BrotliLevel::try_from(5u8).unwrap(), BrotliLevel::L5);
+        assert_eq!(BrotliLevel::try_from(11u8).unwrap(), BrotliLevel::L11);
+        assert!(BrotliLevel::try_from(12u8).is_err());
+
+        assert_eq!(BrotliLevel::try_from(0u32).unwrap(), BrotliLevel::L0);
+        assert_eq!(BrotliLevel::try_from(11u32).unwrap(), BrotliLevel::L11);
+        assert!(BrotliLevel::try_from(12u32).is_err());
     }
 
     #[test]
@@ -452,5 +752,50 @@ mod tests {
 
         let detect = CompressionSupport::detect(&ae_hdrs("gzip;q=0.002")); // q=2
         assert!(detect.gzip());
+    }
+
+    #[test]
+    fn test_static_compression_into_strategy() {
+        let strategy: CompressionStrategy = StaticCompression::none()
+            .brotli(true)
+            .gzip(false)
+            .zstd(true)
+            .into();
+        let inner = strategy.into_inner();
+
+        match inner {
+            CompressionStrategyInner::Static(support) => {
+                assert!(support.brotli());
+                assert!(!support.gzip());
+                assert!(support.zstd());
+            }
+            _ => panic!("expected static compression strategy"),
+        }
+    }
+
+    #[test]
+    fn test_static_compression_constructor_disables_all_encodings() {
+        let strategy = CompressionStrategy::static_compression();
+        let inner = strategy.into_inner();
+
+        match inner {
+            CompressionStrategyInner::Static(support) => {
+                assert!(!support.brotli());
+                assert!(!support.gzip());
+                assert!(!support.zstd());
+            }
+            _ => panic!("expected static compression strategy"),
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "runtime-compression")]
+    fn test_cached_compression_into_strategy() {
+        let strategy: CompressionStrategy = CachedCompression::new()
+            .max_size(16)
+            .compression_level(BrotliLevel::L5)
+            .into();
+        let inner = strategy.into_inner();
+        assert!(matches!(inner, CompressionStrategyInner::Cached(_)));
     }
 }

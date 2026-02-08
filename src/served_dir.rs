@@ -4,18 +4,18 @@ use std::convert::Infallible;
 use std::fmt::Debug;
 use std::fs::File;
 use std::path::Path;
-#[cfg(feature = "runtime-compression")]
-use std::sync::Arc;
 use std::{collections::HashMap, path::PathBuf};
 
-use crate::compression::{CompressionStrategy, CompressionSupport, MatchedFile};
-
 #[cfg(feature = "runtime-compression")]
-use crate::brotli_cache::BrotliCache;
+use crate::compression::BrotliLevel;
+use crate::compression::{
+    CompressionStrategy, CompressionStrategyInner, CompressionSupport, MatchedFile,
+    StaticCompression,
+};
 #[cfg(feature = "hyper")]
-use crate::integration::ServedDirHyperService;
+use crate::integration::HyperService;
 #[cfg(feature = "tower")]
-use crate::integration::{ServedDirLayer, ServedDirService};
+use crate::integration::{TowerLayer, TowerService};
 
 use crate::etag::EtagCache;
 use crate::{Body, ETag, FileEntity, FileHasher, FileInfo, ServeFilesError};
@@ -39,11 +39,11 @@ use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 /// - Setting a file whose content will be used for 404 (file not found) responses
 /// - Response compression settings, including support for using pre-created compressed
 ///   variants of files (i.e. "index.html.gz" can be served instead of "index.html"),
-///   and for performing runtime compression of files using Brotli and caching the
+///   and for performing cached compression of files using Brotli and caching the
 ///   compressed output for reuse
 pub struct ServedDir {
     dirpath: PathBuf,
-    compression_strategy: CompressionStrategy,
+    compression_strategy: CompressionStrategyInner,
     file_hasher: FileHasher,
     strip_prefix: Option<String>,
     known_extensions: Option<HashMap<String, HeaderValue>>,
@@ -57,10 +57,10 @@ pub struct ServedDir {
 impl Debug for ServedDir {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let strategy = match self.compression_strategy {
-            CompressionStrategy::Static(_) => "static",
-            CompressionStrategy::None => "none",
+            CompressionStrategyInner::Static(_) => "static",
+            CompressionStrategyInner::None => "none",
             #[cfg(feature = "runtime-compression")]
-            CompressionStrategy::Dynamic(_) => "dynamic",
+            CompressionStrategyInner::Cached(_) => "cached",
         };
 
         f.debug_struct("ServedDir")
@@ -114,7 +114,7 @@ impl ServedDir {
     /// found, the original file will be used (even if the `Accept-Encoding` header
     /// explicitly rejects the `identity` encoding).
     ///
-    /// If dynamic compression is configured, this method will perform Brotli compression of matched
+    /// If cached compression is configured, this method will perform Brotli compression of matched
     /// files on the fly if the client supports Brotli compression, and will cache the compressed
     /// versions for reuse (Brotli is the only compression algorithm for which runtime compression
     /// is supported). The generated Brotli contents will be cached in unlinked tempfiles that have
@@ -122,8 +122,7 @@ impl ServedDir {
     /// system when the application exits, regardless of how it exits (i.e. they will be cleaned up
     /// even if Rust panics in abort mode). Disk usage can be controlled by limiting the maximum
     /// size of files that should be compressed, and the maximum number of compressed files to
-    /// cache, using the [BrotliCacheBuilder] type and the
-    /// [ServedDirBuilder::dynamic_compression_with_cache] method. The Brotli compression level can
+    /// cache, using the `CachedCompression` type. The Brotli compression level can
     /// also be configured, allowing you to choose your own balance of compression speed and
     /// compressed size.
     ///
@@ -240,14 +239,6 @@ impl ServedDir {
             .unwrap_or_else(|| self.default_content_type.clone())
     }
 
-    #[cfg(feature = "mime_guess")]
-    fn guess_content_type(ext: &str) -> Option<HeaderValue> {
-        mime_guess::from_ext(ext)
-            .first_raw()
-            .map(|s| HeaderValue::from_str(s).unwrap())
-    }
-
-    #[cfg(not(feature = "mime_guess"))]
     fn guess_content_type(ext: &str) -> Option<HeaderValue> {
         let guess = match ext {
             "html" => Some("text/html"),
@@ -343,21 +334,21 @@ impl ServedDir {
 
     /// Returns a Tower service that serves files from this `ServedDir`.
     #[cfg(feature = "tower")]
-    pub fn into_tower_service(self) -> ServedDirService {
-        ServedDirService::new(self)
+    pub fn into_tower_service(self) -> TowerService {
+        TowerService::new(self)
     }
 
     /// Returns a Hyper service that serves files from this `ServedDir`.
     #[cfg(feature = "hyper")]
-    pub fn into_hyper_service(self) -> ServedDirHyperService {
-        ServedDirHyperService::new(self)
+    pub fn into_hyper_service(self) -> HyperService {
+        HyperService::new(self)
     }
 
     /// Returns a Tower layer that serves files from this `ServedDir` and
     /// delegates unmatched requests to an inner service.
     #[cfg(feature = "tower")]
-    pub fn into_tower_layer(self) -> ServedDirLayer {
-        ServedDirLayer::new(self)
+    pub fn into_tower_layer(self) -> TowerLayer {
+        TowerLayer::new(self)
     }
 }
 
@@ -383,7 +374,7 @@ impl ServedDirBuilder {
         }
         Ok(Self {
             dirpath,
-            compression_strategy: CompressionStrategy::None,
+            compression_strategy: CompressionStrategy::none(),
             file_hasher: None,
             strip_prefix: None,
             known_extensions: None,
@@ -394,49 +385,35 @@ impl ServedDirBuilder {
         })
     }
 
-    /// Enables use of pre-compressed files based on file extensions.
-    ///
-    /// # Arguments
-    ///
-    /// * `br` - Whether to search for `.br` files.
-    /// * `gzip` - Whether to search for `.gz` files.
-    /// * `zstd` - Whether to search for `.zstd` files.
-    pub fn static_compression(mut self, br: bool, gzip: bool, zstd: bool) -> Self {
-        self.compression_strategy =
-            CompressionStrategy::Static(CompressionSupport::new(br, gzip, zstd));
+    /// Sets the compression strategy for the served directory.
+    pub fn compression(mut self, strategy: impl Into<CompressionStrategy>) -> Self {
+        self.compression_strategy = strategy.into();
         self
+    }
+
+    /// Convenience method for configuring static pre-compressed file lookup.
+    pub fn static_compression(self, br: bool, gzip: bool, zstd: bool) -> Self {
+        let strategy = StaticCompression::none().brotli(br).gzip(gzip).zstd(zstd);
+        self.compression(strategy)
+    }
+
+    /// Convenience method for configuring cached runtime Brotli compression.
+    #[cfg(feature = "runtime-compression")]
+    pub fn cached_compression(self, level: BrotliLevel) -> Self {
+        use crate::compression::CachedCompression;
+
+        let strategy = CachedCompression::new().compression_level(level);
+        self.compression(strategy)
+    }
+
+    /// Convenience method for disabling compression.
+    pub fn no_compression(self) -> Self {
+        self.compression(CompressionStrategy::none())
     }
 
     /// Appends "/index.html" to directory paths.
     pub fn append_index_html(mut self, append: bool) -> Self {
         self.append_index_html = append;
-        self
-    }
-
-    /// Enables dynamic compression using Brotli.
-    ///
-    /// This will compress files on the fly and cache the results.
-    ///
-    /// # Arguments
-    ///
-    /// * `cache_size` - The number of files to cache. Must be a power of two and at least 4.
-    /// * `compression_level` - The compression level to use. 0 is fastest, 11 is best compression.
-    #[cfg(feature = "runtime-compression")]
-    pub fn dynamic_compression(mut self, cache_size: u16, compression_level: u8) -> Self {
-        let brotli_cache = BrotliCache::builder()
-            .max_size(cache_size)
-            .compression_level(compression_level)
-            .build();
-        let strategy = CompressionStrategy::Dynamic(Arc::new(brotli_cache));
-        self.compression_strategy = strategy;
-        self
-    }
-
-    /// Enables dynamic compression using a pre-built Brotli cache.
-    #[cfg(feature = "runtime-compression")]
-    pub fn dynamic_compression_with_cache(mut self, cache: BrotliCache) -> Self {
-        let strategy = CompressionStrategy::Dynamic(Arc::new(cache));
-        self.compression_strategy = strategy;
         self
     }
 
@@ -455,14 +432,73 @@ impl ServedDirBuilder {
 
     /// Sets a prefix to strip from the request path.
     ///
-    /// If this value is defined, [ServedDir::get] will return a [ServeFilesError::InvalidPath]
+    /// If this value is defined, [`ServedDir::get`] will return a [`ServeFilesError::InvalidPath`]
     /// error for any path that doesn't begin with the given prefix.
     pub fn strip_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.strip_prefix = Some(prefix.into());
         self
     }
 
-    /// Sets a map of file extensions to content types.
+    /// Defines a mapping from file extensions to HTTP content types.
+    ///
+    /// If not set, will use a smaller builtin extension mapping of common web file extensions.
+    ///
+    /// The extensions recognized by the builtin mapping are:
+    /// - apng
+    /// - avif
+    /// - bmp
+    /// - bz
+    /// - bz2
+    /// - css
+    /// - csv
+    /// - doc
+    /// - docx
+    /// - ecma
+    /// - es
+    /// - gif
+    /// - gz
+    /// - htm
+    /// - html
+    /// - hxt
+    /// - ico
+    /// - ics
+    /// - ini
+    /// - jfif
+    /// - jpeg
+    /// - jpg
+    /// - js
+    /// - jsm
+    /// - json
+    /// - jsx
+    /// - log
+    /// - markdown
+    /// - md
+    /// - mkd
+    /// - mp4
+    /// - mpeg
+    /// - mpg
+    /// - mpg4
+    /// - pdf
+    /// - pjp
+    /// - pjpeg
+    /// - png
+    /// - ppt
+    /// - pptx
+    /// - svg
+    /// - tar
+    /// - text
+    /// - tiff
+    /// - toml
+    /// - txt
+    /// - webm
+    /// - webp
+    /// - xls
+    /// - xlsx
+    /// - xml
+    /// - xz
+    /// - yaml
+    /// - yml
+    /// - zip
     pub fn known_extensions(mut self, extensions: HashMap<String, HeaderValue>) -> Self {
         self.known_extensions = Some(extensions);
         self
@@ -511,7 +547,7 @@ impl ServedDirBuilder {
     pub fn build(self) -> ServedDir {
         ServedDir {
             dirpath: self.dirpath,
-            compression_strategy: self.compression_strategy,
+            compression_strategy: self.compression_strategy.into_inner(),
             file_hasher: self.file_hasher.unwrap_or(default_hasher),
             strip_prefix: self.strip_prefix,
             known_extensions: self.known_extensions,

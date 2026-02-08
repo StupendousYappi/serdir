@@ -13,7 +13,7 @@ use futures_core::Stream;
 use sync_wrapper::SyncWrapper;
 
 pin_project_lite::pin_project! {
-    /// An [`http_body::Body`] implementation returned by [`crate::serve`].
+    /// An [`http_body::Body`] implementation used by [`FileEntity`](crate::FileEntity)
     pub struct Body<D = bytes::Bytes> {
         #[pin]
         pub(crate) stream: BodyStream<D>,

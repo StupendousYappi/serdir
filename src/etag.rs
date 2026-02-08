@@ -17,11 +17,18 @@ const CACHE_SIZE: usize = 512;
 /// The build hasher type used for the ETag cache.
 pub(crate) type BuildHasher = std::hash::BuildHasherDefault<rapidhash::fast::RapidHasher<'static>>;
 
-/// An ETag (entity tag) used for cache validation.
+/// A strong HTTP ETag (entity tag) value based on hashing the file contents.
+///
+/// ETags emitted by this crate are always strong, meaning that they are
+/// compatible with range requests, but will not allow reuse of responses for
+/// different encodings (i.e. compression algorithms).
 #[derive(Hash, Eq, PartialEq, Clone, Copy, Debug)]
 pub struct ETag(u64);
 
 /// Function pointer type used to calculate ETag hash values from opened files.
+///
+/// The function should return a u64 based on hashing the complete contents of the file,
+/// or None if no ETag should be used for this file.
 pub type FileHasher = fn(&File) -> Result<Option<u64>, io::Error>;
 
 /// A cache for ETag values, indexed by file metadata.
@@ -70,6 +77,12 @@ impl From<ETag> for HeaderValue {
 impl From<u64> for ETag {
     fn from(hash: u64) -> Self {
         ETag(hash)
+    }
+}
+
+impl From<ETag> for u64 {
+    fn from(etag: ETag) -> Self {
+        etag.0
     }
 }
 

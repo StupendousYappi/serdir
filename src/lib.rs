@@ -73,9 +73,6 @@ fn as_u64(len: usize) -> u64 {
     len as u64
 }
 
-/// A type-erased error.
-pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
-
 /// An error returned by this crate's public APIs.
 #[derive(Debug)]
 pub enum ServeFilesError {
@@ -136,9 +133,9 @@ mod served_dir;
 
 #[cfg(any(feature = "tower", feature = "hyper"))]
 /// Hyper and Tower service integrations.
-mod integration;
+pub mod integration;
 
-mod compression;
+pub mod compression;
 mod etag;
 mod file;
 mod platform;
@@ -152,10 +149,6 @@ pub use crate::served_dir::{ServedDir, ServedDirBuilder};
 
 #[cfg(feature = "runtime-compression")]
 mod brotli_cache;
-#[cfg(feature = "runtime-compression")]
-pub use brotli_cache::BrotliCache;
-#[cfg(feature = "runtime-compression")]
-pub use brotli_cache::BrotliCacheBuilder;
 
 /// Basic metadata about a particular version of a file, used as a cache key.
 #[derive(Hash, Eq, PartialEq, Clone, Copy)]

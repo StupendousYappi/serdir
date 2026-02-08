@@ -4,6 +4,7 @@ use futures_core::future::BoxFuture;
 use http::{Request, Response, StatusCode};
 use std::convert::Infallible;
 use std::sync::Arc;
+use tower::BoxError;
 
 /// Returns a Request based on the input request, but with an empty body.
 pub(crate) fn request_head<B>(req: &Request<B>) -> Request<()> {
@@ -20,17 +21,17 @@ pub(crate) fn request_head<B>(req: &Request<B>) -> Request<()> {
 /// A Hyper service that serves files from a [`ServedDir`].
 #[cfg(feature = "hyper")]
 #[derive(Clone)]
-pub struct ServedDirHyperService(Arc<ServedDir>);
+pub struct HyperService(Arc<ServedDir>);
 
 #[cfg(feature = "hyper")]
-impl ServedDirHyperService {
+impl HyperService {
     pub(crate) fn new(served_dir: ServedDir) -> Self {
         Self(Arc::new(served_dir))
     }
 }
 
 #[cfg(feature = "hyper")]
-impl<B> hyper::service::Service<Request<B>> for ServedDirHyperService
+impl<B> hyper::service::Service<Request<B>> for HyperService
 where
     B: Send + 'static,
 {
@@ -50,17 +51,17 @@ where
 /// passes requests to the wrapped service.
 #[cfg(feature = "tower")]
 #[derive(Clone)]
-pub struct ServedDirLayer(Arc<ServedDir>);
+pub struct TowerLayer(Arc<ServedDir>);
 
 #[cfg(feature = "tower")]
-impl ServedDirLayer {
+impl TowerLayer {
     pub(crate) fn new(served_dir: ServedDir) -> Self {
         Self(Arc::new(served_dir))
     }
 }
 
 #[cfg(feature = "tower")]
-impl<S> tower::Layer<S> for ServedDirLayer {
+impl<S> tower::Layer<S> for TowerLayer {
     type Service = ServedDirMiddleware<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
@@ -71,7 +72,7 @@ impl<S> tower::Layer<S> for ServedDirLayer {
     }
 }
 
-/// Tower middleware produced by [`ServedDirLayer`].
+/// Tower middleware produced by [`TowerLayer`].
 #[cfg(feature = "tower")]
 #[derive(Clone)]
 pub struct ServedDirMiddleware<S> {
@@ -82,17 +83,17 @@ pub struct ServedDirMiddleware<S> {
 /// A Tower service that serves files from a [`ServedDir`].
 #[cfg(feature = "tower")]
 #[derive(Clone)]
-pub struct ServedDirService(Arc<ServedDir>);
+pub struct TowerService(Arc<ServedDir>);
 
 #[cfg(feature = "tower")]
-impl ServedDirService {
+impl TowerService {
     pub(crate) fn new(served_dir: ServedDir) -> Self {
         Self(Arc::new(served_dir))
     }
 }
 
 #[cfg(feature = "tower")]
-impl<B> tower::Service<Request<B>> for ServedDirService
+impl<B> tower::Service<Request<B>> for TowerService
 where
     B: Send + 'static,
 {
@@ -121,10 +122,9 @@ where
     S::Future: Send + 'static,
     ReqBody: Send + 'static,
     ResBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
-    ResBody::Error: Into<crate::BoxError> + 'static,
+    ResBody::Error: Into<BoxError> + 'static,
 {
-    type Response =
-        Response<http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, crate::BoxError>>;
+    type Response = Response<http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, BoxError>>;
     type Error = S::Error;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
@@ -172,11 +172,11 @@ where
 #[cfg(feature = "tower")]
 fn box_response(
     response: Response<Body>,
-) -> Response<http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, crate::BoxError>> {
+) -> Response<http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, BoxError>> {
     use http_body_util::BodyExt;
 
     response.map(|body| {
-        body.map_err(|err| -> crate::BoxError { Box::new(err) })
+        body.map_err(|err| -> BoxError { Box::new(err) })
             .boxed_unsync()
     })
 }

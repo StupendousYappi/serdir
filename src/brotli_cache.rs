@@ -30,78 +30,12 @@ static DEFAULT_TEXT_TYPES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     ])
 });
 
-/// Builder for `BrotliCache`.
-pub struct BrotliCacheBuilder {
-    cache_size: u16,
-    compression_level: u8,
-    supported_extensions: Option<HashSet<&'static str>>,
-    max_file_size: u64,
-}
-
-impl BrotliCacheBuilder {
-    /// Sets the maximum number of items in the cache.
-    ///
-    /// Must be at least 4 and a power of 2.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the value is invalid.
-    pub fn max_size(mut self, size: u16) -> Self {
-        assert!(size >= 4, "cache_size must be at least 4");
-        assert!(size.is_power_of_two(), "cache_size must be a power of two");
-        self.cache_size = size;
-        self
-    }
-
-    /// Sets the Brotli compression level (0-11).
-    ///
-    /// # Panics
-    ///
-    /// Panics if the value is invalid.
-    pub fn compression_level(mut self, level: u8) -> Self {
-        assert!(level <= 11, "compression_level must be between 0 and 11");
-        self.compression_level = level;
-        self
-    }
-
-    /// Sets the file extensions that are eligible for compression.
-    ///
-    /// If `None`, all file extensions will be compressed.
-    pub fn supported_extensions(mut self, extensions: Option<HashSet<&'static str>>) -> Self {
-        self.supported_extensions = extensions;
-        self
-    }
-
-    /// Sets the maximum file size for compression.
-    ///
-    /// Files larger than this value will skip compression and be served
-    /// in their original form.
-    pub fn max_file_size(mut self, size: u64) -> Self {
-        self.max_file_size = size;
-        self
-    }
-
-    /// Builds the `BrotliCache`.
-    pub fn build(self) -> BrotliCache {
-        BrotliCache::new(self)
-    }
-}
-
-impl Default for BrotliCacheBuilder {
-    fn default() -> Self {
-        Self {
-            cache_size: 128,
-            compression_level: 3,
-            supported_extensions: None,
-            max_file_size: u64::MAX,
-        }
-    }
-}
+// BrotliCacheBuilder removed
 
 /// A service that creates and reuses Brotli-compressed versions of files, returning
 /// a FileEntity for the compressed file if it's supported, or a FileEntity for the
 /// original file if it's not.
-pub struct BrotliCache {
+pub(crate) struct BrotliCache {
     tempdir: PathBuf,
     cache: Cache<CacheKey, MatchedFile>,
     params: BrotliEncoderParams,
@@ -109,22 +43,17 @@ pub struct BrotliCache {
     max_file_size: u64,
 }
 
-impl BrotliCache {
-    /// Returns a builder for `BrotliCache`.
-    pub fn builder() -> BrotliCacheBuilder {
-        BrotliCacheBuilder::default()
-    }
-
-    fn new(builder: BrotliCacheBuilder) -> Self {
+impl From<crate::compression::CachedCompression> for BrotliCache {
+    fn from(value: crate::compression::CachedCompression) -> Self {
         let tempdir = env::temp_dir();
-        let cache = Cache::new(builder.cache_size as usize, Default::default());
-        let mut params = brotli::enc::BrotliEncoderParams {
-            quality: i32::from(builder.compression_level),
+        let cache = Cache::new(value.cache_size as usize, Default::default());
+        let params = BrotliEncoderParams {
+            quality: i32::from(value.compression_level),
             ..Default::default()
         };
-        params.quality = i32::from(builder.compression_level);
-        let supported_extensions = builder
+        let supported_extensions = value
             .supported_extensions
+            .clone()
             .unwrap_or_else(|| DEFAULT_TEXT_TYPES.clone());
 
         BrotliCache {
@@ -132,10 +61,12 @@ impl BrotliCache {
             cache,
             params,
             supported_extensions,
-            max_file_size: builder.max_file_size,
+            max_file_size: value.max_file_size,
         }
     }
+}
 
+impl BrotliCache {
     fn detect_brotli_mode(&self, extension: &str) -> BrotliEncoderMode {
         match self.supported_extensions.contains(extension) {
             true => BrotliEncoderMode::BROTLI_MODE_TEXT,
@@ -200,7 +131,7 @@ impl BrotliCache {
 
         let brotli_metadata = brotli_file.metadata()?;
 
-        // The dynamic brotli tempfile literally doesn't have a filename, so we can't
+        // The cached brotli tempfile literally doesn't have a filename, so we can't
         // calculate a path hash for it. Instead, we reverse the bytes of the original
         // file's path hash to create a pseudo path hash that is deterministic in the same
         // ways as the original path hash, and just as unlikely to collide with any other
@@ -294,52 +225,40 @@ mod tests {
     }
 
     #[test]
-    fn test_brotli_cache_builder_defaults() {
-        let builder = BrotliCache::builder();
-        assert_eq!(builder.cache_size, 128);
-        assert_eq!(builder.compression_level, 3);
-        assert!(builder.supported_extensions.is_none());
+    fn test_brotli_cache_initialization_defaults() {
+        let settings = crate::compression::CachedCompression::default();
+        let cache = BrotliCache::from(settings);
+        assert_eq!(
+            cache.params.quality,
+            i32::from(crate::compression::BrotliLevel::L5)
+        );
+        assert_eq!(cache.cache.capacity(), 1024);
     }
 
     #[test]
-    fn test_brotli_cache_builder_custom() {
+    fn test_brotli_cache_initialization_custom() {
         let mut extensions = HashSet::new();
         extensions.insert("html");
 
-        let builder = BrotliCache::builder()
+        let settings = crate::compression::CachedCompression::new()
             .max_size(64)
-            .compression_level(5)
+            .compression_level(crate::compression::BrotliLevel::L5)
             .supported_extensions(Some(extensions.clone()));
 
-        assert_eq!(builder.cache_size, 64);
-        assert_eq!(builder.compression_level, 5);
-        assert_eq!(builder.supported_extensions.unwrap(), extensions);
-    }
+        let cache = BrotliCache::from(settings);
 
-    #[test]
-    #[should_panic(expected = "cache_size must be at least 4")]
-    fn test_brotli_cache_builder_cache_size_too_small() {
-        BrotliCache::builder().max_size(2);
-    }
-
-    #[test]
-    #[should_panic(expected = "cache_size must be a power of two")]
-    fn test_brotli_cache_builder_cache_size_not_power_of_two() {
-        BrotliCache::builder().max_size(100);
-    }
-
-    #[test]
-    #[should_panic(expected = "compression_level must be between 0 and 11")]
-    fn test_brotli_cache_builder_compression_level_too_high() {
-        BrotliCache::builder().compression_level(12);
+        assert_eq!(cache.cache.capacity(), 64);
+        assert_eq!(cache.params.quality, 5);
+        assert_eq!(cache.supported_extensions, extensions);
     }
 
     #[test]
     fn test_brotli_cache_build() {
-        let cache = BrotliCache::builder()
-            .max_size(16)
-            .compression_level(1)
-            .build();
+        let cache = BrotliCache::from(
+            crate::compression::CachedCompression::new()
+                .max_size(16)
+                .compression_level(crate::compression::BrotliLevel::L1),
+        );
 
         assert_eq!(cache.params.quality, 1);
     }
@@ -355,7 +274,10 @@ mod tests {
             f.write_all(content.as_bytes()).unwrap();
         }
 
-        let cache = BrotliCache::builder().compression_level(1).build();
+        let cache = BrotliCache::from(
+            crate::compression::CachedCompression::new()
+                .compression_level(crate::compression::BrotliLevel::L1),
+        );
 
         let matched = cache.get(&path).expect("Failed to get file from cache");
 
@@ -394,8 +316,14 @@ mod tests {
             f.write_all(BOOK_BYTES).unwrap();
         }
 
-        let cache0 = BrotliCache::builder().compression_level(0).build();
-        let cache5 = BrotliCache::builder().compression_level(5).build();
+        let cache0 = BrotliCache::from(
+            crate::compression::CachedCompression::new()
+                .compression_level(crate::compression::BrotliLevel::L0),
+        );
+        let cache5 = BrotliCache::from(
+            crate::compression::CachedCompression::new()
+                .compression_level(crate::compression::BrotliLevel::L5),
+        );
 
         let matched0 = cache0.get(&path).expect("Failed to get file from cache0");
         let matched5 = cache5.get(&path).expect("Failed to get file from cache5");
@@ -430,7 +358,7 @@ mod tests {
         }
 
         // Initialize with default text types, which should NOT include jpg
-        let cache = BrotliCache::builder().build();
+        let cache = BrotliCache::from(crate::compression::CachedCompression::default());
 
         let matched = cache.get(&path).expect("Failed to get file from cache");
 
@@ -462,7 +390,8 @@ mod tests {
         }
 
         // Cache with max_file_size of 10 bytes
-        let cache = BrotliCache::builder().max_file_size(10).build();
+        let cache =
+            BrotliCache::from(crate::compression::CachedCompression::new().max_file_size(10));
 
         let matched = cache.get(&path).expect("Failed to get file from cache");
 
