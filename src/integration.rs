@@ -149,13 +149,11 @@ where
                 .get(serving_req.uri().path(), serving_req.headers())
                 .await
             {
-                Ok(entity) => Ok(box_response(crate::serving::serve(
-                    entity,
-                    &serving_req,
-                    StatusCode::OK,
-                ))),
+                Ok(entity) => Ok(box_response(
+                    entity.serve_request(&serving_req, StatusCode::OK),
+                )),
                 Err(ServeFilesError::NotFound(Some(entity))) => Ok(box_response(
-                    crate::serving::serve(entity, &serving_req, StatusCode::NOT_FOUND),
+                    entity.serve_request(&serving_req, StatusCode::NOT_FOUND),
                 )),
                 Err(ServeFilesError::NotFound(None))
                 | Err(ServeFilesError::IsDirectory(_))

@@ -62,7 +62,7 @@ static CHUNK_SIZE: u64 = 65_536;
 ///
 /// let entity = FileEntity::new(tmp.path(), headers)?;
 /// let request = Request::get("/").body(())?;
-/// let response: http::Response<Body> = entity.serve_request(&request);
+/// let response: http::Response<Body> = entity.serve_request(&request, StatusCode::OK);
 ///
 /// assert_eq!(response.status(), StatusCode::OK);
 /// assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), "text/plain");
@@ -135,11 +135,11 @@ impl FileEntity {
     /// Serves this entity as a response to the given request.
     ///
     /// Consumes the `FileEntity` and returns an HTTP response.
-    pub fn serve_request<B, D>(self, req: &Request<B>) -> Response<D>
+    pub fn serve_request<B, D>(self, req: &Request<B>, status: StatusCode) -> Response<D>
     where
         D: From<crate::Body>,
     {
-        crate::serving::serve(self, req, StatusCode::OK).map(Into::into)
+        crate::serving::serve(self, req, status).map(Into::into)
     }
 }
 
@@ -345,7 +345,7 @@ mod tests {
             let entity = CRF::new(&p, HeaderMap::new()).unwrap();
             let req = http::Request::get("/").body(()).unwrap();
 
-            let res: http::Response<crate::Body> = entity.serve_request(&req);
+            let res: http::Response<crate::Body> = entity.serve_request(&req, http::StatusCode::OK);
             assert_eq!(res.status(), http::StatusCode::OK);
             let body = res.into_body().collect().await.unwrap().to_bytes();
             assert_eq!(body, "hello world");

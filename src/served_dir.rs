@@ -175,9 +175,9 @@ impl ServedDir {
     /// into a HTTP response by serving static files using this `ServedDir`.
     pub async fn get_response<B>(&self, req: &Request<B>) -> Result<Response<Body>, Infallible> {
         match self.get(req.uri().path(), req.headers()).await {
-            Ok(entity) => Ok(crate::serving::serve(entity, req, StatusCode::OK)),
+            Ok(entity) => Ok(entity.serve_request(req, StatusCode::OK)),
             Err(ServeFilesError::NotFound(Some(entity))) => {
-                Ok(crate::serving::serve(entity, req, StatusCode::NOT_FOUND))
+                Ok(entity.serve_request(req, StatusCode::NOT_FOUND))
             }
             Err(ServeFilesError::NotFound(None)) | Err(ServeFilesError::IsDirectory(_)) => {
                 Ok(Self::make_status_response(StatusCode::NOT_FOUND))
