@@ -10,14 +10,64 @@
 //! [http](http://crates.io/crates/http) crate and [tokio](https://crates.io/crates/tokio).
 //! Works well with [hyper](https://crates.io/crates/hyper) 1.x and [tower](https://crates.io/crates/tower).
 //!
-//! # Example
+//! # Features
 //!
-//! ```
+//! - Range requests
+//! - Large file support via chunked streaming
+//! - Live content changes
+//! - ETag header generation and conditional GET requests
+//! - Serving files that have been pre-compressed using gzip, brotli or zstd
+//! - Cached runtime compression of files using brotli
+//! - Content type detection based on filename extensions
+//! - Serving directory paths using `index.html` pages
+//! - Customizing 404 response content
+//! - Support for common Rust web APIs:
+//!   -  [tower::Service](https://docs.rs/tower/latest/tower/trait.Service.html)
+//!   - [tower::Layer](https://docs.rs/tower/latest/tower/trait.Layer.html)
+//!   - [hyper::service::Service](https://docs.rs/hyper/latest/hyper/service/trait.Service.html)
+//!
+//! This crate is derived from [http-serve](https://github.com/scottlamb/http-serve/).
+//!
+//! # Examples
+//!
+//! Serve files via Hyper:
+//!
+//! ```no_run
+//! # #[cfg(feature = "hyper")]
+//! # {
+//! use hyper_util::rt::TokioIo;
 //! use serve_files::ServedDir;
-//! let served_dir = ServedDirBuilder::new("/path/to/directory")
-//!   .append_index_html(true)
-//!   .static_compression(true, true, false)
-//!   .build();
+//! use serve_files::compression::BrotliLevel;
+//! use std::net::{Ipv4Addr, SocketAddr};
+//! use tokio::net::TcpListener;
+//!
+//! let runtime = tokio::runtime::Runtime::new().unwrap();
+//! runtime.block_on(async {
+//!     let service = ServedDir::builder("./static")
+//!         .unwrap()
+//!         .append_index_html(true)
+//!         .cached_compression(BrotliLevel::L5)
+//!         .build()
+//!         .into_hyper_service();
+//!
+//!     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 1337));
+//!     let listener = TcpListener::bind(addr).await.unwrap();
+//!
+//!     loop {
+//!         let (tcp, _) = listener.accept().await.unwrap();
+//!         let service = service.clone();
+//!         tokio::spawn(async move {
+//!             let io = TokioIo::new(tcp);
+//!             if let Err(err) = hyper::server::conn::http1::Builder::new()
+//!                 .serve_connection(io, service)
+//!                 .await
+//!             {
+//!                 eprintln!("connection error: {err}");
+//!             }
+//!         });
+//!     }
+//! });
+//! # }
 //! ```
 
 #![deny(missing_docs, clippy::print_stderr, clippy::print_stdout)]
