@@ -148,7 +148,7 @@ async fn main() {
     let layer = ServedDir::builder(&root_path)
         .unwrap()
         .append_index_html(true)
-        .cached_compression(5)
+        .cached_compression(serve_files::compression::BrotliLevel::L5)
         .build()
         .into_tower_layer();
     let service = layer.layer(DirectoryFallbackService::new(PathBuf::from(&root_path)));

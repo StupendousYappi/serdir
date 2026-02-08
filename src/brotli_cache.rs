@@ -47,11 +47,10 @@ impl From<crate::compression::CachedCompression> for BrotliCache {
     fn from(value: crate::compression::CachedCompression) -> Self {
         let tempdir = env::temp_dir();
         let cache = Cache::new(value.cache_size as usize, Default::default());
-        let mut params = BrotliEncoderParams {
+        let params = BrotliEncoderParams {
             quality: i32::from(value.compression_level),
             ..Default::default()
         };
-        params.quality = i32::from(value.compression_level);
         let supported_extensions = value
             .supported_extensions
             .clone()
@@ -229,7 +228,10 @@ mod tests {
     fn test_brotli_cache_initialization_defaults() {
         let settings = crate::compression::CachedCompression::default();
         let cache = BrotliCache::from(settings);
-        assert_eq!(cache.params.quality, 5);
+        assert_eq!(
+            cache.params.quality,
+            i32::from(crate::compression::BrotliLevel::L5)
+        );
         assert_eq!(cache.cache.capacity(), 1024);
     }
 
@@ -240,7 +242,7 @@ mod tests {
 
         let settings = crate::compression::CachedCompression::new()
             .max_size(64)
-            .compression_level(5)
+            .compression_level(crate::compression::BrotliLevel::L5)
             .supported_extensions(Some(extensions.clone()));
 
         let cache = BrotliCache::from(settings);
@@ -255,7 +257,7 @@ mod tests {
         let cache = BrotliCache::from(
             crate::compression::CachedCompression::new()
                 .max_size(16)
-                .compression_level(1),
+                .compression_level(crate::compression::BrotliLevel::L1),
         );
 
         assert_eq!(cache.params.quality, 1);
@@ -272,8 +274,10 @@ mod tests {
             f.write_all(content.as_bytes()).unwrap();
         }
 
-        let cache =
-            BrotliCache::from(crate::compression::CachedCompression::new().compression_level(1));
+        let cache = BrotliCache::from(
+            crate::compression::CachedCompression::new()
+                .compression_level(crate::compression::BrotliLevel::L1),
+        );
 
         let matched = cache.get(&path).expect("Failed to get file from cache");
 
@@ -312,10 +316,14 @@ mod tests {
             f.write_all(BOOK_BYTES).unwrap();
         }
 
-        let cache0 =
-            BrotliCache::from(crate::compression::CachedCompression::new().compression_level(0));
-        let cache5 =
-            BrotliCache::from(crate::compression::CachedCompression::new().compression_level(5));
+        let cache0 = BrotliCache::from(
+            crate::compression::CachedCompression::new()
+                .compression_level(crate::compression::BrotliLevel::L0),
+        );
+        let cache5 = BrotliCache::from(
+            crate::compression::CachedCompression::new()
+                .compression_level(crate::compression::BrotliLevel::L5),
+        );
 
         let matched0 = cache0.get(&path).expect("Failed to get file from cache0");
         let matched5 = cache5.get(&path).expect("Failed to get file from cache5");

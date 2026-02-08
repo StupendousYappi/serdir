@@ -6,6 +6,8 @@ use std::fs::File;
 use std::path::Path;
 use std::{collections::HashMap, path::PathBuf};
 
+#[cfg(feature = "runtime-compression")]
+use crate::compression::BrotliLevel;
 use crate::compression::{
     CompressionStrategy, CompressionStrategyInner, CompressionSupport, MatchedFile,
     StaticCompression,
@@ -237,14 +239,6 @@ impl ServedDir {
             .unwrap_or_else(|| self.default_content_type.clone())
     }
 
-    #[cfg(feature = "mime_guess")]
-    fn guess_content_type(ext: &str) -> Option<HeaderValue> {
-        mime_guess::from_ext(ext)
-            .first_raw()
-            .map(|s| HeaderValue::from_str(s).unwrap())
-    }
-
-    #[cfg(not(feature = "mime_guess"))]
     fn guess_content_type(ext: &str) -> Option<HeaderValue> {
         let guess = match ext {
             "html" => Some("text/html"),
@@ -405,8 +399,11 @@ impl ServedDirBuilder {
 
     /// Convenience method for configuring cached runtime Brotli compression.
     #[cfg(feature = "runtime-compression")]
-    pub fn cached_compression(self, compression_level: u8) -> Self {
-        self.compression(CompressionStrategy::cached_compression(compression_level))
+    pub fn cached_compression(self, level: BrotliLevel) -> Self {
+        use crate::compression::CachedCompression;
+
+        let strategy = CachedCompression::new().compression_level(level);
+        self.compression(strategy)
     }
 
     /// Convenience method for disabling compression.
@@ -435,14 +432,73 @@ impl ServedDirBuilder {
 
     /// Sets a prefix to strip from the request path.
     ///
-    /// If this value is defined, [ServedDir::get] will return a [ServeFilesError::InvalidPath]
+    /// If this value is defined, [`ServedDir::get`] will return a [`ServeFilesError::InvalidPath`]
     /// error for any path that doesn't begin with the given prefix.
     pub fn strip_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.strip_prefix = Some(prefix.into());
         self
     }
 
-    /// Sets a map of file extensions to content types.
+    /// Defines a mapping from file extensions to HTTP content types.
+    ///
+    /// If not set, will use a smaller builtin extension mapping of common web file extensions.
+    ///
+    /// The extensions recognized by the builtin mapping are:
+    /// - apng
+    /// - avif
+    /// - bmp
+    /// - bz
+    /// - bz2
+    /// - css
+    /// - csv
+    /// - doc
+    /// - docx
+    /// - ecma
+    /// - es
+    /// - gif
+    /// - gz
+    /// - htm
+    /// - html
+    /// - hxt
+    /// - ico
+    /// - ics
+    /// - ini
+    /// - jfif
+    /// - jpeg
+    /// - jpg
+    /// - js
+    /// - jsm
+    /// - json
+    /// - jsx
+    /// - log
+    /// - markdown
+    /// - md
+    /// - mkd
+    /// - mp4
+    /// - mpeg
+    /// - mpg
+    /// - mpg4
+    /// - pdf
+    /// - pjp
+    /// - pjpeg
+    /// - png
+    /// - ppt
+    /// - pptx
+    /// - svg
+    /// - tar
+    /// - text
+    /// - tiff
+    /// - toml
+    /// - txt
+    /// - webm
+    /// - webp
+    /// - xls
+    /// - xlsx
+    /// - xml
+    /// - xz
+    /// - yaml
+    /// - yml
+    /// - zip
     pub fn known_extensions(mut self, extensions: HashMap<String, HeaderValue>) -> Self {
         self.known_extensions = Some(extensions);
         self

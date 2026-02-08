@@ -6,7 +6,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Response compression strategy and settings.
+//! Response compression settings.
 
 use http::header::{self, HeaderMap, HeaderValue};
 #[cfg(feature = "runtime-compression")]
@@ -101,15 +101,98 @@ impl StaticCompression {
 }
 
 const DEFAULT_CACHE_SIZE: u16 = 1024;
-const DEFAULT_COMPRESSION_LEVEL: u8 = 5;
+const DEFAULT_COMPRESSION_LEVEL: BrotliLevel = BrotliLevel::L5;
 const DEFAULT_MAX_FILE_SIZE: u64 = 1024 * 1024;
+
+/// Brotli compression level (0-11).
+///
+/// Lower levels are faster but compress less, while higher levels are slower but compress more.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BrotliLevel {
+    /// Level 0
+    L0 = 0,
+    /// Level 1
+    L1 = 1,
+    /// Level 2
+    L2 = 2,
+    /// Level 3
+    L3 = 3,
+    /// Level 4
+    L4 = 4,
+    /// Level 5
+    L5 = 5,
+    /// Level 6
+    L6 = 6,
+    /// Level 7
+    L7 = 7,
+    /// Level 8
+    L8 = 8,
+    /// Level 9
+    L9 = 9,
+    /// Level 10
+    L10 = 10,
+    /// Level 11
+    L11 = 11,
+}
+
+impl Default for BrotliLevel {
+    fn default() -> Self {
+        Self::L5
+    }
+}
+
+impl From<BrotliLevel> for i32 {
+    fn from(level: BrotliLevel) -> Self {
+        level as i32
+    }
+}
+
+impl TryFrom<u8> for BrotliLevel {
+    type Error = ServeFilesError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::L0),
+            1 => Ok(Self::L1),
+            2 => Ok(Self::L2),
+            3 => Ok(Self::L3),
+            4 => Ok(Self::L4),
+            5 => Ok(Self::L5),
+            6 => Ok(Self::L6),
+            7 => Ok(Self::L7),
+            8 => Ok(Self::L8),
+            9 => Ok(Self::L9),
+            10 => Ok(Self::L10),
+            11 => Ok(Self::L11),
+            _ => Err(ServeFilesError::ConfigError(format!(
+                "invalid Brotli level: {}, must be between 0 and 11",
+                value
+            ))),
+        }
+    }
+}
+
+impl TryFrom<u32> for BrotliLevel {
+    type Error = ServeFilesError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        u8::try_from(value)
+            .map_err(|_| {
+                ServeFilesError::ConfigError(format!(
+                    "invalid Brotli level: {}, must be between 0 and 11",
+                    value
+                ))
+            })?
+            .try_into()
+    }
+}
 
 /// Settings for cached Brotli compression at runtime.
 #[cfg(feature = "runtime-compression")]
 #[derive(Debug, Clone)]
 pub struct CachedCompression {
     pub(crate) cache_size: u16,
-    pub(crate) compression_level: u8,
+    pub(crate) compression_level: BrotliLevel,
     pub(crate) supported_extensions: Option<HashSet<&'static str>>,
     pub(crate) max_file_size: u64,
 }
@@ -136,12 +219,7 @@ impl CachedCompression {
     }
 
     /// Sets the Brotli compression level (0-11).
-    ///
-    /// # Panics
-    ///
-    /// Panics if the value is invalid.
-    pub fn compression_level(mut self, level: u8) -> Self {
-        assert!(level <= 11, "compression_level must be between 0 and 11");
+    pub fn compression_level(mut self, level: BrotliLevel) -> Self {
         self.compression_level = level;
         self
     }
@@ -343,8 +421,8 @@ impl CompressionStrategy {
 
     /// Returns a strategy that performs runtime Brotli compression with caching.
     #[cfg(feature = "runtime-compression")]
-    pub fn cached_compression(compression_level: u8) -> Self {
-        Self::Cached(CachedCompression::new().compression_level(compression_level))
+    pub fn cached_compression() -> Self {
+        Self::Cached(CachedCompression::new())
     }
 
     pub(crate) fn into_inner(self) -> CompressionStrategyInner {
@@ -531,6 +609,21 @@ mod tests {
     }
 
     #[test]
+    fn test_brotli_level_conversions() {
+        assert_eq!(i32::from(BrotliLevel::L0), 0);
+        assert_eq!(i32::from(BrotliLevel::L11), 11);
+
+        assert_eq!(BrotliLevel::try_from(0u8).unwrap(), BrotliLevel::L0);
+        assert_eq!(BrotliLevel::try_from(5u8).unwrap(), BrotliLevel::L5);
+        assert_eq!(BrotliLevel::try_from(11u8).unwrap(), BrotliLevel::L11);
+        assert!(BrotliLevel::try_from(12u8).is_err());
+
+        assert_eq!(BrotliLevel::try_from(0u32).unwrap(), BrotliLevel::L0);
+        assert_eq!(BrotliLevel::try_from(11u32).unwrap(), BrotliLevel::L11);
+        assert!(BrotliLevel::try_from(12u32).is_err());
+    }
+
+    #[test]
     fn test_parse_qvalue() {
         assert_eq!(parse_qvalue("0"), Ok(0));
         assert_eq!(parse_qvalue("0."), Ok(0));
@@ -705,7 +798,7 @@ mod tests {
     fn test_cached_compression_into_strategy() {
         let strategy: CompressionStrategy = CachedCompression::new()
             .max_size(16)
-            .compression_level(5)
+            .compression_level(BrotliLevel::L5)
             .into();
         let inner = strategy.into_inner();
         assert!(matches!(inner, CompressionStrategyInner::Cached(_)));

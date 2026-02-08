@@ -18,8 +18,7 @@ This crate provides utilities for serving static files in Rust web applications.
 - ETag header generation and conditional GET requests
 - Serving files that have been pre-compressed using gzip, brotli or zstd
 - Cached runtime compression of files using brotli
-- Content type detection using
-  [mime_guess](https://docs.rs/mime_guess/latest/mime_guess/struct.MimeGuess.html)
+- Content type detection based on filename extensions
 - Serving directory paths using `index.html` pages
 - Customizing 404 response content
 - Support for the Tower [Service](https://docs.rs/tower/latest/tower/trait.Service.html) and [Layer](https://docs.rs/tower/latest/tower/trait.Layer.html) APIs
