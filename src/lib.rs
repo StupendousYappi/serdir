@@ -138,7 +138,7 @@ mod served_dir;
 /// Hyper and Tower service integrations.
 mod integration;
 
-mod compression;
+pub mod compression;
 mod etag;
 mod file;
 mod platform;
@@ -146,9 +146,6 @@ mod range;
 mod serving;
 
 pub use crate::body::Body;
-#[cfg(feature = "runtime-compression")]
-pub use crate::compression::CachedCompression;
-pub use crate::compression::{CompressionStrategy, StaticCompression};
 pub use crate::etag::{ETag, FileHasher};
 pub use crate::file::FileEntity;
 pub use crate::served_dir::{ServedDir, ServedDirBuilder};

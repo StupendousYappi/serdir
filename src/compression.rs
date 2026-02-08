@@ -6,6 +6,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+//! Response compression strategy and settings.
+
 use http::header::{self, HeaderMap, HeaderValue};
 #[cfg(feature = "runtime-compression")]
 use std::collections::HashSet;
@@ -283,12 +285,24 @@ impl CompressionSupport {
 /// The strategy used to obtain compressed files compatible with the request's
 /// supported encodings.
 #[derive(Debug, Clone)]
-pub struct CompressionStrategy(CompressionStrategyInner);
+pub enum CompressionStrategy {
+    /// Look for pre-compressed versions of the original file by adding the appropriate filename
+    /// extension to the original file name.
+    Static(StaticCompression),
+
+    /// Compresses supported file types at runtime using Brotli, and caches the
+    /// compressed versions for reuse.
+    #[cfg(feature = "runtime-compression")]
+    Cached(CachedCompression),
+
+    /// Do not use compression, only return the original file, if available.
+    None,
+}
 
 impl CompressionStrategy {
     /// Returns a strategy that only serves the original uncompressed file.
     pub fn none() -> Self {
-        Self(CompressionStrategyInner::None)
+        Self::None
     }
 
     /// Returns a static compression strategy with all encodings disabled.
@@ -296,19 +310,32 @@ impl CompressionStrategy {
     /// Enable specific encodings by converting a [`StaticCompression`] value
     /// into a strategy.
     pub fn static_compression() -> Self {
-        StaticCompression::new().into()
+        Self::Static(StaticCompression::new())
     }
 
     /// Returns a strategy that performs runtime Brotli compression with caching.
     #[cfg(feature = "runtime-compression")]
     pub fn cached_compression(compression_level: u8) -> Self {
-        CachedCompression::new()
-            .compression_level(compression_level)
-            .into()
+        Self::Cached(CachedCompression::new().compression_level(compression_level))
     }
 
     pub(crate) fn into_inner(self) -> CompressionStrategyInner {
-        self.0
+        match self {
+            Self::Static(value) => CompressionStrategyInner::Static(CompressionSupport::new(
+                value.br, value.gzip, value.zstd,
+            )),
+            #[cfg(feature = "runtime-compression")]
+            Self::Cached(value) => {
+                let cache = BrotliCache::builder()
+                    .max_size(value.cache_size)
+                    .compression_level(value.compression_level)
+                    .supported_extensions(value.supported_extensions)
+                    .max_file_size(value.max_file_size)
+                    .build();
+                CompressionStrategyInner::Cached(Arc::new(cache))
+            }
+            Self::None => CompressionStrategyInner::None,
+        }
     }
 }
 
@@ -320,22 +347,14 @@ impl Default for CompressionStrategy {
 
 impl From<StaticCompression> for CompressionStrategy {
     fn from(value: StaticCompression) -> Self {
-        Self(CompressionStrategyInner::Static(CompressionSupport::new(
-            value.br, value.gzip, value.zstd,
-        )))
+        Self::Static(value)
     }
 }
 
 #[cfg(feature = "runtime-compression")]
 impl From<CachedCompression> for CompressionStrategy {
     fn from(value: CachedCompression) -> Self {
-        let cache = BrotliCache::builder()
-            .max_size(value.cache_size)
-            .compression_level(value.compression_level)
-            .supported_extensions(value.supported_extensions)
-            .max_file_size(value.max_file_size)
-            .build();
-        Self(CompressionStrategyInner::Cached(Arc::new(cache)))
+        Self::Cached(value)
     }
 }
 
