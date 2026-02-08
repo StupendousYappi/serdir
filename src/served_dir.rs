@@ -349,7 +349,7 @@ impl ServedDir {
 
     /// Returns a Hyper service that serves files from this `ServedDir`.
     #[cfg(feature = "hyper")]
-    pub fn into_hyper_service(self) -> impl hyper::service::Service<Request<Bytes>> {
+    pub fn into_hyper_service(self) -> ServedDirHyperService {
         ServedDirHyperService::new(self)
     }
 
