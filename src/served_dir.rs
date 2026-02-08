@@ -2,6 +2,7 @@
 
 use std::convert::Infallible;
 use std::fmt::Debug;
+use std::fs::File;
 use std::path::Path;
 #[cfg(feature = "runtime-compression")]
 use std::sync::Arc;
@@ -16,9 +17,12 @@ use crate::integration::ServedDirHyperService;
 #[cfg(feature = "tower")]
 use crate::integration::{ServedDirLayer, ServedDirService};
 
-use crate::{Body, FileEntity, ServeFilesError};
+use crate::{Body, ETag, FileEntity, ServeFilesError};
 use bytes::Bytes;
 use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
+
+/// Function pointer type used to calculate ETag hash values from opened files.
+pub type FileHasher = fn(&File) -> Result<Option<u64>, std::io::Error>;
 
 /// Returns `FileEntity` values for file paths within a directory.
 ///
@@ -43,6 +47,7 @@ use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 pub struct ServedDir {
     dirpath: PathBuf,
     compression_strategy: CompressionStrategy,
+    file_hasher: FileHasher,
     strip_prefix: Option<String>,
     known_extensions: Option<HashMap<String, HeaderValue>>,
     default_content_type: HeaderValue,
@@ -72,6 +77,12 @@ impl Debug for ServedDir {
 }
 
 static OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-stream");
+
+/// The default function used to create ETag values by hashing file contents
+pub(crate) fn default_hasher(file: &File) -> Result<Option<u64>, std::io::Error> {
+    let hash = rapidhash::v3::rapidhash_v3_file(file)?;
+    Ok(Some(hash))
+}
 
 impl ServedDir {
     /// Returns a builder for `ServedDir`.
@@ -150,15 +161,13 @@ impl ServedDir {
                 Err(ServeFilesError::NotFound(_)) if self.not_found_path.is_some() => {
                     let not_found_path = self.not_found_path.as_ref().unwrap().clone();
                     let matched_file = self.find_file(not_found_path, preferred)?;
-                    let headers = self.prepare_headers(&matched_file);
-                    let entity = matched_file.into_file_entity(headers)?;
+                    let entity = self.create_entity(matched_file)?;
                     return Err(ServeFilesError::NotFound(Some(entity)));
                 }
                 Err(e) => return Err(e),
             };
 
-            let headers = self.prepare_headers(&matched_file);
-            matched_file.into_file_entity(headers)
+            self.create_entity(matched_file)
         })
     }
 
@@ -192,7 +201,10 @@ impl ServedDir {
             .expect("status response should be valid")
     }
 
-    fn prepare_headers(&self, matched_file: &MatchedFile) -> HeaderMap {
+    fn create_entity(
+        &self,
+        matched_file: MatchedFile,
+    ) -> Result<FileEntity<Bytes>, ServeFilesError> {
         let content_type: HeaderValue = self.get_content_type(&matched_file.extension);
         let mut headers = self.common_headers.clone();
         headers.insert(http::header::CONTENT_TYPE, content_type);
@@ -204,7 +216,8 @@ impl ServedDir {
         if !self.compression_strategy.is_none() {
             headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
         }
-        headers
+        let etag = self.calculate_etag(matched_file.file.as_ref())?;
+        FileEntity::new_with_metadata(matched_file.file, matched_file.file_info, headers, etag)
     }
 
     fn find_file(
@@ -213,6 +226,10 @@ impl ServedDir {
         preferred: CompressionSupport,
     ) -> Result<MatchedFile, ServeFilesError> {
         self.compression_strategy.find_file(path.into(), preferred)
+    }
+
+    fn calculate_etag(&self, file: &File) -> Result<Option<ETag>, std::io::Error> {
+        (self.file_hasher)(file).map(|hash| hash.map(Into::into))
     }
 
     fn get_content_type(&self, extension: &str) -> HeaderValue {
@@ -349,6 +366,7 @@ impl ServedDir {
 pub struct ServedDirBuilder {
     dirpath: PathBuf,
     compression_strategy: CompressionStrategy,
+    file_hasher: Option<FileHasher>,
     strip_prefix: Option<String>,
     known_extensions: Option<HashMap<String, HeaderValue>>,
     default_content_type: HeaderValue,
@@ -366,6 +384,7 @@ impl ServedDirBuilder {
         Ok(Self {
             dirpath,
             compression_strategy: CompressionStrategy::None,
+            file_hasher: None,
             strip_prefix: None,
             known_extensions: None,
             default_content_type: OCTET_STREAM.clone(),
@@ -418,6 +437,19 @@ impl ServedDirBuilder {
     pub fn dynamic_compression_with_cache(mut self, cache: BrotliCache) -> Self {
         let strategy = CompressionStrategy::Dynamic(Arc::new(cache));
         self.compression_strategy = strategy;
+        self
+    }
+
+    /// Sets the hash function used to compute ETag values for served files.
+    ///
+    /// The function receives the opened file handle and should return:
+    /// - `Ok(Some(hash))` to set an ETag using the provided 64-bit hash value.
+    /// - `Ok(None)` to suppress ETag for that file.
+    /// - `Err(e)` to propagate an I/O error.
+    ///
+    /// If not set, `ServedDir` defaults to hashing file contents with `rapidhash`.
+    pub fn file_hasher(mut self, file_hasher: FileHasher) -> Self {
+        self.file_hasher = Some(file_hasher);
         self
     }
 
@@ -480,6 +512,7 @@ impl ServedDirBuilder {
         ServedDir {
             dirpath: self.dirpath,
             compression_strategy: self.compression_strategy,
+            file_hasher: self.file_hasher.unwrap_or(default_hasher),
             strip_prefix: self.strip_prefix,
             known_extensions: self.known_extensions,
             default_content_type: self.default_content_type,
@@ -516,6 +549,22 @@ mod tests {
             }
         }
     }
+
+    fn fixed_hash(_: &std::fs::File) -> Result<Option<u64>, std::io::Error> {
+        Ok(Some(0x1234))
+    }
+
+    fn no_hash(_: &std::fs::File) -> Result<Option<u64>, std::io::Error> {
+        Ok(None)
+    }
+
+    fn hash_error(_: &std::fs::File) -> Result<Option<u64>, std::io::Error> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "hash calculation failed",
+        ))
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_served_dir_get() {
         let context = TestContext::new();
@@ -896,6 +945,78 @@ mod tests {
         if let ServeFilesError::NotFound(Some(entity)) = err {
             assert_eq!(entity.read_body().await.unwrap(), "custom 404 content");
             assert_eq!(entity.header(&header::CONTENT_TYPE).unwrap(), "text/html");
+        } else {
+            panic!("expected NotFound(Some(_)), got {:?}", err);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_default_hash_function_sets_etag() {
+        let context = TestContext::new();
+        context.write_file("one.txt", "one");
+        let served_dir = context.builder.build();
+        let hdrs = HeaderMap::new();
+
+        let entity = served_dir.get("one.txt", &hdrs).await.unwrap();
+        assert!(entity.etag().is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_custom_hash_function_sets_etag() {
+        let context = TestContext::new();
+        context.write_file("one.txt", "one");
+        let served_dir = context.builder.file_hasher(fixed_hash).build();
+        let hdrs = HeaderMap::new();
+
+        let entity = served_dir.get("one.txt", &hdrs).await.unwrap();
+        let etag = entity.etag().expect("etag should be present");
+        assert_eq!(etag.to_str().unwrap(), r#""0000000000001234""#);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_custom_hash_function_can_disable_etag() {
+        let context = TestContext::new();
+        context.write_file("one.txt", "one");
+        let served_dir = context.builder.file_hasher(no_hash).build();
+        let hdrs = HeaderMap::new();
+
+        let entity = served_dir.get("one.txt", &hdrs).await.unwrap();
+        assert!(entity.etag().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_hash_function_error_is_propagated() {
+        let context = TestContext::new();
+        context.write_file("one.txt", "one");
+        let served_dir = context.builder.file_hasher(hash_error).build();
+        let hdrs = HeaderMap::new();
+
+        let err = served_dir.get("one.txt", &hdrs).await.unwrap_err();
+        match err {
+            ServeFilesError::IOError(inner) => {
+                assert_eq!(inner.kind(), std::io::ErrorKind::Other);
+                assert_eq!(inner.to_string(), "hash calculation failed");
+            }
+            other => panic!("expected IOError, got {:?}", other),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_not_found_path_uses_custom_hash_function() {
+        let context = TestContext::new();
+        context.write_file("404.html", "custom 404 content");
+        let served_dir = context
+            .builder
+            .file_hasher(fixed_hash)
+            .not_found_path("404.html")
+            .unwrap()
+            .build();
+        let hdrs = HeaderMap::new();
+
+        let err = served_dir.get("missing.txt", &hdrs).await.unwrap_err();
+        if let ServeFilesError::NotFound(Some(entity)) = err {
+            let etag = entity.etag().expect("etag should be present");
+            assert_eq!(etag.to_str().unwrap(), r#""0000000000001234""#);
         } else {
             panic!("expected NotFound(Some(_)), got {:?}", err);
         }

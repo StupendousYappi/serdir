@@ -8,6 +8,7 @@
 // except according to those terms.
 
 use crate::platform::FileExt;
+use crate::served_dir::default_hasher;
 use crate::FileInfo;
 use bytes::Buf;
 use futures_core::Stream;
@@ -87,8 +88,10 @@ where
         let path = path.as_ref();
         let file = File::open(path)?;
         let file_info = FileInfo::open_file(path, &file)?;
-        let etag = ETag::for_file(file_info, &file)?;
-        FileEntity::new_with_metadata(Arc::new(file), file_info, headers, Some(etag))
+
+        let etag: Option<ETag> = default_hasher(&file)?.map(Into::into);
+
+        FileEntity::new_with_metadata(Arc::new(file), file_info, headers, etag)
     }
 
     /// Creates a new FileEntity, with presupplied metadata and a pre-opened file.
@@ -340,7 +343,7 @@ mod tests {
             assert!(crf.etag().is_none());
 
             let f_read = File::open(&p).unwrap();
-            let new_etag = ETag::from_file(&f_read).unwrap();
+            let new_etag: ETag = rapidhash::v3::rapidhash_v3_file(&f_read).unwrap().into();
             let crf = crf.with_etag(Some(new_etag));
             assert_eq!(crf.etag(), Some(new_etag.into()));
         })

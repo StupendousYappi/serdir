@@ -33,8 +33,7 @@ impl PathBufExt for Path {
 
 #[cfg(feature = "runtime-compression")]
 use crate::brotli_cache::BrotliCache;
-use crate::ETag;
-use crate::{FileEntity, ServeFilesError};
+use crate::ServeFilesError;
 
 /// Parses an RFC 7231 section 5.3.1 `qvalue` into an integer in [0, 1000].
 /// ```text
@@ -298,30 +297,13 @@ impl ContentEncoding {
 /// This is not necessarily a plain file; it could also be a directory, for example.
 ///
 /// The caller can inspect it as desired. If it is a directory, the caller might pass the result of
-/// `into_file()` to `nix::dir::Dir::from`. If it is a plain file, the caller might create an
-/// `serve_files::Entity` with `into_file_entity()`.
+/// `into_file()` to `nix::dir::Dir::from`.
 #[derive(Clone)]
 pub(crate) struct MatchedFile {
     pub(crate) file_info: crate::FileInfo,
     pub(crate) file: Arc<File>,
     pub(crate) content_encoding: ContentEncoding,
     pub(crate) extension: String,
-}
-
-impl MatchedFile {
-    /// Converts this MatchedFile (which must represent a plain file) into a `FileEntity`.
-    /// The caller is expected to supply all headers. The function `add_encoding_headers`
-    /// may be useful.
-    pub(crate) fn into_file_entity<D>(
-        self,
-        headers: HeaderMap,
-    ) -> Result<FileEntity<D>, ServeFilesError>
-    where
-        D: 'static + Send + Sync + bytes::Buf + From<Vec<u8>> + From<&'static [u8]>,
-    {
-        let etag = ETag::for_file(self.file_info, &self.file)?;
-        FileEntity::new_with_metadata(self.file, self.file_info, headers, Some(etag))
-    }
 }
 
 #[cfg(test)]

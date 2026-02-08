@@ -53,6 +53,12 @@ impl From<ETag> for HeaderValue {
     }
 }
 
+impl From<u64> for ETag {
+    fn from(hash: u64) -> Self {
+        ETag(hash)
+    }
+}
+
 type BuildHasher = std::hash::BuildHasherDefault<rapidhash::fast::RapidHasher<'static>>;
 
 const CACHE_SIZE: usize = 1024;
