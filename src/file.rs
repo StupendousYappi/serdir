@@ -23,6 +23,7 @@ use std::time::SystemTime;
 
 use crate::etag::ETag;
 use crate::{Entity, ServeFilesError};
+use http::{Request, Response, StatusCode};
 
 // This stream breaks apart the file into chunks of at most CHUNK_SIZE. This size is
 // a tradeoff between memory usage and thread handoffs.
@@ -46,7 +47,24 @@ static CHUNK_SIZE: u64 = 65_536;
 /// content with new files at runtime, users of this crate should do that by moving files or
 /// directories, and not by writing to existing static content files after the server has started.
 ///
-/// TODO: add example code once we have a `serve_request` method.
+/// # Example
+///
+/// ```
+/// # use http::{Request, Response};
+/// # use serve_files::{FileEntity, Body};
+/// # use std::fs::File;
+/// # use std::io::Write;
+/// # async fn doc() -> Result<(), Box<dyn std::error::Error>> {
+/// let path = "/tmp/test.txt";
+/// let mut f = File::create(path)?;
+/// f.write_all(b"Hello, world!")?;
+///
+/// let entity = FileEntity::new(path, http::HeaderMap::new())?;
+/// let request = Request::get("/").body(())?;
+/// let response: Response<Body> = entity.serve_request(&request);
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct FileEntity {
     len: u64,
@@ -108,6 +126,16 @@ impl FileEntity {
     /// Returns the value of the response header with the given name, if it exists.
     pub fn header(&self, name: &HeaderName) -> Option<&HeaderValue> {
         self.headers.get(name)
+    }
+
+    /// Serves this entity as a response to the given request.
+    ///
+    /// Consumes the `FileEntity` and returns an HTTP response.
+    pub fn serve_request<B, D>(self, req: &Request<B>) -> Response<D>
+    where
+        D: From<crate::Body>,
+    {
+        crate::serving::serve(self, req, StatusCode::OK).map(Into::into)
     }
 }
 
@@ -295,6 +323,28 @@ mod tests {
             // Test that
             let e = to_bytes(crf.get_range(0..4)).await.unwrap_err();
             assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_serve_request() {
+        use http_body_util::BodyExt;
+
+        tokio::spawn(async move {
+            let tmp = tempfile::tempdir().unwrap();
+            let p = tmp.path().join("f");
+            let mut f = File::create(&p).unwrap();
+            f.write_all(b"hello world").unwrap();
+
+            let entity = CRF::new(&p, HeaderMap::new()).unwrap();
+            let req = http::Request::get("/").body(()).unwrap();
+
+            let res: http::Response<crate::Body> = entity.serve_request(&req);
+            assert_eq!(res.status(), http::StatusCode::OK);
+            let body = res.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(body, "hello world");
         })
         .await
         .unwrap();
