@@ -367,6 +367,19 @@ pub struct ServedDirBuilder {
 }
 
 impl ServedDirBuilder {
+    /// Creates a builder for a `ServedDir` that will serve files from `dirpath`.
+    ///
+    /// This function returns an error if `dirpath` is not a directory or a
+    /// symlink to a directory.
+    ///
+    /// Updates to the directory content while it's being served are safe, as
+    /// long as content is changed by deleting and moving paths, rather than
+    /// writing to existing files. If a file is written to while a request is
+    /// reading it, in addition to the risk of the file content being corrupt,
+    /// the file's ETag and modification date metadata will not match the served
+    /// contents. The recommended way to update served content live is to pass a
+    /// symlink to the target directory to this function, and then update the
+    /// symlink to point to the new directory when needed.
     fn new(dirpath: PathBuf) -> Result<Self, ServeFilesError> {
         if !dirpath.is_dir() {
             let msg = format!("path is not a directory: {}", dirpath.display());
@@ -385,7 +398,8 @@ impl ServedDirBuilder {
         })
     }
 
-    /// Sets the compression strategy for the served directory.
+    /// Sets the compression strategy (i.e. static, cached or none)for the
+    /// served directory.
     pub fn compression(mut self, strategy: impl Into<CompressionStrategy>) -> Self {
         self.compression_strategy = strategy.into();
         self
@@ -411,7 +425,10 @@ impl ServedDirBuilder {
         self.compression(CompressionStrategy::none())
     }
 
-    /// Appends "/index.html" to directory paths.
+    /// If true, causes the `ServedDir` to append "/index.html" to directory
+    /// paths.
+    ///
+    /// If false, a 404 will be returned for directory paths.
     pub fn append_index_html(mut self, append: bool) -> Self {
         self.append_index_html = append;
         self
