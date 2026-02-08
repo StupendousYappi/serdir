@@ -4,3 +4,4 @@ Cargo.lock
 test-content/*
 notes.md
 *.diff
+.agent/*
