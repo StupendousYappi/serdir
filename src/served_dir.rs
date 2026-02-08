@@ -399,7 +399,7 @@ impl ServedDirBuilder {
 
     /// Convenience method for configuring static pre-compressed file lookup.
     pub fn static_compression(self, br: bool, gzip: bool, zstd: bool) -> Self {
-        let strategy = StaticCompression::new().brotli(br).gzip(gzip).zstd(zstd);
+        let strategy = StaticCompression::none().brotli(br).gzip(gzip).zstd(zstd);
         self.compression(strategy)
     }
 

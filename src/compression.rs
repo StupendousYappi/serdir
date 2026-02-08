@@ -39,7 +39,30 @@ impl PathBufExt for Path {
 use crate::brotli_cache::BrotliCache;
 use crate::ServeFilesError;
 
-/// Builder-style settings for static (pre-compressed file) lookup.
+/// Settings for using static (i.e. pre-compressed) compression.
+///
+/// The static compression strategy allows you to provide pre-compressed
+/// versions of your files, by giving the compressed versions an appropriate
+/// extension. The supported compression algorithms and extensions are:
+///
+/// - GZip (`.gz`)
+/// - Brotli (`.br`)
+/// - ZStandard (`.zstd`)
+///
+/// For example, if you have a servable file at path `pages/mailbox.html`, you
+/// can enable it to be served with GZip compression by providing a pre-compressed file at
+/// `pages/mailbox.html.gz`, or with Brotli compression by providing a pre-compressed file at
+/// `pages/mailbox.html.br`.
+///
+/// Clients will only be served a compressed variant if they indicate support
+/// for that encoding via the `Accept-Encoding` request header. If multiple
+/// client-compatible compressed versions are provided, the prioritization will
+/// always be Brotli, then ZStandard, then GZip, regardless of what q-values the
+/// client's `Accept-Encoding` header provided.
+///
+/// Note that compression strategies are mutually exclusive; if you enable
+/// static compression, no cached (i.e.) runtime compression will be performed,
+/// and vice-versa.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 pub struct StaticCompression {
     gzip: bool,
@@ -49,8 +72,13 @@ pub struct StaticCompression {
 
 impl StaticCompression {
     /// Creates a new static compression settings value with all encodings disabled.
-    pub fn new() -> Self {
+    pub fn none() -> Self {
         Self::default()
+    }
+
+    /// Creates a new static compression settings value with all encodings enabled.
+    pub fn all() -> Self {
+        Self::default().gzip(true).brotli(true).zstd(true)
     }
 
     /// Sets whether Brotli (`.br`) files should be considered.
@@ -76,7 +104,7 @@ const DEFAULT_CACHE_SIZE: u16 = 1024;
 const DEFAULT_COMPRESSION_LEVEL: u8 = 5;
 const DEFAULT_MAX_FILE_SIZE: u64 = 1024 * 1024;
 
-/// Builder-style settings for runtime Brotli compression and caching.
+/// Settings for cached Brotli compression at runtime.
 #[cfg(feature = "runtime-compression")]
 #[derive(Debug, Clone)]
 pub struct CachedCompression {
@@ -310,7 +338,7 @@ impl CompressionStrategy {
     /// Enable specific encodings by converting a [`StaticCompression`] value
     /// into a strategy.
     pub fn static_compression() -> Self {
-        Self::Static(StaticCompression::new())
+        Self::Static(StaticCompression::none())
     }
 
     /// Returns a strategy that performs runtime Brotli compression with caching.
@@ -640,7 +668,7 @@ mod tests {
 
     #[test]
     fn test_static_compression_into_strategy() {
-        let strategy: CompressionStrategy = StaticCompression::new()
+        let strategy: CompressionStrategy = StaticCompression::none()
             .brotli(true)
             .gzip(false)
             .zstd(true)
