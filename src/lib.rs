@@ -1,4 +1,4 @@
-// Copyright (c) 2016-2021 The http-serve developers
+// Copyright (c) 2016-2026 Greg Steffensen and the http-serve developers
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE.txt or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -8,30 +8,17 @@
 
 //! Helpers for serving HTTP GET and HEAD responses asynchronously with the
 //! [http](http://crates.io/crates/http) crate and [tokio](https://crates.io/crates/tokio).
-//! Works well with [hyper](https://crates.io/crates/hyper) 1.x.
+//! Works well with [hyper](https://crates.io/crates/hyper) 1.x and [tower](https://crates.io/crates/tower).
 //!
-//! This crate supplies a way to respond to HTTP GET and HEAD requests:
+//! # Example
 //!
-//! *   the `serve` function can be used to serve an `Entity`, a trait representing reusable,
-//!     byte-rangeable HTTP entities. `Entity` must be able to produce exactly the same data on
-//!     every call, know its size in advance, and be able to produce portions of the data on demand.
-//!
-//! It supplies a static file `Entity` implementation and a (currently Unix-only)
-//! helper for serving a full directory tree from the local filesystem, including
-//! automatically looking for `.gz`-suffixed files when the client advertises
-//! `Accept-Encoding: gzip`.
-//!
-//! # Why the weird type bounds? Why not use `hyper::Body` and `BoxError`?
-//!
-//! These bounds are compatible with `bytes::Bytes` and `BoxError`, and most callers will use
-//! those types.
-//!
-//! There are times when it's desirable to have more flexible ownership provided by a
-//! type such as `reffers::ARefs<'static, [u8]>`. One is `mmap`-based file serving:
-//! `bytes::Bytes` would require copying the data in each chunk. An implementation with `ARefs`
-//! could instead `mmap` and `mlock` the data on another thread and provide chunks which `munmap`
-//! when dropped. In these cases, the caller can supply an alternate implementation of the
-//! `http_body::Body` trait which uses a different `Data` type than `bytes::Bytes`.
+//! ```
+//! use serve_files::ServedDir;
+//! let served_dir = ServedDirBuilder::new("/path/to/directory")
+//!   .append_index_html(true)
+//!   .static_compression(true, true, false)
+//!   .build();
+//! ```
 
 #![deny(missing_docs, clippy::print_stderr, clippy::print_stdout)]
 #![cfg_attr(docsrs, feature(doc_cfg))]

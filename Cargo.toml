@@ -92,6 +92,10 @@ required-features = ["runtime-compression", "tower"]
 name = "tower_service"
 required-features = ["tower", "runtime-compression"]
 
+[[example]]
+name = "hyper"
+required-features = ["hyper", "runtime-compression"]
+
 [[bench]]
 name = "hashing"
 harness = false

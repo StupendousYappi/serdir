@@ -4,6 +4,8 @@ use futures_core::future::BoxFuture;
 use http::{Request, Response, StatusCode};
 use std::convert::Infallible;
 use std::sync::Arc;
+
+#[cfg(feature = "tower")]
 use tower::BoxError;
 
 /// Returns a Request based on the input request, but with an empty body.
