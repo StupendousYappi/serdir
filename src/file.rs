@@ -21,7 +21,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use crate::etag::{self, ETag};
+use crate::etag::ETag;
 use crate::{Entity, ServeFilesError};
 
 // This stream breaks apart the file into chunks of at most CHUNK_SIZE. This size is
@@ -87,7 +87,7 @@ where
         let path = path.as_ref();
         let file = File::open(path)?;
         let file_info = FileInfo::open_file(path, &file)?;
-        let etag = etag::get_cached_etag(file_info, &file)?;
+        let etag = ETag::for_file(file_info, &file)?;
         FileEntity::new_with_metadata(Arc::new(file), file_info, headers, Some(etag))
     }
 

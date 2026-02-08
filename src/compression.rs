@@ -33,7 +33,7 @@ impl PathBufExt for Path {
 
 #[cfg(feature = "runtime-compression")]
 use crate::brotli_cache::BrotliCache;
-use crate::etag;
+use crate::ETag;
 use crate::{FileEntity, ServeFilesError};
 
 /// Parses an RFC 7231 section 5.3.1 `qvalue` into an integer in [0, 1000].
@@ -319,7 +319,7 @@ impl MatchedFile {
     where
         D: 'static + Send + Sync + bytes::Buf + From<Vec<u8>> + From<&'static [u8]>,
     {
-        let etag = etag::get_cached_etag(self.file_info, &self.file)?;
+        let etag = ETag::for_file(self.file_info, &self.file)?;
         FileEntity::new_with_metadata(self.file, self.file_info, headers, Some(etag))
     }
 }
