@@ -51,6 +51,7 @@ winapi = { version = "0.3.6", features = [
 ] }
 
 [dev-dependencies]
+argh = "0.1"
 criterion = { version = "0.5", features = ["async_tokio"] }
 htmlescape = "0.3"
 http-body-util = "0.1.0"
@@ -86,6 +87,10 @@ harness = false
 [[example]]
 name = "tower_middleware"
 required-features = ["runtime-compression", "tower"]
+
+[[example]]
+name = "tower_service"
+required-features = ["tower", "runtime-compression"]
 
 [[bench]]
 name = "hashing"
