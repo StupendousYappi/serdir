@@ -9,12 +9,12 @@
 
 use crate::platform::FileExt;
 use crate::served_dir::default_hasher;
-use crate::FileInfo;
+use crate::{Body, FileInfo};
 use bytes::Buf;
 use futures_core::Stream;
 use futures_util::stream;
 use http::header::{HeaderMap, HeaderValue};
-use http::HeaderName;
+use http::{HeaderName, Request, Response, StatusCode};
 use std::fs::File;
 use std::ops::Range;
 use std::path::Path;
@@ -124,12 +124,6 @@ where
         })
     }
 
-    /// Override the ETag for this entity.
-    pub fn with_etag(mut self, etag: Option<ETag>) -> Self {
-        self.etag = etag;
-        self
-    }
-
     /// Returns the value of the response header with the given name, if it exists.
     pub fn header(&self, name: &HeaderName) -> Option<&HeaderValue> {
         self.headers.get(name)
@@ -188,7 +182,6 @@ where
 mod tests {
     use super::Entity;
     use super::FileEntity;
-    use crate::ETag;
     use bytes::Bytes;
     use futures_core::Stream;
     use futures_util::stream::TryStreamExt;
@@ -324,28 +317,6 @@ mod tests {
             // Test that
             let e = to_bytes(crf.get_range(0..4)).await.unwrap_err();
             assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
-        })
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_with_etag() {
-        tokio::spawn(async move {
-            let tmp = tempfile::tempdir().unwrap();
-            let p = tmp.path().join("f");
-            let mut f = File::create(&p).unwrap();
-            f.write_all(b"asdf").unwrap();
-            let crf = CRF::new(&p, HeaderMap::new()).unwrap();
-            assert!(crf.etag().is_some());
-
-            let crf = crf.with_etag(None);
-            assert!(crf.etag().is_none());
-
-            let f_read = File::open(&p).unwrap();
-            let new_etag: ETag = rapidhash::v3::rapidhash_v3_file(&f_read).unwrap().into();
-            let crf = crf.with_etag(Some(new_etag));
-            assert_eq!(crf.etag(), Some(new_etag.into()));
         })
         .await
         .unwrap();
