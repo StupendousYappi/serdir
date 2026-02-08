@@ -149,7 +149,6 @@ pub use crate::body::Body;
 pub use crate::etag::ETag;
 pub use crate::file::FileEntity;
 pub use crate::served_dir::{FileHasher, ServedDir, ServedDirBuilder};
-pub use crate::serving::serve;
 
 #[cfg(feature = "runtime-compression")]
 mod brotli_cache;
@@ -230,7 +229,7 @@ impl FileInfo {
 
 /// A reusable, read-only, byte-rangeable HTTP entity for GET and HEAD serving.
 /// Must return exactly the same data on every call.
-pub trait Entity: 'static + Send + Sync {
+pub(crate) trait Entity: 'static + Send + Sync {
     /// The type of errors produced in [`Self::get_range`] chunks and in the final stream.
     ///
     /// [`BoxError`] is a good choice for most implementations.

@@ -68,7 +68,7 @@ fn parse_modified_hdrs(
 /// Handles conditional & subrange requests.
 /// The caller is expected to have already determined the correct entity and appended
 /// `Expires`, `Cache-Control`, and `Vary` headers if desired.
-pub fn serve<Ent: Entity<Error = crate::IOError>, BI>(
+pub(crate) fn serve<Ent: Entity<Error = crate::IOError>, BI>(
     entity: Ent,
     req: &Request<BI>,
     status_code: StatusCode,
