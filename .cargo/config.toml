@@ -5,5 +5,7 @@ ta = "test --all-features"
 run-tower-service = "run --example tower_service --features runtime-compression,tower --"
 run-tower-middleware = "run --example tower_middleware --features runtime-compression,tower --"
 
+check-all = "check --all-features"
 check-windows = "check --all-features --target x86_64-pc-windows-msvc"
+build-docs = "doc --all-features"
 open-docs = "doc --all-features --open"

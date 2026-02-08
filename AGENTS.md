@@ -1,51 +1,33 @@
-This is a Rust crate that helps users serve static files over HTTP. The two central APIs it offers
-are `ServedDir` and `FileEntity`. The `ServedDir` type accepts path strings and HTTP request
-headers, looks for a file in a directory matching those criteria, returning a `FileEntity` that can
-be turned into the body of an HTTP response. It offers APIs to expose a `ServedDir` via both
-[`Tower`](https://docs.rs/tower/latest/tower/) and [`Hyper`](https://docs.rs/hyper/latest/hyper/)
-APIs, allowing compatibility with much of the Rust web app ecosystem.
+# serve-files
 
-This crate is derived from the [`http-serve`](https://github.com/scottlamb/http-serve ) crate, but 
-modified to focus purely on serving static files.
+This is a Rust crate that helps users serve static files over HTTP. The central
+API it offers is `ServedDir` which represents a directory of static files that
+can be served along with various configuration options, such as compression
+settings and file not found behavior. A `ServedDir` can be created using a
+`ServedDirBuilder`, and can either be used directly to handle HTTP requests or
+can be converted into a `tower::Service`, a `tower::Layer` (i.e. middleware that
+delegates requests that produce a not found response to an inner handler) or a
+`hyper::Service`.
 
-## The `serve` function
+## Key types
 
-The `serve` function serves HTTP `GET` and `HEAD` requests for a given byte-ranged `Entity`. It handles conditional GETs
-and subrange requests. Its function signature is:
-
-```rust
-pub fn serve<Ent: Entity, B: http_body::Body + From<Box<dyn Stream<Item = Result<Ent::Data, Ent::Error>> + Send>>, BI>(
-    entity: Ent,
-    req: &http:Request<BI>,
-) -> http:Response<B>
-```
-
-The definition of the `Entity` trait is:
-
-```rust
-pub trait Entity:
-    'static
-    + Send
-    + Sync {
-    type Error: 'static + Send + Sync;
-    type Data: 'static + Send + Sync + Buf + From<Vec<u8>> + From<&'static [u8]>;
-
-    // Required methods
-    fn len(&self) -> u64;
-    fn get_range(
-        &self,
-        range: Range<u64>,
-    ) -> Box<dyn Stream<Item = Result<Self::Data, Self::Error>> + Send + Sync>;
-    fn add_headers(&self, _: &mut HeaderMap);
-    fn etag(&self) -> Option<HeaderValue>;
-    fn last_modified(&self) -> Option<SystemTime>;
-
-    // Provided method
-    fn is_empty(&self) -> bool { ... }
-}
-```
-
-Responses returned by `serve` will add an `ETAG` header to the response if the input `Entity` provides one.
+- `ServedDir` - A directory of static files that can be served along with various configuration options
+- `ServedDirBuilder` - A builder that provides a fluent API for configuring a `ServedDir`, including
+  compression settings, file not found behavior and common response headers
+- `FileEntity` - Returned by `ServedDir` when it matches a path to a file, it contains an open file handle
+  and file metadata, such as its size, last modified time and ETag hash value
+- `ServeFilesError` - An error type returned by various crate APIs, such as `ServedDirBuilder` if
+  the user provides invalid configuration settings, or `ServedDir::get` if a file is not found
+- `ETag` - A 64 bit hash code of a file's contents, implemented as newtype wrapper around `u64`
+- `Body` a custom HTTP response body type that contains a stream of chunks of bytes (each up to 64kb), allowing
+  efficient serving of large files
+- `FileHasher` - a type alias for a function that takes a file path and returns a hash code of the file's contents,
+  used to allow the user to provide a custom hasher for ETag generation
+- `CompressionStrategy` - an enum representing the various strategies that can be used to obtain a compressed
+  version of a file. Passed to `ServedDirBuilder::compression_strategy`.
+- `StaticCompression` - compression settings for static (i.e. ahead of time) compression of served files using GZip,
+  Brotli or Zstd.
+- `CachedCompression` - compression settings for cached runtime compression of served files using Brotli
 
 ## Project structure
 
@@ -68,11 +50,52 @@ stream of chunks
 - `serving.rs` - wrapper code for converting a `http::Request` into `http::Response` by serving a
 static file
 
+## Cargo aliases
+
+This project defines Cargo aliases in `.cargo/config.toml` for several common
+operations:
+
+- `cargo check-all` (runs `cargo check` with all features enabled)
+- `cargo test-all` (runs all tests, including those gated by features)
+- `cargo run-tower-service` (runs the `tower_service`)
+- `cargo run-tower-middleware` (runs the `tower_middleware` example)
+- `cargo build-docs` (rebuilds the docs with all features enabled)
+
+## Optional features
+
+This project defines 3 optional Cargo features that can be enabled at compile time:
+
+- `runtime-compression` - enables the cached compression strategy, i.e. runtime
+compression of served files using Brotli
+- `tower` - enables integration with Tower-based web frameworks like Axum and
+Poem by providing APIs to convert a `ServedDir` into a `tower::Service` or
+`tower::Layer`
+- `hyper` - enables direct integration with the `hyper` web server by providing
+APIs to convert a `ServedDir` into a `hyper::Service`
+
+Many tests related to these features are feature-gated. To run the full test
+suite, run `cargo test --all-features`.
+
+## Platforms
+
+This project supports both Unix and Windows platforms, and contains a small
+amount of platform-specific code for reading file contents in the `platform.rs`
+module.
+
+If you have the `x86_64-pc-windows-msvc` target for rustc installed, you can perform
+syntax checking for the Windows build on Linux by running 
+
+```
+cargo check --all-features --target x86_64-pc-windows-msvc
+```
+
+The cargo `check-windows` alias provides a shorthand for the above command.
+
 ## Testing
 
-The project comes with a basic suite of unit tests that can be run with `cargo test`.
+Run the full test suite via `cargo test-all`.
 
-You can check for correct syntax using `cargo check`.
+Perform syntax checking of all code via `cargo check-all`.
 
 ## Documentation
 
