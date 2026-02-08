@@ -9,8 +9,9 @@
 use http::header::{self, HeaderMap, HeaderValue};
 use std::io;
 
+/// An ETag (entity tag) used for cache validation.
 #[derive(Hash, Eq, PartialEq, Clone, Copy, Debug)]
-pub(crate) struct ETag(u64);
+pub struct ETag(u64);
 
 impl ETag {
     pub(crate) fn from_file(file: &std::fs::File) -> Result<Self, io::Error> {

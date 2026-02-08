@@ -146,6 +146,7 @@ mod range;
 mod serving;
 
 pub use crate::body::Body;
+pub use crate::etag::ETag;
 pub use crate::file::FileEntity;
 pub use crate::served_dir::{ServedDir, ServedDirBuilder};
 pub use crate::serving::serve;

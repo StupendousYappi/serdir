@@ -67,7 +67,7 @@ pub struct FileEntity<D: 'static + Send + Buf + From<Vec<u8>> + From<&'static [u
     mtime: SystemTime,
     f: Arc<std::fs::File>,
     headers: HeaderMap,
-    etag: ETag,
+    etag: Option<ETag>,
     phantom: std::marker::PhantomData<D>,
 }
 
@@ -117,9 +117,15 @@ where
             mtime: file_info.mtime(),
             headers,
             f: file,
-            etag,
+            etag: Some(etag),
             phantom: std::marker::PhantomData,
         })
+    }
+
+    /// Override the ETag for this entity.
+    pub fn with_etag(mut self, etag: Option<ETag>) -> Self {
+        self.etag = etag;
+        self
     }
 
     /// Returns the value of the response header with the given name, if it exists.
@@ -168,7 +174,7 @@ where
     }
 
     fn etag(&self) -> Option<HeaderValue> {
-        Some(self.etag.into())
+        self.etag.map(|e| e.into())
     }
 
     fn last_modified(&self) -> Option<SystemTime> {
@@ -187,6 +193,7 @@ static ETAG_CACHE: Cache<FileInfo, ETag, BuildHasher> =
 mod tests {
     use super::Entity;
     use super::FileEntity;
+    use crate::ETag;
     use bytes::Bytes;
     use futures_core::Stream;
     use futures_util::stream::TryStreamExt;
@@ -322,6 +329,28 @@ mod tests {
             // Test that
             let e = to_bytes(crf.get_range(0..4)).await.unwrap_err();
             assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_with_etag() {
+        tokio::spawn(async move {
+            let tmp = tempfile::tempdir().unwrap();
+            let p = tmp.path().join("f");
+            let mut f = File::create(&p).unwrap();
+            f.write_all(b"asdf").unwrap();
+            let crf = CRF::new(&p, HeaderMap::new()).unwrap();
+            assert!(crf.etag().is_some());
+
+            let crf = crf.with_etag(None);
+            assert!(crf.etag().is_none());
+
+            let f_read = File::open(&p).unwrap();
+            let new_etag = ETag::from_file(&f_read).unwrap();
+            let crf = crf.with_etag(Some(new_etag));
+            assert_eq!(crf.etag(), Some(new_etag.into()));
         })
         .await
         .unwrap();
