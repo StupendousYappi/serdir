@@ -50,18 +50,22 @@ static CHUNK_SIZE: u64 = 65_536;
 /// # Example
 ///
 /// ```
-/// # use http::{Request, Response};
-/// # use serve_files::{FileEntity, Body};
-/// # use std::fs::File;
-/// # use std::io::Write;
-/// # async fn doc() -> Result<(), Box<dyn std::error::Error>> {
-/// let path = "/tmp/test.txt";
-/// let mut f = File::create(path)?;
-/// f.write_all(b"Hello, world!")?;
+/// # use http::{Request, StatusCode};
+/// # use http::header::{HeaderMap, CONTENT_TYPE};
+/// # use serve_files::{Body, FileEntity};
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let tmp = tempfile::NamedTempFile::new()?;
+/// std::fs::write(tmp.path(), b"Hello, world!")?;
 ///
-/// let entity = FileEntity::new(path, http::HeaderMap::new())?;
+/// let mut headers = HeaderMap::new();
+/// headers.insert(CONTENT_TYPE, "text/plain".parse()?);
+///
+/// let entity = FileEntity::new(tmp.path(), headers)?;
 /// let request = Request::get("/").body(())?;
-/// let response: Response<Body> = entity.serve_request(&request);
+/// let response: http::Response<Body> = entity.serve_request(&request);
+///
+/// assert_eq!(response.status(), StatusCode::OK);
+/// assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), "text/plain");
 /// # Ok(())
 /// # }
 /// ```
