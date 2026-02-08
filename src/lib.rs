@@ -137,6 +137,8 @@ mod served_dir;
 #[cfg(any(feature = "tower", feature = "hyper"))]
 /// Hyper and Tower service integrations.
 mod integration;
+#[cfg(feature = "tower")]
+pub use integration::{ServedDirLayer, ServedDirService};
 
 mod compression;
 mod etag;
