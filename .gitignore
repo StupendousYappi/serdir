@@ -3,3 +3,4 @@ Cargo.lock
 *.trace
 test-content/*
 notes.md
+*.diff
