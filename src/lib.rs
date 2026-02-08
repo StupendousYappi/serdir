@@ -146,9 +146,9 @@ mod range;
 mod serving;
 
 pub use crate::body::Body;
-pub use crate::etag::ETag;
+pub use crate::etag::{ETag, FileHasher};
 pub use crate::file::FileEntity;
-pub use crate::served_dir::{FileHasher, ServedDir, ServedDirBuilder};
+pub use crate::served_dir::{ServedDir, ServedDirBuilder};
 
 #[cfg(feature = "runtime-compression")]
 mod brotli_cache;

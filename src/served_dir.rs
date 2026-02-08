@@ -17,12 +17,10 @@ use crate::integration::ServedDirHyperService;
 #[cfg(feature = "tower")]
 use crate::integration::{ServedDirLayer, ServedDirService};
 
-use crate::{Body, ETag, FileEntity, ServeFilesError};
+use crate::etag::EtagCache;
+use crate::{Body, ETag, FileEntity, FileHasher, FileInfo, ServeFilesError};
 use bytes::Bytes;
 use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
-
-/// Function pointer type used to calculate ETag hash values from opened files.
-pub type FileHasher = fn(&File) -> Result<Option<u64>, std::io::Error>;
 
 /// Returns `FileEntity` values for file paths within a directory.
 ///
@@ -54,6 +52,7 @@ pub struct ServedDir {
     common_headers: HeaderMap,
     append_index_html: bool,
     not_found_path: Option<PathBuf>,
+    etag_cache: EtagCache,
 }
 
 impl Debug for ServedDir {
@@ -216,7 +215,7 @@ impl ServedDir {
         if !self.compression_strategy.is_none() {
             headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
         }
-        let etag = self.calculate_etag(matched_file.file.as_ref())?;
+        let etag = self.calculate_etag(matched_file.file_info, matched_file.file.as_ref())?;
         FileEntity::new_with_metadata(matched_file.file, matched_file.file_info, headers, etag)
     }
 
@@ -228,8 +227,13 @@ impl ServedDir {
         self.compression_strategy.find_file(path.into(), preferred)
     }
 
-    fn calculate_etag(&self, file: &File) -> Result<Option<ETag>, std::io::Error> {
-        (self.file_hasher)(file).map(|hash| hash.map(Into::into))
+    fn calculate_etag(
+        &self,
+        file_info: FileInfo,
+        file: &File,
+    ) -> Result<Option<ETag>, std::io::Error> {
+        self.etag_cache
+            .get_or_insert(file_info, file, self.file_hasher)
     }
 
     fn get_content_type(&self, extension: &str) -> HeaderValue {
@@ -519,6 +523,7 @@ impl ServedDirBuilder {
             common_headers: self.common_headers,
             append_index_html: self.append_index_html,
             not_found_path: self.not_found_path,
+            etag_cache: EtagCache::new(),
         }
     }
 }
@@ -1020,5 +1025,29 @@ mod tests {
         } else {
             panic!("expected NotFound(Some(_)), got {:?}", err);
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_etag_cache_is_used() {
+        let context = TestContext::new();
+        context.write_file("test.txt", "content");
+
+        static CALL_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+        fn counting_hasher(_: &File) -> Result<Option<u64>, std::io::Error> {
+            CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(0x1234))
+        }
+
+        let served_dir = context.builder.file_hasher(counting_hasher).build();
+        let hdrs = HeaderMap::new();
+
+        // First call should trigger hasher
+        served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert_eq!(CALL_COUNT.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // Second call should use cached value
+        served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert_eq!(CALL_COUNT.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

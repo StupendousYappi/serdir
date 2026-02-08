@@ -6,24 +6,44 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use crate::FileInfo;
+use fixed_cache::Cache;
 use http::header::{self, HeaderMap, HeaderValue};
+use std::fs::File;
 use std::io;
 
-use crate::FileInfo;
-use fixed_cache::{static_cache, Cache};
+const CACHE_SIZE: usize = 512;
+
+/// The build hasher type used for the ETag cache.
+pub(crate) type BuildHasher = std::hash::BuildHasherDefault<rapidhash::fast::RapidHasher<'static>>;
 
 /// An ETag (entity tag) used for cache validation.
 #[derive(Hash, Eq, PartialEq, Clone, Copy, Debug)]
 pub struct ETag(u64);
 
-impl ETag {
-    pub(crate) fn from_file(file: &std::fs::File) -> Result<Self, io::Error> {
-        tokio::task::block_in_place(move || {
-            let hash = rapidhash::v3::rapidhash_v3_file(file)?;
-            Ok(ETag(hash))
-        })
+/// Function pointer type used to calculate ETag hash values from opened files.
+pub type FileHasher = fn(&File) -> Result<Option<u64>, io::Error>;
+
+/// A cache for ETag values, indexed by file metadata.
+pub(crate) struct EtagCache(Cache<FileInfo, Option<ETag>, BuildHasher>);
+
+impl EtagCache {
+    pub(crate) fn new() -> Self {
+        Self(Cache::new(CACHE_SIZE, BuildHasher::default()))
     }
 
+    pub(crate) fn get_or_insert(
+        &self,
+        info: FileInfo,
+        file: &File,
+        hasher: FileHasher,
+    ) -> Result<Option<ETag>, io::Error> {
+        self.0
+            .get_or_try_insert_with(info, |_info| hasher(file).map(|hash| hash.map(ETag::from)))
+    }
+}
+
+impl ETag {
     fn to_bytes(self) -> [u8; 16] {
         let mut buf = [0u8; 16];
         let hex_chars = b"0123456789abcdef";
@@ -33,12 +53,6 @@ impl ETag {
             *slot = hex_chars[nibble as usize];
         }
         buf
-    }
-
-    /// Returns an etag for the given file, using a cached value based on the file metadata if
-    /// possible.
-    pub(crate) fn for_file(file_info: FileInfo, file: &std::fs::File) -> Result<ETag, io::Error> {
-        ETAG_CACHE.get_or_try_insert_with(file_info, |_info| ETag::from_file(file))
     }
 }
 
@@ -58,13 +72,6 @@ impl From<u64> for ETag {
         ETag(hash)
     }
 }
-
-type BuildHasher = std::hash::BuildHasherDefault<rapidhash::fast::RapidHasher<'static>>;
-
-const CACHE_SIZE: usize = 1024;
-
-static ETAG_CACHE: Cache<FileInfo, ETag, BuildHasher> =
-    static_cache!(FileInfo, ETag, CACHE_SIZE, BuildHasher::new());
 
 /// Performs weak validation of two etags (such as `B"W/\"foo\""`` or `B"\"bar\""``)
 /// as in [RFC 7232 section 2.3.2](https://datatracker.ietf.org/doc/html/rfc7232#section-2.3.2).

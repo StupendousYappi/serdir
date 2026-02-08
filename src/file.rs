@@ -9,12 +9,12 @@
 
 use crate::platform::FileExt;
 use crate::served_dir::default_hasher;
-use crate::{Body, FileInfo};
+use crate::FileInfo;
 use bytes::Buf;
 use futures_core::Stream;
 use futures_util::stream;
 use http::header::{HeaderMap, HeaderValue};
-use http::{HeaderName, Request, Response, StatusCode};
+use http::HeaderName;
 use std::fs::File;
 use std::ops::Range;
 use std::path::Path;
