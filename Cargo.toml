@@ -87,10 +87,6 @@ harness = false
 name = "serve_dir"
 required-features = ["runtime-compression", "tower"]
 
-[[example]]
-name = "serve_file"
-required-features = ["hyper"]
-
 [[bench]]
 name = "hashing"
 harness = false

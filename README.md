@@ -27,10 +27,6 @@ This crate is derived from [http-serve](https://github.com/scottlamb/http-serve/
 
 Examples:
 
-*   Serve a single file:
-    ```
-    $ cargo run --example serve_file /usr/share/dict/words
-    ```
 *   Serve a directory tree:
     ```
     $ cargo run --example serve_dir .
