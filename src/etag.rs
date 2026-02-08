@@ -9,6 +9,9 @@
 use http::header::{self, HeaderMap, HeaderValue};
 use std::io;
 
+use crate::FileInfo;
+use fixed_cache::{static_cache, Cache};
+
 /// An ETag (entity tag) used for cache validation.
 #[derive(Hash, Eq, PartialEq, Clone, Copy, Debug)]
 pub struct ETag(u64);
@@ -42,6 +45,20 @@ impl From<ETag> for HeaderValue {
         buf[1..17].copy_from_slice(&bytes);
         HeaderValue::from_bytes(&buf).expect("failed to serialize etag")
     }
+}
+
+type BuildHasher = std::hash::BuildHasherDefault<rapidhash::fast::RapidHasher<'static>>;
+
+const CACHE_SIZE: usize = 1024;
+
+static ETAG_CACHE: Cache<FileInfo, ETag, BuildHasher> =
+    static_cache!(FileInfo, ETag, CACHE_SIZE, BuildHasher::new());
+
+pub(crate) fn get_cached_etag(
+    file_info: FileInfo,
+    file: &std::fs::File,
+) -> Result<ETag, io::Error> {
+    ETAG_CACHE.get_or_try_insert_with(file_info, |_info| ETag::from_file(file))
 }
 
 /// Performs weak validation of two etags (such as `B"W/\"foo\""`` or `B"\"bar\""``)

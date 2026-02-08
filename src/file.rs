@@ -10,7 +10,6 @@
 use crate::platform::FileExt;
 use crate::FileInfo;
 use bytes::Buf;
-use fixed_cache::{static_cache, Cache};
 use futures_core::Stream;
 use futures_util::stream;
 use http::header::{HeaderMap, HeaderValue};
@@ -22,7 +21,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use crate::etag::ETag;
+use crate::etag::{self, ETag};
 use crate::{Entity, ServeFilesError};
 
 // This stream breaks apart the file into chunks of at most CHUNK_SIZE. This size is
@@ -87,8 +86,9 @@ where
     pub fn new(path: impl AsRef<Path>, headers: HeaderMap) -> Result<Self, ServeFilesError> {
         let path = path.as_ref();
         let file = File::open(path)?;
-        let file_info = crate::FileInfo::open_file(path, &file)?;
-        FileEntity::new_with_metadata(Arc::new(file), file_info, headers)
+        let file_info = FileInfo::open_file(path, &file)?;
+        let etag = etag::get_cached_etag(file_info, &file)?;
+        FileEntity::new_with_metadata(Arc::new(file), file_info, headers, Some(etag))
     }
 
     /// Creates a new FileEntity, with presupplied metadata and a pre-opened file.
@@ -105,19 +105,18 @@ where
     /// this.
     pub(crate) fn new_with_metadata(
         file: Arc<std::fs::File>,
-        file_info: crate::FileInfo,
+        file_info: FileInfo,
         headers: HeaderMap,
+        etag: Option<ETag>,
     ) -> Result<Self, ServeFilesError> {
         debug_assert!(file.metadata().unwrap().is_file());
-        let etag: ETag =
-            ETAG_CACHE.get_or_try_insert_with(file_info, |_info| ETag::from_file(&file))?;
 
         Ok(FileEntity {
             len: file_info.len(),
             mtime: file_info.mtime(),
             headers,
             f: file,
-            etag: Some(etag),
+            etag,
             phantom: std::marker::PhantomData,
         })
     }
@@ -181,13 +180,6 @@ where
         Some(self.mtime)
     }
 }
-
-type BuildHasher = std::hash::BuildHasherDefault<rapidhash::fast::RapidHasher<'static>>;
-
-const CACHE_SIZE: usize = 1024;
-
-static ETAG_CACHE: Cache<FileInfo, ETag, BuildHasher> =
-    static_cache!(FileInfo, ETag, CACHE_SIZE, BuildHasher::new());
 
 #[cfg(test)]
 mod tests {
