@@ -19,7 +19,6 @@ use crate::integration::{ServedDirLayer, ServedDirService};
 
 use crate::etag::EtagCache;
 use crate::{Body, ETag, FileEntity, FileHasher, FileInfo, ServeFilesError};
-use bytes::Bytes;
 use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 
 /// Returns `FileEntity` values for file paths within a directory.
@@ -134,7 +133,7 @@ impl ServedDir {
         &self,
         path: &str,
         req_hdrs: &HeaderMap,
-    ) -> Result<FileEntity<Bytes>, ServeFilesError> {
+    ) -> Result<FileEntity, ServeFilesError> {
         let path = match self.strip_prefix.as_deref() {
             Some(prefix) if path == prefix => ".",
             Some(prefix) => path
@@ -200,10 +199,7 @@ impl ServedDir {
             .expect("status response should be valid")
     }
 
-    fn create_entity(
-        &self,
-        matched_file: MatchedFile,
-    ) -> Result<FileEntity<Bytes>, ServeFilesError> {
+    fn create_entity(&self, matched_file: MatchedFile) -> Result<FileEntity, ServeFilesError> {
         let content_type: HeaderValue = self.get_content_type(&matched_file.extension);
         let mut headers = self.common_headers.clone();
         headers.insert(http::header::CONTENT_TYPE, content_type);

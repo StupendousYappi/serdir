@@ -84,7 +84,7 @@ pub enum ServeFilesError {
     /// The path is a directory when it was expected to be a file
     IsDirectory(PathBuf),
     /// The requested file was not found.
-    NotFound(Option<FileEntity<bytes::Bytes>>),
+    NotFound(Option<FileEntity>),
     /// Error compressing file with Brotli.
     CompressionError(String, IOError),
     /// The input path is invalid (e.g., contains NUL bytes or ".." segments).

@@ -10,7 +10,6 @@
 use crate::platform::FileExt;
 use crate::served_dir::default_hasher;
 use crate::FileInfo;
-use bytes::Buf;
 use futures_core::Stream;
 use futures_util::stream;
 use http::header::{HeaderMap, HeaderValue};
@@ -49,19 +48,15 @@ static CHUNK_SIZE: u64 = 65_536;
 ///
 /// TODO: add example code once we have a `serve_request` method.
 #[derive(Debug, Clone)]
-pub struct FileEntity<D: 'static + Send + Buf + From<Vec<u8>> + From<&'static [u8]>> {
+pub struct FileEntity {
     len: u64,
     mtime: SystemTime,
     f: Arc<std::fs::File>,
     headers: HeaderMap,
     etag: Option<ETag>,
-    phantom: std::marker::PhantomData<D>,
 }
 
-impl<D> FileEntity<D>
-where
-    D: 'static + Send + Sync + Buf + From<Vec<u8>> + From<&'static [u8]>,
-{
+impl FileEntity {
     /// Creates a new FileEntity that serves the file at the given path.
     ///
     /// The `headers` value specifies HTTP response headers that should be included whenever serving
@@ -107,7 +102,6 @@ where
             headers,
             f: file,
             etag,
-            phantom: std::marker::PhantomData,
         })
     }
 
@@ -117,11 +111,8 @@ where
     }
 }
 
-impl<D> Entity for FileEntity<D>
-where
-    D: 'static + Send + Sync + Buf + From<Vec<u8>> + From<&'static [u8]>,
-{
-    type Data = D;
+impl Entity for FileEntity {
+    type Data = bytes::Bytes;
     type Error = crate::IOError;
 
     fn len(&self) -> u64 {
@@ -179,7 +170,7 @@ mod tests {
     use std::time::Duration;
     use std::time::SystemTime;
 
-    type CRF = FileEntity<Bytes>;
+    type CRF = FileEntity;
 
     async fn to_bytes(
         s: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
