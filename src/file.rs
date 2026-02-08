@@ -34,14 +34,18 @@ static CHUNK_SIZE: u64 = 65_536;
 ///
 /// Expects to be served from a tokio threadpool.
 ///
-/// A [FileEntity] references its file via an open [File] handle, not a [Path], so it will be
+/// Most serve-files users will not need to use `FileEntity` directly, and will instead use
+/// higher-level APIs like [`ServedDir::get_response`]. However, `FileEntity` is available for
+/// advanced use cases, like manually modifying the etag or response headers before serving.
+///
+/// A [`FileEntity`] references its file via an open [`File`] handle, not a [`Path`], so it will be
 /// resilient against attempts to delete or rename its file as long as it exists. Reading data
-/// from a [FileEntity] does not affects its file position, so it is [Sync] and can, if needed,
+/// from a [`FileEntity`] does not affects its file position, so it is [`Sync`] and can, if needed,
 /// be used to serve many requests at once (though this crate's own request handling code doesn't
 /// attempt that).
 ///
 /// However, file metadata such as the length, last modified time and ETag are cached when the
-/// [FileEntity] is created, so if the underlying file is written to after the [FileEntity] is
+/// [`FileEntity`] is created, so if the underlying file is written to after the [`FileEntity`] is
 /// created, it's possible for it to return a corrupt response, with an ETag or last modified time
 /// that doesn't match the served contents. As such, while it is safe to replace existing static
 /// content with new files at runtime, users of this crate should do that by moving files or
@@ -73,9 +77,12 @@ static CHUNK_SIZE: u64 = 65_536;
 pub struct FileEntity {
     len: u64,
     mtime: SystemTime,
-    f: Arc<std::fs::File>,
-    headers: HeaderMap,
-    etag: Option<ETag>,
+    /// An open file handle to the file being served.
+    pub f: Arc<std::fs::File>,
+    /// The HTTP response headers to include when serving this file
+    pub headers: HeaderMap,
+    /// THe ETag for the file, if any
+    pub etag: Option<ETag>,
 }
 
 impl FileEntity {
@@ -86,7 +93,7 @@ impl FileEntity {
     ///
     /// This function performs blocking disk IO- calls to it from an async context should be wrapped in a
     /// call to [`tokio::task::block_in_place`] to avoid blocking the tokio reactor thread. Attempts
-    /// to read file data via [Entity::get_range] will also block, and should also be wrapped
+    /// to read file data via [`FileEntity::serve_request`] will also block, and should also be wrapped
     /// in [`tokio::task::block_in_place`] if called from an async context.
     pub fn new(path: impl AsRef<Path>, headers: HeaderMap) -> Result<Self, ServeFilesError> {
         let path = path.as_ref();
