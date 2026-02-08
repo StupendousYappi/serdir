@@ -200,7 +200,7 @@ impl BrotliCache {
 
         let brotli_metadata = brotli_file.metadata()?;
 
-        // The dynamic brotli tempfile literally doesn't have a filename, so we can't
+        // The cached brotli tempfile literally doesn't have a filename, so we can't
         // calculate a path hash for it. Instead, we reverse the bytes of the original
         // file's path hash to create a pseudo path hash that is deterministic in the same
         // ways as the original path hash, and just as unlikely to collide with any other

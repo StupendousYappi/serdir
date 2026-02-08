@@ -180,7 +180,7 @@ pub(crate) enum CompressionStrategy {
     /// Compresses supported file types at runtime using Brotli, and caches the
     /// compressed versions for reuse.
     #[cfg(feature = "runtime-compression")]
-    Dynamic(Arc<BrotliCache>),
+    Cached(Arc<BrotliCache>),
 
     /// Do not use compression, only return the original file, if available.
     None,
@@ -229,7 +229,7 @@ impl CompressionStrategy {
                 }
             }
             #[cfg(feature = "runtime-compression")]
-            CompressionStrategy::Dynamic(cache) => {
+            CompressionStrategy::Cached(cache) => {
                 if supported.brotli() {
                     let matched = cache.get(&path)?;
                     return Ok(matched);

@@ -39,7 +39,7 @@ use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 /// - Setting a file whose content will be used for 404 (file not found) responses
 /// - Response compression settings, including support for using pre-created compressed
 ///   variants of files (i.e. "index.html.gz" can be served instead of "index.html"),
-///   and for performing runtime compression of files using Brotli and caching the
+///   and for performing cached compression of files using Brotli and caching the
 ///   compressed output for reuse
 pub struct ServedDir {
     dirpath: PathBuf,
@@ -60,7 +60,7 @@ impl Debug for ServedDir {
             CompressionStrategy::Static(_) => "static",
             CompressionStrategy::None => "none",
             #[cfg(feature = "runtime-compression")]
-            CompressionStrategy::Dynamic(_) => "dynamic",
+            CompressionStrategy::Cached(_) => "cached",
         };
 
         f.debug_struct("ServedDir")
@@ -114,7 +114,7 @@ impl ServedDir {
     /// found, the original file will be used (even if the `Accept-Encoding` header
     /// explicitly rejects the `identity` encoding).
     ///
-    /// If dynamic compression is configured, this method will perform Brotli compression of matched
+    /// If cached compression is configured, this method will perform Brotli compression of matched
     /// files on the fly if the client supports Brotli compression, and will cache the compressed
     /// versions for reuse (Brotli is the only compression algorithm for which runtime compression
     /// is supported). The generated Brotli contents will be cached in unlinked tempfiles that have
@@ -123,7 +123,7 @@ impl ServedDir {
     /// even if Rust panics in abort mode). Disk usage can be controlled by limiting the maximum
     /// size of files that should be compressed, and the maximum number of compressed files to
     /// cache, using the [BrotliCacheBuilder] type and the
-    /// [ServedDirBuilder::dynamic_compression_with_cache] method. The Brotli compression level can
+    /// [ServedDirBuilder::cached_compression_with_cache] method. The Brotli compression level can
     /// also be configured, allowing you to choose your own balance of compression speed and
     /// compressed size.
     ///
@@ -413,7 +413,7 @@ impl ServedDirBuilder {
         self
     }
 
-    /// Enables dynamic compression using Brotli.
+    /// Enables cached compression using Brotli.
     ///
     /// This will compress files on the fly and cache the results.
     ///
@@ -422,20 +422,20 @@ impl ServedDirBuilder {
     /// * `cache_size` - The number of files to cache. Must be a power of two and at least 4.
     /// * `compression_level` - The compression level to use. 0 is fastest, 11 is best compression.
     #[cfg(feature = "runtime-compression")]
-    pub fn dynamic_compression(mut self, cache_size: u16, compression_level: u8) -> Self {
+    pub fn cached_compression(mut self, cache_size: u16, compression_level: u8) -> Self {
         let brotli_cache = BrotliCache::builder()
             .max_size(cache_size)
             .compression_level(compression_level)
             .build();
-        let strategy = CompressionStrategy::Dynamic(Arc::new(brotli_cache));
+        let strategy = CompressionStrategy::Cached(Arc::new(brotli_cache));
         self.compression_strategy = strategy;
         self
     }
 
-    /// Enables dynamic compression using a pre-built Brotli cache.
+    /// Enables cached compression using a pre-built Brotli cache.
     #[cfg(feature = "runtime-compression")]
-    pub fn dynamic_compression_with_cache(mut self, cache: BrotliCache) -> Self {
-        let strategy = CompressionStrategy::Dynamic(Arc::new(cache));
+    pub fn cached_compression_with_cache(mut self, cache: BrotliCache) -> Self {
+        let strategy = CompressionStrategy::Cached(Arc::new(cache));
         self.compression_strategy = strategy;
         self
     }
