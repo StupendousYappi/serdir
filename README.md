@@ -1,7 +1,5 @@
 # serve-files
 
-[![crates.io](https://img.shields.io/crates/v/serve-files.svg)](https://crates.io/crates/serve-files)
-[![Released API docs](https://docs.rs/serve-files/badge.svg)](https://docs.rs/serve-files/)
 [![CI](https://github.com/StupendousYappi/serve-files/workflows/CI/badge.svg)](https://github.com/StupendousYappi/serve-files/actions?query=workflow%3ACI)
 
 Rust helpers for serving HTTP GET and HEAD responses with
