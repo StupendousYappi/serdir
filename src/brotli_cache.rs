@@ -12,9 +12,9 @@ use std::{
 use brotli::enc::backward_references::BrotliEncoderMode;
 use brotli::enc::BrotliEncoderParams;
 // use bytes::Bytes; removed
-use fixed_cache::Cache;
 // use log::{debug, error, info, warn}; removed
 // use http::HeaderValue; removed
+use sieve_cache::ShardedSieveCache;
 use std::io::Write;
 
 use crate::compression::{ContentEncoding, MatchedFile};
@@ -37,7 +37,7 @@ static DEFAULT_TEXT_TYPES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 /// original file if it's not.
 pub(crate) struct BrotliCache {
     tempdir: PathBuf,
-    cache: Cache<CacheKey, MatchedFile>,
+    cache: ShardedSieveCache<CacheKey, MatchedFile>,
     params: BrotliEncoderParams,
     supported_extensions: HashSet<&'static str>,
     max_file_size: u64,
@@ -46,7 +46,8 @@ pub(crate) struct BrotliCache {
 impl From<crate::compression::CachedCompression> for BrotliCache {
     fn from(value: crate::compression::CachedCompression) -> Self {
         let tempdir = env::temp_dir();
-        let cache = Cache::new(value.cache_size as usize, Default::default());
+        let cache = ShardedSieveCache::new(value.cache_size as usize)
+            .expect("brotli cache capacity cannot be zero");
         let params = BrotliEncoderParams {
             quality: i32::from(value.compression_level),
             ..Default::default()
@@ -120,7 +121,7 @@ impl BrotliCache {
         let brotli_file = match self.compress(path, params) {
             Ok(v) => v,
             Err(e) if e.kind() == ErrorKind::StorageFull => {
-                self.cache.clear_slow();
+                self.cache.clear();
                 return Self::wrap_orig(path, extension);
             }
             Err(e) => {
@@ -232,7 +233,7 @@ mod tests {
             cache.params.quality,
             i32::from(crate::compression::BrotliLevel::L5)
         );
-        assert_eq!(cache.cache.capacity(), 1024);
+        assert_eq!(cache.cache.capacity(), 128);
     }
 
     #[test]

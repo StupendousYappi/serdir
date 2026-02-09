@@ -406,12 +406,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "equivalent"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
-
-[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -426,16 +420,6 @@ name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
-
-[[package]]
-name = "fixed-cache"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0aaafa7294e9617eb29e5c684a3af33324ef512a1bf596af2d1938a03798da29"
-dependencies = [
- "equivalent",
- "rapidhash",
-]
 
 [[package]]
 name = "flate2"
@@ -1266,7 +1250,6 @@ dependencies = [
  "bytes",
  "criterion",
  "env_logger",
- "fixed-cache",
  "futures-core",
  "futures-util",
  "htmlescape",
@@ -1287,6 +1270,7 @@ dependencies = [
  "rand",
  "rapidhash",
  "reqwest",
+ "sieve-cache",
  "socket2 0.5.10",
  "sync_wrapper",
  "tempfile",
@@ -1294,6 +1278,12 @@ dependencies = [
  "tower 0.4.13",
  "winapi",
 ]
+
+[[package]]
+name = "sieve-cache"
+version = "1.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "879e304c6ec8e95de2bc5425b546df072ee5812d0b2b8497b73f0b68b31ddbbb"
 
 [[package]]
 name = "simd-adler32"

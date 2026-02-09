@@ -100,7 +100,7 @@ impl StaticCompression {
     }
 }
 
-const DEFAULT_CACHE_SIZE: u16 = 1024;
+const DEFAULT_CACHE_SIZE: u16 = 128;
 const DEFAULT_COMPRESSION_LEVEL: BrotliLevel = BrotliLevel::L5;
 const DEFAULT_MAX_FILE_SIZE: u64 = 1024 * 1024;
 
