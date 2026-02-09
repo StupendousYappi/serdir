@@ -121,7 +121,7 @@ impl BrotliCache {
         let brotli_file = match self.compress(path, params) {
             Ok(v) => v,
             Err(e) if e.kind() == ErrorKind::StorageFull => {
-                self.cache.clear();
+                self.prune_cache();
                 return Self::wrap_orig(path, extension);
             }
             Err(e) => {
@@ -158,6 +158,21 @@ impl BrotliCache {
         };
         self.cache.insert(file_info, matched.clone());
         Ok(matched)
+    }
+
+    /// Evicts the largest half of cached Brotli files, allowing that disk space to be reclaimed.
+    fn prune_cache(&self) {
+        let mut entries = self.cache.entries();
+        entries.sort_unstable_by_key(|(_, matched)| matched.file_info.len());
+
+        let keep_count = entries.len() / 2;
+        let keep_keys: HashSet<CacheKey> = entries
+            .into_iter()
+            .take(keep_count)
+            .map(|(key, _)| key)
+            .collect();
+
+        self.cache.retain(|key, _| keep_keys.contains(key));
     }
 
     /// Returns a FileEntity for the uncompressed file
@@ -419,5 +434,79 @@ mod tests {
             matched_small.content_encoding,
             ContentEncoding::Brotli
         ));
+    }
+
+    #[test]
+    fn test_prune_cache_keeps_smallest_half() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BrotliCache::from(crate::compression::CachedCompression::new().max_size(16));
+
+        for (name, size) in [
+            ("a.txt", 64usize),
+            ("b.txt", 256usize),
+            ("c.txt", 1024usize),
+            ("d.txt", 4096usize),
+        ] {
+            let path = dir.path().join(name);
+            let mut f = File::create(&path).unwrap();
+            f.write_all(&vec![b'x'; size]).unwrap();
+            let _ = cache.get(&path).unwrap();
+        }
+
+        let mut before = cache.cache.entries();
+        before.sort_unstable_by_key(|(_, matched)| matched.file_info.len());
+        let expected_sizes: Vec<u64> = before
+            .iter()
+            .take(before.len() / 2)
+            .map(|(_, matched)| matched.file_info.len())
+            .collect();
+        let max_expected_size = *expected_sizes.last().unwrap();
+
+        cache.prune_cache();
+
+        let remaining = cache.cache.entries();
+        assert_eq!(remaining.len(), expected_sizes.len());
+        assert!(remaining
+            .iter()
+            .all(|(_, matched)| matched.file_info.len() <= max_expected_size));
+    }
+
+    #[test]
+    fn test_prune_cache_odd_count_uses_floor() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BrotliCache::from(crate::compression::CachedCompression::new().max_size(16));
+
+        for (name, size) in [
+            ("a.txt", 64usize),
+            ("b.txt", 128usize),
+            ("c.txt", 256usize),
+            ("d.txt", 512usize),
+            ("e.txt", 1024usize),
+        ] {
+            let path = dir.path().join(name);
+            let mut f = File::create(&path).unwrap();
+            f.write_all(&vec![b'y'; size]).unwrap();
+            let _ = cache.get(&path).unwrap();
+        }
+
+        let mut before = cache.cache.entries();
+        before.sort_unstable_by_key(|(_, matched)| matched.file_info.len());
+        let expected: HashSet<CacheKey> = before
+            .iter()
+            .take(before.len() / 2)
+            .map(|(key, _)| *key)
+            .collect();
+        assert_eq!(expected.len(), 2);
+
+        cache.prune_cache();
+
+        let remaining = cache.cache.entries();
+        let remaining_keys: HashSet<CacheKey> = remaining.into_iter().map(|(key, _)| key).collect();
+        assert!(remaining_keys == expected);
+        assert_eq!(remaining_keys.len(), 2);
     }
 }
