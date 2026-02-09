@@ -32,6 +32,18 @@ Examples:
     $ cargo run --example hyper --features hyper .
     ```
 
+## Optional features
+
+This project defines 3 optional build features that can be enabled at compile time:
+
+- `runtime-compression` - enables the cached compression strategy, i.e. runtime
+compression of served files using Brotli
+- `tower` - enables integration with Tower-based web frameworks like Axum and
+Poem by providing APIs to convert a `ServedDir` into a `tower::Service` or
+`tower::Layer`
+- `hyper` - enables direct integration with the `hyper` web server by providing
+APIs to convert a `ServedDir` into a `hyper::Service`
+
 ## Authors
 
 See the [AUTHORS](AUTHORS) file for details.
