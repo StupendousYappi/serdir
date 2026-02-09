@@ -182,9 +182,11 @@ impl ServedDir {
                 Ok(Self::make_status_response(StatusCode::NOT_FOUND))
             }
             Err(ServeFilesError::InvalidPath(_)) => {
+                // TODO: log the error
                 Ok(Self::make_status_response(StatusCode::BAD_REQUEST))
             }
             Err(_) => Ok(Self::make_status_response(
+                // TODO: log the error
                 StatusCode::INTERNAL_SERVER_ERROR,
             )),
         }
