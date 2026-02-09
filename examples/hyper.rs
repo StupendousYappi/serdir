@@ -14,28 +14,6 @@ use serve_files::ServedDir;
 use std::net::{Ipv4Addr, SocketAddr};
 use tokio::net::TcpListener;
 
-#[derive(Clone, Copy, Debug)]
-enum CompressionMode {
-    Cached,
-    Static,
-    None,
-}
-
-impl std::str::FromStr for CompressionMode {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "cached" => Ok(Self::Cached),
-            "static" => Ok(Self::Static),
-            "none" => Ok(Self::None),
-            _ => Err(format!(
-                "invalid value '{value}', expected one of: cached, static, none"
-            )),
-        }
-    }
-}
-
 #[derive(FromArgs, Debug)]
 /// Serves a directory over HTTP using ServedDir::into_hyper_service.
 struct Config {
