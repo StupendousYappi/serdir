@@ -14,13 +14,6 @@ use serve_files::ServedDir;
 use std::net::{Ipv4Addr, SocketAddr};
 use tokio::net::TcpListener;
 
-#[derive(Clone, Copy, Debug)]
-enum CompressionMode {
-    Cached,
-    Static,
-    None,
-}
-
 impl std::str::FromStr for CompressionMode {
     type Err = String;
 
