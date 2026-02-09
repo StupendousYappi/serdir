@@ -4,3 +4,8 @@ name = "serve-files"
 
 [setup]
 script = ""
+
+[[actions]]
+name = "Run tests"
+icon = "tool"
+command = "cargo test-all"
