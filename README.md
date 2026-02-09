@@ -27,9 +27,9 @@ This crate is derived from [http-serve](https://github.com/scottlamb/http-serve/
 
 Examples:
 
-*   Serve a directory tree:
+*   Serve a directory tree using hyper:
     ```
-    $ cargo run --example serve_dir .
+    $ cargo run --example hyper --features hyper .
     ```
 
 ## Authors

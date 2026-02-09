@@ -98,7 +98,7 @@ required-features = ["tower", "runtime-compression"]
 
 [[example]]
 name = "hyper"
-required-features = ["hyper", "runtime-compression"]
+required-features = ["hyper"]
 
 [[bench]]
 name = "hashing"

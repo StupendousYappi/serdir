@@ -43,10 +43,6 @@ struct Config {
     #[argh(positional)]
     directory: String,
 
-    /// compression strategy: cached, static, or none
-    #[argh(option, default = "CompressionMode::None")]
-    compression: CompressionMode,
-
     /// path (relative to served directory) to use as 404 body
     #[argh(option)]
     not_found_path: Option<String>,
@@ -66,24 +62,6 @@ async fn run() -> Result<(), String> {
     let mut builder = ServedDir::builder(&config.directory)
         .map_err(|e| format!("failed to create ServedDir builder: {e}"))?
         .append_index_html(true);
-
-    builder = match config.compression {
-        CompressionMode::Static => builder.static_compression(true, true, true),
-        CompressionMode::None => builder.no_compression(),
-        CompressionMode::Cached => {
-            #[cfg(feature = "runtime-compression")]
-            {
-                builder.cached_compression(serve_files::compression::BrotliLevel::L5)
-            }
-            #[cfg(not(feature = "runtime-compression"))]
-            {
-                return Err(
-                    "compression mode 'cached' requires the 'runtime-compression' feature"
-                        .to_string(),
-                );
-            }
-        }
-    };
 
     if let Some(path) = config.not_found_path {
         builder = builder
