@@ -7,15 +7,12 @@
 // except according to those terms.
 
 use crate::FileInfo;
-use fixed_cache::Cache;
 use http::header::{self, HeaderMap, HeaderValue};
+use sieve_cache::ShardedSieveCache;
 use std::fs::File;
 use std::io;
 
-const CACHE_SIZE: usize = 512;
-
-/// The build hasher type used for the ETag cache.
-pub(crate) type BuildHasher = std::hash::BuildHasherDefault<rapidhash::fast::RapidHasher<'static>>;
+const CACHE_SIZE: usize = 256;
 
 /// A strong HTTP ETag (entity tag) value based on hashing the file contents.
 ///
@@ -32,11 +29,12 @@ pub struct ETag(u64);
 pub type FileHasher = fn(&File) -> Result<Option<u64>, io::Error>;
 
 /// A cache for ETag values, indexed by file metadata.
-pub(crate) struct EtagCache(Cache<FileInfo, Option<ETag>, BuildHasher>);
+pub(crate) struct EtagCache(ShardedSieveCache<FileInfo, Option<ETag>>);
 
 impl EtagCache {
     pub(crate) fn new() -> Self {
-        Self(Cache::new(CACHE_SIZE, BuildHasher::default()))
+        let cache = ShardedSieveCache::new(CACHE_SIZE).expect("etag cache capacity must be valid");
+        Self(cache)
     }
 
     pub(crate) fn get_or_insert(
@@ -45,8 +43,13 @@ impl EtagCache {
         file: &File,
         hasher: FileHasher,
     ) -> Result<Option<ETag>, io::Error> {
-        self.0
-            .get_or_try_insert_with(info, |_info| hasher(file).map(|hash| hash.map(ETag::from)))
+        if let Some(etag) = self.0.get(&info) {
+            return Ok(etag);
+        }
+
+        let etag = hasher(file).map(|hash| hash.map(ETag::from))?;
+        self.0.insert(info, etag);
+        Ok(etag)
     }
 }
 
