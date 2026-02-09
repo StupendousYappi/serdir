@@ -41,14 +41,19 @@ pub trait FileExt {
     /// uninitialized buffer. This can be changed and the implementations unified when
     /// [`read_buf`](https://github.com/rust-lang/rust/issues/78485) is stabilized, including buf
     /// equivalents of `read_at`/`seek_read`.
+    #[allow(dead_code)]
     fn read_range(&self, chunk_size: usize, offset: u64) -> io::Result<Vec<u8>>;
+
+    /// Reads at least 1, at most `buf.len()` bytes beginning at `offset` into the provided buffer,
+    /// or fails.
+    ///
+    /// If there are no bytes at `offset`, returns an `UnexpectedEof` error.
+    fn read_range_into(&self, buf: &mut [u8], offset: u64) -> io::Result<usize>;
 }
 
 impl FileExt for std::fs::File {
     #[cfg(unix)]
     fn read_range(&self, chunk_size: usize, offset: u64) -> io::Result<Vec<u8>> {
-        use std::os::unix::fs::FileExt;
-
         let mut chunk = Vec::with_capacity(chunk_size);
         // Get a mutable slice to the uninitialized spare capacity
         let spare = chunk.spare_capacity_mut();
@@ -59,7 +64,7 @@ impl FileExt for std::fs::File {
         // "initialize" the bytes that are actually read.
         let bytes_read = unsafe {
             let slice = std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, chunk_size);
-            self.read_at(slice, offset)?
+            self.read_range_into(slice, offset)?
         };
 
         // SAFETY: We just confirmed that 'bytes_read' were initialized by the OS.
@@ -67,15 +72,44 @@ impl FileExt for std::fs::File {
             chunk.set_len(bytes_read);
         }
 
+        Ok(chunk)
+    }
+
+    #[cfg(unix)]
+    fn read_range_into(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+        use std::os::unix::fs::FileExt;
+        let bytes_read = self.read_at(buf, offset)?;
         if bytes_read == 0 {
             return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        Ok(bytes_read)
+    }
+
+    #[cfg(windows)]
+    fn read_range(&self, chunk_size: usize, offset: u64) -> io::Result<Vec<u8>> {
+        let mut chunk = Vec::with_capacity(chunk_size);
+        // Get a mutable slice to the uninitialized spare capacity
+        let spare = chunk.spare_capacity_mut();
+        debug_assert!(spare.len() == chunk_size);
+
+        // SAFETY: read_at on Windows takes a raw buffer. We cast our MaybeUninit
+        // slice to a raw byte slice. This is safe because we will only
+        // "initialize" the bytes that are actually read.
+        let bytes_read = unsafe {
+            let slice = std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, chunk_size);
+            self.read_range_into(slice, offset)?
+        };
+
+        // SAFETY: We just confirmed that 'bytes_read' were initialized by the OS.
+        unsafe {
+            chunk.set_len(bytes_read);
         }
 
         Ok(chunk)
     }
 
     #[cfg(windows)]
-    fn read_range(&self, chunk_size: usize, offset: u64) -> io::Result<Vec<u8>> {
+    fn read_range_into(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
         // References:
         // https://github.com/rust-lang/rust/blob/5ffebc2cb3a089c27a4c7da13d09fd2365c288aa/library/std/src/sys/windows/handle.rs#L230
         // https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile
@@ -83,7 +117,6 @@ impl FileExt for std::fs::File {
         use winapi::shared::minwindef::DWORD;
         let handle = self.as_raw_handle();
         let mut read = 0;
-        let mut chunk = Vec::with_capacity(chunk_size);
 
         unsafe {
             // SAFETY: a zero `OVERLAPPED` is valid.
@@ -91,11 +124,11 @@ impl FileExt for std::fs::File {
             overlapped.u.s_mut().Offset = offset as u32;
             overlapped.u.s_mut().OffsetHigh = (offset >> 32) as u32;
 
-            // SAFETY: `Vec::with_capacity` guaranteed the pointer range is valid.
+            // SAFETY: Caller guarantees the pointer range is valid.
             if winapi::um::fileapi::ReadFile(
                 handle,
-                chunk.as_mut_ptr() as *mut winapi::ctypes::c_void,
-                DWORD::try_from(chunk_size).unwrap_or(DWORD::MAX), // saturating conversion
+                buf.as_mut_ptr() as *mut winapi::ctypes::c_void,
+                DWORD::try_from(buf.len()).unwrap_or(DWORD::MAX), // saturating conversion
                 &mut read,
                 &mut overlapped,
             ) == 0
@@ -119,11 +152,15 @@ impl FileExt for std::fs::File {
                     o => return Err(std::io::Error::from_raw_os_error(o as i32)),
                 }
             }
-
-            // SAFETY: `ReadFile` guaranteed these bytes are initialized.
-            chunk.set_len(usize::try_from(read).expect("u32 should fit in usize"));
         }
-        Ok(chunk)
+        let read = usize::try_from(read).expect("u32 should fit in usize");
+        if read == 0 {
+             return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("no bytes beyond position {}", offset),
+            ));
+        }
+        Ok(read)
     }
 }
 

@@ -10,6 +10,7 @@
 use crate::platform::FileExt;
 use crate::served_dir::default_hasher;
 use crate::FileInfo;
+use bytes::{BufMut, BytesMut};
 use futures_core::Stream;
 use futures_util::stream;
 use http::header::{HeaderMap, HeaderValue};
@@ -163,21 +164,45 @@ impl Entity for FileEntity {
         &self,
         range: Range<u64>,
     ) -> Pin<Box<dyn Stream<Item = Result<Self::Data, Self::Error>> + Send + Sync>> {
-        let stream = stream::unfold((range, Arc::clone(&self.f)), move |(left, f)| async {
-            if left.start == left.end {
-                return None;
-            }
-            let chunk_size = std::cmp::min(CHUNK_SIZE, left.end - left.start) as usize;
-            Some(tokio::task::block_in_place(move || {
-                match f.read_range(chunk_size, left.start) {
-                    Err(e) => (Err(e), (left, f)),
-                    Ok(v) => {
-                        let bytes_read = v.len();
-                        (Ok(v.into()), (left.start + bytes_read as u64..left.end, f))
-                    }
+        // Allocate a buffer to hold multiple chunks to reduce allocation frequency.
+        // But do not allocate more than needed for the requested range.
+        let max_buf_size = CHUNK_SIZE * 16;
+        let capacity = std::cmp::min(range.end - range.start, max_buf_size) as usize;
+        let buf = BytesMut::with_capacity(capacity);
+
+        let stream = stream::unfold(
+            (range, Arc::clone(&self.f), buf),
+            move |(left, f, mut buf)| async {
+                if left.start == left.end {
+                    return None;
                 }
-            }))
-        });
+                let chunk_size = std::cmp::min(CHUNK_SIZE, left.end - left.start) as usize;
+                Some(tokio::task::block_in_place(move || {
+                    if buf.capacity() < chunk_size {
+                        buf.reserve(chunk_size);
+                    }
+                    let bytes_read_res = unsafe {
+                        let ptr = buf.chunk_mut().as_mut_ptr();
+                        let slice = std::slice::from_raw_parts_mut(ptr, chunk_size);
+                        f.read_range_into(slice, left.start)
+                    };
+
+                    match bytes_read_res {
+                        Err(e) => (Err(e), (left, f, buf)),
+                        Ok(bytes_read) => {
+                            unsafe {
+                                buf.advance_mut(bytes_read);
+                            }
+                            let chunk = buf.split_to(bytes_read).freeze();
+                            (
+                                Ok(chunk),
+                                (left.start + bytes_read as u64..left.end, f, buf),
+                            )
+                        }
+                    }
+                }))
+            },
+        );
         let _: &dyn Stream<Item = Result<Self::Data, Self::Error>> = &stream;
         Box::pin(stream)
     }
