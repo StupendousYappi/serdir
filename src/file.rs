@@ -164,10 +164,9 @@ impl Entity for FileEntity {
         &self,
         range: Range<u64>,
     ) -> Pin<Box<dyn Stream<Item = Result<Self::Data, Self::Error>> + Send + Sync>> {
-        // Allocate a buffer to hold multiple chunks to reduce allocation frequency.
+        // Allocate a buffer to hold a chunk.
         // But do not allocate more than needed for the requested range.
-        let max_buf_size = CHUNK_SIZE * 16;
-        let capacity = std::cmp::min(range.end - range.start, max_buf_size) as usize;
+        let capacity = std::cmp::min(range.end - range.start, CHUNK_SIZE) as usize;
         let buf = BytesMut::with_capacity(capacity);
 
         let stream = stream::unfold(
