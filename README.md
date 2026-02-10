@@ -23,12 +23,91 @@ This crate provides utilities for serving static files in Rust web applications.
 
 This crate is derived from [http-serve](https://github.com/scottlamb/http-serve/).
 
-Examples:
+# Example
 
-*   Serve a directory tree using hyper:
-    ```
-    $ cargo run --example hyper --features hyper .
-    ```
+Serve files via Hyper:
+
+```rust
+use hyper::server::conn::http1;
+use hyper_util::rt::TokioIo;
+use serdir::ServedDir;
+use serdir::compression::BrotliLevel;
+use std::net::{Ipv4Addr, SocketAddr};
+use tokio::net::TcpListener;
+
+#[tokio::main]
+async fn main() {
+    let service = ServedDir::builder("./static")
+        .unwrap()
+        .append_index_html(true)
+        .cached_compression(BrotliLevel::L5)
+        .build()
+        .into_hyper_service();
+
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 1337));
+    let listener = TcpListener::bind(addr).await.unwrap();
+
+    loop {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let service = service.clone();
+        tokio::spawn(async move {
+            let io = TokioIo::new(tcp);
+            if let Err(err) = http1::Builder::new()
+                .serve_connection(io, service)
+                .await
+            {
+                eprintln!("connection error: {err}");
+            }
+        });
+    }
+}
+```
+
+Serve files via Tower:
+
+```rust
+use hyper::server::conn::http1;
+use hyper_util::rt::TokioIo;
+use hyper_util::service::TowerToHyperService;
+use serdir::ServedDir;
+use std::net::{Ipv4Addr, SocketAddr};
+use tokio::net::TcpListener;
+
+#[tokio::main]
+async fn main() {
+    let service = ServedDir::builder("./static")
+        .unwrap()
+        .append_index_html(true)
+        .static_compression(false, true, false) // gzip only
+        .strip_prefix("/static")
+        .build()
+        .into_tower_service();
+
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 1337));
+    let listener = TcpListener::bind(addr).await.unwrap();
+
+    loop {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let service = service.clone();
+        tokio::spawn(async move {
+            let io = TokioIo::new(tcp);
+            let hyper_service = TowerToHyperService::new(service);
+            if let Err(err) = http1::Builder::new()
+                .serve_connection(io, hyper_service)
+                .await
+            {
+                eprintln!("connection error: {err}");
+            }
+        });
+    }
+}
+```
+
+Run the builtin example:
+
+```
+$ cargo run --example hyper --features hyper .
+```
 
 ## Optional features
 
