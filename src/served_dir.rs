@@ -18,7 +18,7 @@ use crate::integration::HyperService;
 use crate::integration::{TowerLayer, TowerService};
 
 use crate::etag::EtagCache;
-use crate::{Body, ETag, FileEntity, FileHasher, FileInfo, ServeFilesError};
+use crate::{Body, ETag, FileEntity, FileHasher, FileInfo, SerdirError};
 use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 
 /// Returns `FileEntity` values for file paths within a directory.
@@ -84,7 +84,7 @@ pub(crate) fn default_hasher(file: &File) -> Result<Option<u64>, std::io::Error>
 
 impl ServedDir {
     /// Returns a builder for `ServedDir`.
-    pub fn builder(path: impl Into<PathBuf>) -> Result<ServedDirBuilder, ServeFilesError> {
+    pub fn builder(path: impl Into<PathBuf>) -> Result<ServedDirBuilder, SerdirError> {
         ServedDirBuilder::new(path.into())
     }
 
@@ -128,16 +128,12 @@ impl ServedDir {
     ///
     /// This method will return an error with kind `ErrorKind::NotFound` if the file is not found.
     /// It will return an error with kind `ErrorKind::InvalidInput` if the path is invalid.
-    pub async fn get(
-        &self,
-        path: &str,
-        req_hdrs: &HeaderMap,
-    ) -> Result<FileEntity, ServeFilesError> {
+    pub async fn get(&self, path: &str, req_hdrs: &HeaderMap) -> Result<FileEntity, SerdirError> {
         let path = match self.strip_prefix.as_deref() {
             Some(prefix) if path == prefix => ".",
             Some(prefix) => path
                 .strip_prefix(prefix)
-                .ok_or(ServeFilesError::NotFound(None))?,
+                .ok_or(SerdirError::NotFound(None))?,
             None => path,
         };
         let path = path.strip_prefix('/').unwrap_or(path);
@@ -151,15 +147,15 @@ impl ServedDir {
             let res = self.find_file(full_path.clone(), preferred);
             let matched_file = match res {
                 Ok(mf) => mf,
-                Err(ServeFilesError::IsDirectory(_)) if self.append_index_html => {
+                Err(SerdirError::IsDirectory(_)) if self.append_index_html => {
                     let index_path = full_path.join("index.html");
                     self.find_file(index_path, preferred)?
                 }
-                Err(ServeFilesError::NotFound(_)) if self.not_found_path.is_some() => {
+                Err(SerdirError::NotFound(_)) if self.not_found_path.is_some() => {
                     let not_found_path = self.not_found_path.as_ref().unwrap().clone();
                     let matched_file = self.find_file(not_found_path, preferred)?;
                     let entity = self.create_entity(matched_file)?;
-                    return Err(ServeFilesError::NotFound(Some(entity)));
+                    return Err(SerdirError::NotFound(Some(entity)));
                 }
                 Err(e) => return Err(e),
             };
@@ -175,13 +171,13 @@ impl ServedDir {
     pub async fn get_response<B>(&self, req: &Request<B>) -> Result<Response<Body>, Infallible> {
         match self.get(req.uri().path(), req.headers()).await {
             Ok(entity) => Ok(entity.serve_request(req, StatusCode::OK)),
-            Err(ServeFilesError::NotFound(Some(entity))) => {
+            Err(SerdirError::NotFound(Some(entity))) => {
                 Ok(entity.serve_request(req, StatusCode::NOT_FOUND))
             }
-            Err(ServeFilesError::NotFound(None)) | Err(ServeFilesError::IsDirectory(_)) => {
+            Err(SerdirError::NotFound(None)) | Err(SerdirError::IsDirectory(_)) => {
                 Ok(Self::make_status_response(StatusCode::NOT_FOUND))
             }
-            Err(ServeFilesError::InvalidPath(_)) => {
+            Err(SerdirError::InvalidPath(_)) => {
                 // TODO: log the error
                 Ok(Self::make_status_response(StatusCode::BAD_REQUEST))
             }
@@ -200,7 +196,7 @@ impl ServedDir {
             .expect("status response should be valid")
     }
 
-    fn create_entity(&self, matched_file: MatchedFile) -> Result<FileEntity, ServeFilesError> {
+    fn create_entity(&self, matched_file: MatchedFile) -> Result<FileEntity, SerdirError> {
         let content_type: HeaderValue = self.get_content_type(&matched_file.extension);
         let mut headers = self.common_headers.clone();
         headers.insert(http::header::CONTENT_TYPE, content_type);
@@ -220,7 +216,7 @@ impl ServedDir {
         &self,
         path: impl Into<PathBuf>,
         preferred: CompressionSupport,
-    ) -> Result<MatchedFile, ServeFilesError> {
+    ) -> Result<MatchedFile, SerdirError> {
         self.compression_strategy.find_file(path.into(), preferred)
     }
 
@@ -308,21 +304,21 @@ impl ServedDir {
     }
 
     /// Ensures path is safe: no NUL bytes, not absolute, no `..` segments.
-    fn validate_path(&self, path: &str) -> Result<(), ServeFilesError> {
+    fn validate_path(&self, path: &str) -> Result<(), SerdirError> {
         if memchr::memchr(0, path.as_bytes()).is_some() {
-            return Err(ServeFilesError::InvalidPath(
+            return Err(SerdirError::InvalidPath(
                 "path contains NUL byte".to_string(),
             ));
         }
         if path.as_bytes().first() == Some(&b'/') {
-            return Err(ServeFilesError::InvalidPath("path is absolute".to_string()));
+            return Err(SerdirError::InvalidPath("path is absolute".to_string()));
         }
         let mut left = path.as_bytes();
         loop {
             let next = memchr::memchr(b'/', left);
             let seg = &left[0..next.unwrap_or(left.len())];
             if seg == b".." {
-                return Err(ServeFilesError::InvalidPath(
+                return Err(SerdirError::InvalidPath(
                     "path contains .. segment".to_string(),
                 ));
             }
@@ -382,10 +378,10 @@ impl ServedDirBuilder {
     /// contents. The recommended way to update served content live is to pass a
     /// symlink to the target directory to this function, and then update the
     /// symlink to point to the new directory when needed.
-    fn new(dirpath: PathBuf) -> Result<Self, ServeFilesError> {
+    fn new(dirpath: PathBuf) -> Result<Self, SerdirError> {
         if !dirpath.is_dir() {
             let msg = format!("path is not a directory: {}", dirpath.display());
-            return Err(ServeFilesError::ConfigError(msg));
+            return Err(SerdirError::ConfigError(msg));
         }
         Ok(Self {
             dirpath,
@@ -451,7 +447,7 @@ impl ServedDirBuilder {
 
     /// Sets a prefix to strip from the request path.
     ///
-    /// If this value is defined, [`ServedDir::get`] will return a [`ServeFilesError::InvalidPath`]
+    /// If this value is defined, [`ServedDir::get`] will return a [`SerdirError::InvalidPath`]
     /// error for any path that doesn't begin with the given prefix.
     pub fn strip_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.strip_prefix = Some(prefix.into());
@@ -544,16 +540,16 @@ impl ServedDirBuilder {
     /// The path must be relative to the directory being served.
     ///
     /// The extension of the file will be used to determine the content type of all 404 responses.
-    pub fn not_found_path(mut self, path: impl Into<PathBuf>) -> Result<Self, ServeFilesError> {
+    pub fn not_found_path(mut self, path: impl Into<PathBuf>) -> Result<Self, SerdirError> {
         let path = path.into();
         if path.is_absolute() || path.has_root() {
-            return Err(ServeFilesError::ConfigError(
+            return Err(SerdirError::ConfigError(
                 "not_found_path must be relative".to_string(),
             ));
         }
         let full_path = self.dirpath.join(path);
         if !full_path.is_file() {
-            return Err(ServeFilesError::ConfigError(format!(
+            return Err(SerdirError::ConfigError(format!(
                 "not_found_path is not a file: {}",
                 full_path.display()
             )));
@@ -651,7 +647,7 @@ mod tests {
         let hdrs = HeaderMap::new();
 
         let err = served_dir.get("non-existent.txt", &hdrs).await.unwrap_err();
-        assert!(matches!(err, ServeFilesError::NotFound(_)));
+        assert!(matches!(err, SerdirError::NotFound(_)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -665,11 +661,11 @@ mod tests {
             .get("include/../etc/passwd", &hdrs)
             .await
             .unwrap_err();
-        assert!(matches!(err, ServeFilesError::InvalidPath(msg) if msg.contains("..")));
+        assert!(matches!(err, SerdirError::InvalidPath(msg) if msg.contains("..")));
 
         // 2. Contains null byte
         let err = served_dir.get("test\0file.txt", &hdrs).await.unwrap_err();
-        assert!(matches!(err, ServeFilesError::InvalidPath(msg) if msg.contains("NUL byte")));
+        assert!(matches!(err, SerdirError::InvalidPath(msg) if msg.contains("NUL byte")));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -686,7 +682,7 @@ mod tests {
 
         // Should fail without the prefix
         let err = served_dir.get("real.txt", &hdrs).await.unwrap_err();
-        assert!(matches!(err, ServeFilesError::NotFound(_)));
+        assert!(matches!(err, SerdirError::NotFound(_)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -798,8 +794,8 @@ mod tests {
         let hdrs = HeaderMap::new();
 
         let err = served_dir.get("subdir", &hdrs).await.unwrap_err();
-        assert!(matches!(err, ServeFilesError::IsDirectory(_)));
-        if let ServeFilesError::IsDirectory(err_path) = err {
+        assert!(matches!(err, SerdirError::IsDirectory(_)));
+        if let SerdirError::IsDirectory(err_path) = err {
             assert_eq!(err_path, path.join("subdir"));
         }
     }
@@ -839,7 +835,7 @@ mod tests {
         let served_dir = builder.build();
         let hdrs = HeaderMap::new();
         let err = served_dir.get("subdir", &hdrs).await.unwrap_err();
-        assert!(matches!(err, ServeFilesError::IsDirectory(_)));
+        assert!(matches!(err, SerdirError::IsDirectory(_)));
 
         // 2. append_index_html enabled
         let builder = ServedDir::builder(path.to_path_buf()).unwrap();
@@ -851,7 +847,7 @@ mod tests {
         // 3. append_index_html enabled, but index.html missing
         std::fs::create_dir(path.join("empty_subdir")).unwrap();
         let err = served_dir.get("empty_subdir", &hdrs).await.unwrap_err();
-        assert!(matches!(err, ServeFilesError::NotFound(_)));
+        assert!(matches!(err, SerdirError::NotFound(_)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -917,23 +913,21 @@ mod tests {
             .unwrap()
             .not_found_path("/abs/path")
             .unwrap_err();
-        assert!(
-            matches!(err, ServeFilesError::ConfigError(msg) if msg.contains("must be relative"))
-        );
+        assert!(matches!(err, SerdirError::ConfigError(msg) if msg.contains("must be relative")));
 
         // 3. Error on directory
         let err = ServedDir::builder(context.tmp.path().to_path_buf())
             .unwrap()
             .not_found_path("subdir")
             .unwrap_err();
-        assert!(matches!(err, ServeFilesError::ConfigError(msg) if msg.contains("is not a file")));
+        assert!(matches!(err, SerdirError::ConfigError(msg) if msg.contains("is not a file")));
 
         // 4. Error on non-existent path
         let err = ServedDir::builder(context.tmp.path().to_path_buf())
             .unwrap()
             .not_found_path("missing.html")
             .unwrap_err();
-        assert!(matches!(err, ServeFilesError::ConfigError(msg) if msg.contains("not a file")));
+        assert!(matches!(err, SerdirError::ConfigError(msg) if msg.contains("not a file")));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -998,7 +992,7 @@ mod tests {
 
         // 2. Non-existent file -> NotFound(Some(entity))
         let err = served_dir.get("missing.txt", &hdrs).await.unwrap_err();
-        if let ServeFilesError::NotFound(Some(entity)) = err {
+        if let SerdirError::NotFound(Some(entity)) = err {
             assert_eq!(entity.read_body().await.unwrap(), "custom 404 content");
             assert_eq!(entity.header(&header::CONTENT_TYPE).unwrap(), "text/html");
         } else {
@@ -1049,7 +1043,7 @@ mod tests {
 
         let err = served_dir.get("one.txt", &hdrs).await.unwrap_err();
         match err {
-            ServeFilesError::IOError(inner) => {
+            SerdirError::IOError(inner) => {
                 assert_eq!(inner.kind(), std::io::ErrorKind::Other);
                 assert_eq!(inner.to_string(), "hash calculation failed");
             }
@@ -1070,7 +1064,7 @@ mod tests {
         let hdrs = HeaderMap::new();
 
         let err = served_dir.get("missing.txt", &hdrs).await.unwrap_err();
-        if let ServeFilesError::NotFound(Some(entity)) = err {
+        if let SerdirError::NotFound(Some(entity)) = err {
             let etag = entity.etag().expect("etag should be present");
             assert_eq!(etag.to_str().unwrap(), r#""0000000000001234""#);
         } else {

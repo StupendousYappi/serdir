@@ -9,6 +9,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use hyper_util::rt::TokioIo;
 use once_cell::sync::Lazy;
+use serdir::ServedDir;
 use std::fs::File;
 use std::io::Write;
 use std::net::SocketAddr;
@@ -24,7 +25,7 @@ fn new_server() -> String {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let _guard = rt.enter();
-        let service = serve_files::ServedDir::builder(SERVED_DIR.path())
+        let service = ServedDir::builder(SERVED_DIR.path())
             .unwrap()
             .build()
             .into_hyper_service();

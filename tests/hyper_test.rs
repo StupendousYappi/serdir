@@ -3,7 +3,7 @@
 use http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use hyper::service::Service;
-use serve_files::ServedDir;
+use serdir::ServedDir;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_hyper_service_serves_file() {

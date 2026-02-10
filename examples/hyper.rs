@@ -10,7 +10,7 @@
 
 use argh::FromArgs;
 use hyper_util::rt::TokioIo;
-use serve_files::ServedDir;
+use serdir::ServedDir;
 use std::net::{Ipv4Addr, SocketAddr};
 use tokio::net::TcpListener;
 

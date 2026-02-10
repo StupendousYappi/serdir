@@ -37,7 +37,7 @@ impl PathBufExt for Path {
 
 #[cfg(feature = "runtime-compression")]
 use crate::brotli_cache::BrotliCache;
-use crate::ServeFilesError;
+use crate::SerdirError;
 
 /// Settings for using static (i.e. pre-compressed) compression.
 ///
@@ -100,8 +100,11 @@ impl StaticCompression {
     }
 }
 
+#[cfg(feature = "runtime-compression")]
 const DEFAULT_CACHE_SIZE: u16 = 128;
+#[cfg(feature = "runtime-compression")]
 const DEFAULT_COMPRESSION_LEVEL: BrotliLevel = BrotliLevel::L5;
+#[cfg(feature = "runtime-compression")]
 const DEFAULT_MAX_FILE_SIZE: u64 = 1024 * 1024;
 
 /// Brotli compression level (0-11).
@@ -143,7 +146,7 @@ impl From<BrotliLevel> for i32 {
 }
 
 impl TryFrom<u8> for BrotliLevel {
-    type Error = ServeFilesError;
+    type Error = SerdirError;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
@@ -159,7 +162,7 @@ impl TryFrom<u8> for BrotliLevel {
             9 => Ok(Self::L9),
             10 => Ok(Self::L10),
             11 => Ok(Self::L11),
-            _ => Err(ServeFilesError::ConfigError(format!(
+            _ => Err(SerdirError::ConfigError(format!(
                 "invalid Brotli level: {}, must be between 0 and 11",
                 value
             ))),
@@ -168,12 +171,12 @@ impl TryFrom<u8> for BrotliLevel {
 }
 
 impl TryFrom<u32> for BrotliLevel {
-    type Error = ServeFilesError;
+    type Error = SerdirError;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         u8::try_from(value)
             .map_err(|_| {
-                ServeFilesError::ConfigError(format!(
+                SerdirError::ConfigError(format!(
                     "invalid Brotli level: {}, must be between 0 and 11",
                     value
                 ))
@@ -276,7 +279,7 @@ pub(crate) fn parse_qvalue(s: &str) -> Result<u16, ()> {
 /// A struct representing which compression encodings are supported by the
 /// client or the server.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
-pub(crate) struct CompressionSupport {
+pub struct CompressionSupport {
     gzip: bool,
     br: bool,
     zstd: bool,
@@ -480,15 +483,14 @@ impl CompressionStrategyInner {
         &self,
         path: PathBuf,
         supported: crate::compression::CompressionSupport,
-    ) -> Result<MatchedFile, ServeFilesError> {
+    ) -> Result<MatchedFile, SerdirError> {
         match self {
             CompressionStrategyInner::Static(server_support) => {
                 if supported.brotli() && server_support.brotli() {
                     let br_path = path.append_extension("br");
                     match Self::try_path(&br_path, ContentEncoding::Brotli) {
                         Ok(f) => return Ok(f),
-                        Err(ServeFilesError::NotFound(_))
-                        | Err(ServeFilesError::IsDirectory(_)) => {}
+                        Err(SerdirError::NotFound(_)) | Err(SerdirError::IsDirectory(_)) => {}
                         Err(e) => return Err(e),
                     }
                 }
@@ -497,8 +499,7 @@ impl CompressionStrategyInner {
                     let zstd_path = path.append_extension("zstd");
                     match Self::try_path(&zstd_path, ContentEncoding::Zstd) {
                         Ok(f) => return Ok(f),
-                        Err(ServeFilesError::NotFound(_))
-                        | Err(ServeFilesError::IsDirectory(_)) => {}
+                        Err(SerdirError::NotFound(_)) | Err(SerdirError::IsDirectory(_)) => {}
                         Err(e) => return Err(e),
                     }
                 }
@@ -507,8 +508,7 @@ impl CompressionStrategyInner {
                     let gz_path = path.append_extension("gz");
                     match Self::try_path(&gz_path, ContentEncoding::Gzip) {
                         Ok(f) => return Ok(f),
-                        Err(ServeFilesError::NotFound(_))
-                        | Err(ServeFilesError::IsDirectory(_)) => {}
+                        Err(SerdirError::NotFound(_)) | Err(SerdirError::IsDirectory(_)) => {}
                         Err(e) => return Err(e),
                     }
                 }
@@ -526,7 +526,7 @@ impl CompressionStrategyInner {
         Self::try_path(&path, ContentEncoding::Identity)
     }
 
-    fn try_path(p: &Path, encoding: ContentEncoding) -> Result<MatchedFile, ServeFilesError> {
+    fn try_path(p: &Path, encoding: ContentEncoding) -> Result<MatchedFile, SerdirError> {
         // we want to read the file metadata from the open file handle, rather than calling
         // `std::fs::metadata` on the path, to guarantee that the metadata and the file contents
         // are consistent (otherwise, if the file is modified, there could be a race condition
@@ -547,8 +547,8 @@ impl CompressionStrategyInner {
                     extension,
                 })
             }
-            Err(e) if e.kind() == ErrorKind::NotFound => Err(ServeFilesError::NotFound(None)),
-            Err(e) => Err(ServeFilesError::IOError(e)),
+            Err(e) if e.kind() == ErrorKind::NotFound => Err(SerdirError::NotFound(None)),
+            Err(e) => Err(SerdirError::IOError(e)),
         }
     }
 }

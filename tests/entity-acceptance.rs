@@ -10,7 +10,7 @@
 
 use hyper_util::rt::TokioIo;
 use once_cell::sync::Lazy;
-use serve_files::ServedDir;
+use serdir::ServedDir;
 use std::fs::File;
 use std::io::{Error, ErrorKind};
 use std::time::Duration;

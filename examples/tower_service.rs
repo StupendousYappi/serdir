@@ -11,7 +11,7 @@
 use argh::FromArgs;
 use hyper_util::rt::TokioIo;
 use hyper_util::service::TowerToHyperService;
-use serve_files::ServedDir;
+use serdir::ServedDir;
 use std::net::{Ipv4Addr, SocketAddr};
 use tokio::net::TcpListener;
 
@@ -74,7 +74,7 @@ async fn run() -> Result<(), String> {
         CompressionMode::Cached => {
             #[cfg(feature = "runtime-compression")]
             {
-                builder.cached_compression(serve_files::compression::BrotliLevel::L5)
+                builder.cached_compression(serdir::compression::BrotliLevel::L5)
             }
             #[cfg(not(feature = "runtime-compression"))]
             {

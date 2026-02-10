@@ -18,7 +18,7 @@ use sieve_cache::ShardedSieveCache;
 use std::io::Write;
 
 use crate::compression::{ContentEncoding, MatchedFile};
-use crate::ServeFilesError;
+use crate::SerdirError;
 
 type CacheKey = crate::FileInfo;
 
@@ -87,7 +87,7 @@ impl BrotliCache {
     /// dropped), or when the application is terminated (deletion is handled by
     /// the operating system and should be performed even after hard crashes of
     /// the application).
-    pub(crate) fn get(&self, path: &Path) -> Result<MatchedFile, ServeFilesError> {
+    pub(crate) fn get(&self, path: &Path) -> Result<MatchedFile, SerdirError> {
         let extension: &str = path
             .extension()
             .and_then(|s| s.to_str())
@@ -126,7 +126,7 @@ impl BrotliCache {
             }
             Err(e) => {
                 let msg = format!("Brotli compression failed for {}", path.display());
-                return Err(ServeFilesError::CompressionError(msg, e));
+                return Err(SerdirError::CompressionError(msg, e));
             }
         };
 
@@ -178,7 +178,7 @@ impl BrotliCache {
     /// Returns a FileEntity for the uncompressed file
     ///
     /// Used when skipping compression.
-    fn wrap_orig(path: &Path, extension: &str) -> Result<MatchedFile, ServeFilesError> {
+    fn wrap_orig(path: &Path, extension: &str) -> Result<MatchedFile, SerdirError> {
         let file = File::open(path)?;
         let file_info = crate::FileInfo::open_file(path, &file)?;
         let extension = extension.to_string();

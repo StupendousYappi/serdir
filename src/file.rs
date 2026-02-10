@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::etag::ETag;
-use crate::{Entity, ServeFilesError};
+use crate::{Entity, SerdirError};
 use http::{Request, Response, StatusCode};
 
 // This stream breaks apart the file into chunks of at most CHUNK_SIZE. This size is
@@ -34,7 +34,7 @@ static CHUNK_SIZE: u64 = 65_536;
 ///
 /// Expects to be served from a tokio threadpool.
 ///
-/// Most serve-files users will not need to use `FileEntity` directly, and will instead use
+/// Most serdir users will not need to use `FileEntity` directly, and will instead use
 /// higher-level APIs like [`ServedDir::get_response`]. However, `FileEntity` is available for
 /// advanced use cases, like manually modifying the etag or response headers before serving.
 ///
@@ -56,7 +56,7 @@ static CHUNK_SIZE: u64 = 65_536;
 /// ```
 /// # use http::{Request, StatusCode};
 /// # use http::header::{HeaderMap, CONTENT_TYPE};
-/// # use serve_files::{Body, FileEntity};
+/// # use serdir::{Body, FileEntity};
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let tmp = tempfile::NamedTempFile::new()?;
 /// std::fs::write(tmp.path(), b"Hello, world!")?;
@@ -95,7 +95,7 @@ impl FileEntity {
     /// call to [`tokio::task::block_in_place`] to avoid blocking the tokio reactor thread. Attempts
     /// to read file data via [`FileEntity::serve_request`] will also block, and should also be wrapped
     /// in [`tokio::task::block_in_place`] if called from an async context.
-    pub fn new(path: impl AsRef<Path>, headers: HeaderMap) -> Result<Self, ServeFilesError> {
+    pub fn new(path: impl AsRef<Path>, headers: HeaderMap) -> Result<Self, SerdirError> {
         let path = path.as_ref();
         let file = File::open(path)?;
         let file_info = FileInfo::open_file(path, &file)?;
@@ -122,7 +122,7 @@ impl FileEntity {
         file_info: FileInfo,
         headers: HeaderMap,
         etag: Option<ETag>,
-    ) -> Result<Self, ServeFilesError> {
+    ) -> Result<Self, SerdirError> {
         debug_assert!(file.metadata().unwrap().is_file());
 
         Ok(FileEntity {

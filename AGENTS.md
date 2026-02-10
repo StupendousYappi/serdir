@@ -1,4 +1,4 @@
-# serve-files
+# serdir
 
 This is a Rust crate that helps users serve static files over HTTP. The central
 API it offers is `ServedDir` which represents a directory of static files that
@@ -16,7 +16,7 @@ delegates requests that produce a not found response to an inner handler) or a
   compression settings, file not found behavior and common response headers
 - `FileEntity` - Returned by `ServedDir` when it matches a path to a file, it contains an open file handle
   and file metadata, such as its size, last modified time and ETag hash value
-- `ServeFilesError` - An error type returned by various crate APIs, such as `ServedDirBuilder` if
+- `SerdirError` - An error type returned by various crate APIs, such as `ServedDirBuilder` if
   the user provides invalid configuration settings, or `ServedDir::get` if a file is not found
 - `ETag` - A 64 bit hash code of a file's contents, implemented as newtype wrapper around `u64`
 - `Body` a custom HTTP response body type that contains a stream of chunks of bytes (each up to 64kb), allowing

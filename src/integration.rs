@@ -1,5 +1,5 @@
 use crate::served_dir::ServedDir;
-use crate::{Body, ServeFilesError};
+use crate::{Body, SerdirError};
 use futures_core::future::BoxFuture;
 use http::{Request, Response, StatusCode};
 use std::convert::Infallible;
@@ -154,12 +154,12 @@ where
                 Ok(entity) => Ok(box_response(
                     entity.serve_request(&serving_req, StatusCode::OK),
                 )),
-                Err(ServeFilesError::NotFound(Some(entity))) => Ok(box_response(
+                Err(SerdirError::NotFound(Some(entity))) => Ok(box_response(
                     entity.serve_request(&serving_req, StatusCode::NOT_FOUND),
                 )),
-                Err(ServeFilesError::NotFound(None))
-                | Err(ServeFilesError::IsDirectory(_))
-                | Err(ServeFilesError::InvalidPath(_)) => {
+                Err(SerdirError::NotFound(None))
+                | Err(SerdirError::IsDirectory(_))
+                | Err(SerdirError::InvalidPath(_)) => {
                     let response = inner.call(req).await?;
                     Ok(response.map(|body| body.map_err(Into::into).boxed_unsync()))
                 }

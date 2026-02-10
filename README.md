@@ -1,6 +1,6 @@
-# serve-files
+# serdir
 
-[![CI](https://github.com/StupendousYappi/serve-files/workflows/CI/badge.svg)](https://github.com/StupendousYappi/serve-files/actions?query=workflow%3ACI)
+[![CI](https://github.com/StupendousYappi/serdir/workflows/CI/badge.svg)](https://github.com/StupendousYappi/serdir/actions?query=workflow%3ACI)
 
 Rust helpers for serving HTTP GET and HEAD responses with
 [hyper](https://crates.io/crates/hyper) 1.x and

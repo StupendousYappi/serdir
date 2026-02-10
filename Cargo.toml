@@ -1,5 +1,5 @@
 [package]
-name = "serve-files"
+name = "serdir"
 version = "0.2.0"
 authors = [
     "Greg Steffensen <greg.steffensen@gmail.com>",
@@ -10,7 +10,7 @@ readme = "README.md"
 description = "helpers for conditional GET, HEAD, byte range serving, and gzip content encoding for static files and more with hyper and tokio"
 keywords = ["http", "file", "range", "tower", "hyper"]
 categories = ["web-programming::http-server"]
-repository = "https://github.com/StupendousYappi/serve-files"
+repository = "https://github.com/StupendousYappi/serdir"
 edition = "2021"
 rust-version = "1.88"
 

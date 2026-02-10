@@ -12,7 +12,7 @@ use argh::FromArgs;
 use http::header::{self, HeaderValue};
 use hyper_util::rt::TokioIo;
 use hyper_util::service::TowerToHyperService;
-use serve_files::ServedDir;
+use serdir::ServedDir;
 use std::fmt::Write;
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -23,7 +23,7 @@ use std::task::{Context, Poll};
 use tokio::net::TcpListener;
 use tower::{Layer, Service};
 
-use serve_files::Body;
+use serdir::Body;
 
 type ResponseFuture =
     Pin<Box<dyn Future<Output = Result<http::Response<Body>, std::convert::Infallible>> + Send>>;
@@ -126,7 +126,7 @@ fn directory_listing(
         return http::Response::builder()
             .status(http::StatusCode::MOVED_PERMANENTLY)
             .header(http::header::LOCATION, loc)
-            .body(serve_files::Body::empty())
+            .body(serdir::Body::empty())
             .unwrap();
     }
 
@@ -166,7 +166,7 @@ fn directory_listing(
     }
 
     listing.push_str("</ul>\n");
-    let mut resp = http::Response::new(serve_files::Body::from(listing));
+    let mut resp = http::Response::new(serdir::Body::from(listing));
     resp.headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
     resp
@@ -175,7 +175,7 @@ fn directory_listing(
 fn not_found_response() -> http::Response<Body> {
     http::Response::builder()
         .status(http::StatusCode::NOT_FOUND)
-        .body(serve_files::Body::from("Not Found"))
+        .body(serdir::Body::from("Not Found"))
         .unwrap()
 }
 
@@ -198,9 +198,7 @@ async fn run() -> Result<(), String> {
     builder = match config.compression {
         CompressionMode::Static => builder.static_compression(true, true, true),
         CompressionMode::None => builder.no_compression(),
-        CompressionMode::Cached => {
-            builder.cached_compression(serve_files::compression::BrotliLevel::L5)
-        }
+        CompressionMode::Cached => builder.cached_compression(serdir::compression::BrotliLevel::L5),
     };
 
     if let Some(path) = config.not_found_path {

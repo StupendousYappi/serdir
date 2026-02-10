@@ -36,8 +36,8 @@
 //! # #[cfg(feature = "hyper")]
 //! # {
 //! use hyper_util::rt::TokioIo;
-//! use serve_files::ServedDir;
-//! use serve_files::compression::BrotliLevel;
+//! use serdir::ServedDir;
+//! use serdir::compression::BrotliLevel;
 //! use std::net::{Ipv4Addr, SocketAddr};
 //! use tokio::net::TcpListener;
 //!
@@ -112,7 +112,7 @@ fn as_u64(len: usize) -> u64 {
 
 /// An error returned by this crate's public APIs.
 #[derive(Debug)]
-pub enum ServeFilesError {
+pub enum SerdirError {
     /// Returned by ServedDirBuilder if configuration is invalid.
     ConfigError(String),
     /// The path is a directory when it was expected to be a file
@@ -127,39 +127,39 @@ pub enum ServeFilesError {
     IOError(IOError),
 }
 
-impl Display for ServeFilesError {
+impl Display for SerdirError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ServeFilesError::ConfigError(msg) => write!(f, "{}", msg),
-            ServeFilesError::IsDirectory(path) => {
+            SerdirError::ConfigError(msg) => write!(f, "{}", msg),
+            SerdirError::IsDirectory(path) => {
                 write!(f, "Path is a directory: {}", path.display())
             }
-            ServeFilesError::NotFound(_) => write!(f, "File not found"),
-            ServeFilesError::InvalidPath(msg) => write!(f, "Invalid path: {}", msg),
-            ServeFilesError::IOError(err) => write!(f, "I/O error: {}", err),
-            ServeFilesError::CompressionError(msg, err) => {
+            SerdirError::NotFound(_) => write!(f, "File not found"),
+            SerdirError::InvalidPath(msg) => write!(f, "Invalid path: {}", msg),
+            SerdirError::IOError(err) => write!(f, "I/O error: {}", err),
+            SerdirError::CompressionError(msg, err) => {
                 write!(f, "Brotli compression error: {} (I/O error: {})", msg, err)
             }
         }
     }
 }
 
-impl Error for ServeFilesError {
+impl Error for SerdirError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            ServeFilesError::IOError(err) => Some(err),
-            ServeFilesError::CompressionError(_, err) => Some(err),
+            SerdirError::IOError(err) => Some(err),
+            SerdirError::CompressionError(_, err) => Some(err),
             _ => None,
         }
     }
 }
 
-impl From<IOError> for ServeFilesError {
+impl From<IOError> for SerdirError {
     fn from(err: IOError) -> Self {
         if err.kind() == ErrorKind::NotFound {
-            ServeFilesError::NotFound(None)
+            SerdirError::NotFound(None)
         } else {
-            ServeFilesError::IOError(err)
+            SerdirError::IOError(err)
         }
     }
 }
@@ -177,12 +177,14 @@ mod etag;
 mod file;
 mod platform;
 mod range;
-mod serving;
+/// Logic for serving entities.
+pub mod serving;
 
 pub use crate::body::Body;
 pub use crate::etag::{ETag, FileHasher};
 pub use crate::file::FileEntity;
 pub use crate::served_dir::{ServedDir, ServedDirBuilder};
+pub use crate::serving::serve;
 
 #[cfg(feature = "runtime-compression")]
 mod brotli_cache;
@@ -197,7 +199,7 @@ pub(crate) struct FileInfo {
 
 impl FileInfo {
     /// Creates a new FileInfo if the path is a file, otherwise returns an error.
-    pub(crate) fn open_file(path: &Path, file: &File) -> Result<Self, ServeFilesError> {
+    pub(crate) fn open_file(path: &Path, file: &File) -> Result<Self, SerdirError> {
         // Rust's default hasher is relatively secure... it uses a random seed
         // and currently uses the siphash algorithm, which is secure as long as
         // the seed is random. The file hash is only used internally in memory,
@@ -218,12 +220,12 @@ impl FileInfo {
         let metadata = file.metadata()?;
         let file_type = metadata.file_type();
         if file_type.is_dir() {
-            return Err(ServeFilesError::IsDirectory(path.to_path_buf()));
+            return Err(SerdirError::IsDirectory(path.to_path_buf()));
         }
         // if it's not a directory and not a file, we don't want to handle it
         // and behave as if it doesn't exist
         if !file_type.is_file() {
-            return Err(ServeFilesError::NotFound(None));
+            return Err(SerdirError::NotFound(None));
         }
         Ok(Self {
             path_hash,
@@ -243,7 +245,7 @@ impl FileInfo {
     }
 
     #[cfg(feature = "runtime-compression")]
-    pub(crate) fn for_path(path: &Path) -> Result<Self, ServeFilesError> {
+    pub(crate) fn for_path(path: &Path) -> Result<Self, SerdirError> {
         let file = File::open(path)?;
         Self::open_file(path, &file)
     }
@@ -259,12 +261,12 @@ impl FileInfo {
 
 /// A reusable, read-only, byte-rangeable HTTP entity for GET and HEAD serving.
 /// Must return exactly the same data on every call.
-pub(crate) trait Entity: 'static + Send + Sync {
+pub trait Entity: 'static + Send + Sync {
     /// The type of errors produced in [`Self::get_range`] chunks and in the final stream.
     ///
     /// [`BoxError`] is a good choice for most implementations.
     ///
-    /// This must be convertable from [`BoxError`] to allow `serve_files` to
+    /// This must be convertable from [`BoxError`] to allow `serdir` to
     /// inject errors.
     ///
     /// Note that errors returned directly from the body to `hyper` just drop

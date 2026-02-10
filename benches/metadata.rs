@@ -8,7 +8,7 @@
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use http::HeaderMap;
-use serve_files::ServedDir;
+use serdir::ServedDir;
 use std::{fs, hint::black_box};
 
 fn criterion_benchmark(c: &mut Criterion) {

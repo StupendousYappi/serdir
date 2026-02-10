@@ -13,7 +13,7 @@ use crate::range;
 use bytes::Buf;
 use futures_util::stream::StreamExt as _;
 use http::header::{self, HeaderMap, HeaderValue};
-use http::{self, Method, Request, Response, StatusCode};
+use http::{self, Method, Response, StatusCode};
 use httpdate::{fmt_http_date, parse_http_date};
 use std::io::Write;
 use std::ops::Range;
@@ -68,11 +68,11 @@ fn parse_modified_hdrs(
 /// Handles conditional & subrange requests.
 /// The caller is expected to have already determined the correct entity and appended
 /// `Expires`, `Cache-Control`, and `Vary` headers if desired.
-pub(crate) fn serve<Ent: Entity<Error = crate::IOError>, BI>(
+pub fn serve<Ent: Entity<Error = crate::IOError>, BI>(
     entity: Ent,
-    req: &Request<BI>,
-    status_code: StatusCode,
-) -> Response<Body<Ent::Data>> {
+    req: &http::Request<BI>,
+    status_code: http::StatusCode,
+) -> http::Response<Body<Ent::Data>> {
     // serve takes entity itself for ownership, as needed for the multipart case. But to avoid
     // monomorphization code bloat when there are many implementations of Entity<Data, Error>,
     // delegate as much as possible to functions which take a reference to a trait object.
