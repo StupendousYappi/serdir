@@ -101,7 +101,8 @@ impl FileEntity {
 
         let etag: Option<ETag> = default_hasher(&file)?.map(Into::into);
 
-        FileEntity::new_with_metadata(Arc::new(file), file_info, headers, etag)
+        let entity = FileEntity::new_with_metadata(Arc::new(file), file_info, headers, etag);
+        Ok(entity)
     }
 
     /// Creates a new FileEntity, with presupplied metadata and a pre-opened file.
@@ -121,16 +122,16 @@ impl FileEntity {
         file_info: FileInfo,
         headers: HeaderMap,
         etag: Option<ETag>,
-    ) -> Result<Self, SerdirError> {
+    ) -> Self {
         debug_assert!(file.metadata().unwrap().is_file());
 
-        Ok(FileEntity {
+        FileEntity {
             len: file_info.len(),
             mtime: file_info.mtime(),
             headers,
             f: file,
             etag,
-        })
+        }
     }
 
     /// Returns the value of the response header with the given name, if it exists.
