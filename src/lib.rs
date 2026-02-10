@@ -282,6 +282,7 @@ pub(crate) trait Entity: 'static + Send + Sync {
     fn len(&self) -> u64;
 
     /// Returns true if the entity's body is empty.
+    #[allow(dead_code)]
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
