@@ -21,6 +21,8 @@ pub(crate) fn request_head<B>(req: &Request<B>) -> Request<()> {
 }
 
 /// A Hyper service that serves files from a [`ServedDir`].
+///
+/// Requires the `hyper` feature.
 #[cfg(feature = "hyper")]
 #[derive(Clone)]
 pub struct HyperService(Arc<ServedDir>);
@@ -51,6 +53,8 @@ where
 
 /// A Tower layer that serves files from a [`ServedDir`] and otherwise
 /// passes requests to the wrapped service.
+///
+/// Requires the `tower` feature.
 #[cfg(feature = "tower")]
 #[derive(Clone)]
 pub struct TowerLayer(Arc<ServedDir>);
@@ -75,6 +79,8 @@ impl<S> tower::Layer<S> for TowerLayer {
 }
 
 /// Tower middleware produced by [`TowerLayer`].
+///
+/// Requires the `tower` feature.
 #[cfg(feature = "tower")]
 #[derive(Clone)]
 pub struct ServedDirMiddleware<S> {
@@ -83,6 +89,8 @@ pub struct ServedDirMiddleware<S> {
 }
 
 /// A Tower service that serves files from a [`ServedDir`].
+///
+/// Requires the `tower` feature.
 #[cfg(feature = "tower")]
 #[derive(Clone)]
 pub struct TowerService(Arc<ServedDir>);
