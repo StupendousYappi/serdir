@@ -282,6 +282,11 @@ pub trait Entity: 'static + Send + Sync {
     /// Returns the length of the entity's body in bytes.
     fn len(&self) -> u64;
 
+    /// Returns true if the entity's body is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Gets the body bytes indicated by `range`.
     ///
     /// The stream must return exactly `range.end - range.start` bytes or fail early with an `Err`.
