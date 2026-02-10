@@ -1,4 +1,4 @@
-// Copyright (c) 2023 The http-serve developers
+// Copyright (c) 2023-2026 Greg Steffensen and the http-serve developers
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE.txt or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -13,7 +13,7 @@ use futures_core::Stream;
 use sync_wrapper::SyncWrapper;
 
 pin_project_lite::pin_project! {
-    /// An [`http_body::Body`] implementation used by [`FileEntity`](crate::FileEntity)
+    /// A streaming [`http_body::Body`] implementation used by [`FileEntity`](crate::FileEntity)
     pub struct Body<D = bytes::Bytes> {
         #[pin]
         pub(crate) stream: BodyStream<D>,

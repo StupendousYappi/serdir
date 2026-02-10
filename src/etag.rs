@@ -1,4 +1,4 @@
-// Copyright (c) 2016-2018 The http-serve developers
+// Copyright (c) 2016-2026 Greg Steffensen and the http-serve developers
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE.txt or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -16,11 +16,17 @@ const CACHE_SIZE: usize = 256;
 
 /// A strong HTTP ETag (entity tag) value based on hashing the file contents.
 ///
+/// By default, ETag values are created by hashing the file contents with
+/// [`rapidhash`](https://docs.rs/rapidhash/latest/rapidhash/), but the hashing
+/// algorithm can be customized by calling the
+/// [`ServedDirBuilder::file_hasher`](crate::ServedDirBuilder::file_hasher)
+/// method.
+///
 /// ETags emitted by this crate are always strong, meaning that they are
 /// compatible with range requests, but will not allow reuse of responses for
 /// different encodings (i.e. compression algorithms).
 #[derive(Hash, Eq, PartialEq, Clone, Copy, Debug)]
-pub struct ETag(u64);
+pub struct ETag(pub u64);
 
 /// Function pointer type used to calculate ETag hash values from opened files.
 ///

@@ -21,7 +21,7 @@ use crate::etag::EtagCache;
 use crate::{Body, ETag, FileEntity, FileHasher, FileInfo, SerdirError};
 use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 
-/// Returns `FileEntity` values for file paths within a directory.
+/// Returns [`FileEntity`] values for file paths within a directory.
 ///
 /// A `ServedDir` is created using a [ServedDirBuilder], and must be configured with
 /// the path to the static file root directory. When [ServedDir::get] is called,
@@ -46,7 +46,7 @@ pub struct ServedDir {
     compression_strategy: CompressionStrategyInner,
     file_hasher: FileHasher,
     strip_prefix: Option<String>,
-    known_extensions: Option<HashMap<String, HeaderValue>>,
+    known_extensions: HashMap<String, HeaderValue>,
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
     append_index_html: bool,
@@ -231,76 +231,9 @@ impl ServedDir {
 
     fn get_content_type(&self, extension: &str) -> HeaderValue {
         self.known_extensions
-            .as_ref()
-            .and_then(|exts| exts.get(extension).cloned())
-            .or_else(|| Self::guess_content_type(extension))
+            .get(extension)
+            .cloned()
             .unwrap_or_else(|| self.default_content_type.clone())
-    }
-
-    fn guess_content_type(ext: &str) -> Option<HeaderValue> {
-        let guess = match ext {
-            "html" => Some("text/html"),
-            "htm" => Some("text/html"),
-            "hxt" => Some("text/html"),
-            "css" => Some("text/css"),
-            "js" => Some("text/javascript"),
-            "es" => Some("text/javascript"),
-            "ecma" => Some("text/javascript"),
-            "jsm" => Some("text/javascript"),
-            "jsx" => Some("text/javascript"),
-            "png" => Some("image/png"),
-            "apng" => Some("image/apng"),
-            "avif" => Some("image/avif"),
-            "gif" => Some("image/gif"),
-            "ico" => Some("image/x-icon"),
-            "jpeg" => Some("image/jpeg"),
-            "jfif" => Some("image/jpeg"),
-            "pjpeg" => Some("image/jpeg"),
-            "pjp" => Some("image/jpeg"),
-            "jpg" => Some("image/jpeg"),
-            "svg" => Some("image/svg+xml"),
-            "tiff" => Some("image/tiff"),
-            "webp" => Some("image/webp"),
-            "bmp" => Some("image/bmp"),
-            "pdf" => Some("application/pdf"),
-            "zip" => Some("application/zip"),
-            "gz" => Some("application/gzip"),
-            "tar" => Some("application/tar"),
-            "bz" => Some("application/x-bzip"),
-            "bz2" => Some("application/x-bzip2"),
-            "xz" => Some("application/x-xz"),
-            "csv" => Some("text/csv"),
-            "txt" => Some("text/plain"),
-            "text" => Some("text/plain"),
-            "log" => Some("text/plain"),
-            "md" => Some("text/markdown"),
-            "markdown" => Some("text/x-markdown"),
-            "mkd" => Some("text/x-markdown"),
-            "mp4" => Some("video/mp4"),
-            "webm" => Some("video/webm"),
-            "mpeg" => Some("video/mpeg"),
-            "mpg" => Some("video/mpeg"),
-            "mpg4" => Some("video/mp4"),
-            "xml" => Some("application/xml"),
-            "json" => Some("application/json"),
-            "yaml" => Some("application/yaml"),
-            "yml" => Some("application/yaml"),
-            "toml" => Some("application/toml"),
-            "ini" => Some("application/ini"),
-            "ics" => Some("text/calendar"),
-            "doc" => Some("application/msword"),
-            "docx" => {
-                Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-            }
-            "xls" => Some("application/vnd.ms-excel"),
-            "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-            "ppt" => Some("application/vnd.ms-powerpoint"),
-            "pptx" => {
-                Some("application/vnd.openxmlformats-officedocument.presentationml.presentation")
-            }
-            _ => None,
-        };
-        guess.map(|s| HeaderValue::from_str(s).unwrap())
     }
 
     /// Ensures path is safe: no NUL bytes, not absolute, no `..` segments.
@@ -357,7 +290,7 @@ pub struct ServedDirBuilder {
     compression_strategy: CompressionStrategy,
     file_hasher: Option<FileHasher>,
     strip_prefix: Option<String>,
-    known_extensions: Option<HashMap<String, HeaderValue>>,
+    known_extensions: HashMap<String, HeaderValue>,
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
     append_index_html: bool,
@@ -388,7 +321,7 @@ impl ServedDirBuilder {
             compression_strategy: CompressionStrategy::none(),
             file_hasher: None,
             strip_prefix: None,
-            known_extensions: None,
+            known_extensions: Self::default_extensions(),
             default_content_type: OCTET_STREAM.clone(),
             common_headers: HeaderMap::new(),
             append_index_html: false,
@@ -515,7 +448,19 @@ impl ServedDirBuilder {
     /// - yml
     /// - zip
     pub fn known_extensions(mut self, extensions: HashMap<String, HeaderValue>) -> Self {
-        self.known_extensions = Some(extensions);
+        self.known_extensions = extensions;
+        self
+    }
+
+    /// Adds a single mapping from a file extension to an HTTP content type.
+    ///
+    /// The extension should be provide without a leading dot (e.g. "html" instead of ".html").
+    pub fn known_extension(
+        mut self,
+        extension: impl Into<String>,
+        content_type: HeaderValue,
+    ) -> Self {
+        self.known_extensions.insert(extension.into(), content_type);
         self
     }
 
@@ -572,6 +517,81 @@ impl ServedDirBuilder {
             not_found_path: self.not_found_path,
             etag_cache: EtagCache::new(),
         }
+    }
+
+    fn default_extensions() -> HashMap<String, HeaderValue> {
+        let mut m = HashMap::new();
+        let extensions = [
+            ("html", "text/html"),
+            ("htm", "text/html"),
+            ("hxt", "text/html"),
+            ("css", "text/css"),
+            ("js", "text/javascript"),
+            ("es", "text/javascript"),
+            ("ecma", "text/javascript"),
+            ("jsm", "text/javascript"),
+            ("jsx", "text/javascript"),
+            ("png", "image/png"),
+            ("apng", "image/apng"),
+            ("avif", "image/avif"),
+            ("gif", "image/gif"),
+            ("ico", "image/x-icon"),
+            ("jpeg", "image/jpeg"),
+            ("jfif", "image/jpeg"),
+            ("pjpeg", "image/jpeg"),
+            ("pjp", "image/jpeg"),
+            ("jpg", "image/jpeg"),
+            ("svg", "image/svg+xml"),
+            ("tiff", "image/tiff"),
+            ("webp", "image/webp"),
+            ("bmp", "image/bmp"),
+            ("pdf", "application/pdf"),
+            ("zip", "application/zip"),
+            ("gz", "application/gzip"),
+            ("tar", "application/tar"),
+            ("bz", "application/x-bzip"),
+            ("bz2", "application/x-bzip2"),
+            ("xz", "application/x-xz"),
+            ("csv", "text/csv"),
+            ("txt", "text/plain"),
+            ("text", "text/plain"),
+            ("log", "text/plain"),
+            ("md", "text/markdown"),
+            ("markdown", "text/x-markdown"),
+            ("mkd", "text/x-markdown"),
+            ("mp4", "video/mp4"),
+            ("webm", "video/webm"),
+            ("mpeg", "video/mpeg"),
+            ("mpg", "video/mpeg"),
+            ("mpg4", "video/mp4"),
+            ("xml", "application/xml"),
+            ("json", "application/json"),
+            ("yaml", "application/yaml"),
+            ("yml", "application/yaml"),
+            ("toml", "application/toml"),
+            ("ini", "application/ini"),
+            ("ics", "text/calendar"),
+            ("doc", "application/msword"),
+            (
+                "docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ),
+            ("xls", "application/vnd.ms-excel"),
+            (
+                "xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            ("ppt", "application/vnd.ms-powerpoint"),
+            (
+                "pptx",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ),
+        ];
+
+        for (ext, ct) in extensions {
+            m.insert(ext.to_string(), HeaderValue::from_static(ct));
+        }
+        m
     }
 }
 
@@ -1094,5 +1114,46 @@ mod tests {
         // Second call should use cached value
         served_dir.get("test.txt", &hdrs).await.unwrap();
         assert_eq!(CALL_COUNT.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_served_dir_custom_extensions() {
+        let context = TestContext::new();
+        context.write_file("test.custom", "custom content");
+        context.write_file("another.thing", "thing content");
+        context.write_file("test.html", "html content");
+
+        let mut custom_extensions = HashMap::new();
+        custom_extensions.insert(
+            "custom".to_string(),
+            HeaderValue::from_static("text/custom"),
+        );
+
+        let served_dir = context
+            .builder
+            .known_extensions(custom_extensions)
+            .known_extension("thing", HeaderValue::from_static("application/thing"))
+            .build();
+        let hdrs = HeaderMap::new();
+
+        // 1. Verify known_extensions works
+        let e = served_dir.get("test.custom", &hdrs).await.unwrap();
+        assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/custom");
+
+        // 2. Verify known_extension works
+        let e = served_dir.get("another.thing", &hdrs).await.unwrap();
+        assert_eq!(
+            e.header(&header::CONTENT_TYPE).unwrap(),
+            "application/thing"
+        );
+
+        // 3. Verify defaults are gone because known_extensions replaced the map
+        // (Wait, I should check if that's what we want. The user said: "The known_extensions
+        // setter method should still replace the known_extensions field entirely")
+        let e = served_dir.get("test.html", &hdrs).await.unwrap();
+        assert_eq!(
+            e.header(&header::CONTENT_TYPE).unwrap(),
+            "application/octet-stream"
+        );
     }
 }

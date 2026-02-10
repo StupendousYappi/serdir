@@ -19,7 +19,7 @@ This crate provides utilities for serving static files in Rust web applications.
 - Content type detection based on filename extensions
 - Serving directory paths using `index.html` pages
 - Customizing 404 response content
-- Support for the Tower [Service](https://docs.rs/tower/latest/tower/trait.Service.html) and [Layer](https://docs.rs/tower/latest/tower/trait.Layer.html) APIs
+- Support for the Tower [`Service`](https://docs.rs/tower/latest/tower/trait.Service.html) and [`Layer`](https://docs.rs/tower/latest/tower/trait.Layer.html) APIs
 
 This crate is derived from [http-serve](https://github.com/scottlamb/http-serve/).
 

@@ -22,9 +22,9 @@
 //! - Serving directory paths using `index.html` pages
 //! - Customizing 404 response content
 //! - Support for common Rust web APIs:
-//!   -  [tower::Service](https://docs.rs/tower/latest/tower/trait.Service.html)
-//!   - [tower::Layer](https://docs.rs/tower/latest/tower/trait.Layer.html)
-//!   - [hyper::service::Service](https://docs.rs/hyper/latest/hyper/service/trait.Service.html)
+//!   -  [`tower::Service`](https://docs.rs/tower/latest/tower/trait.Service.html)
+//!   - [`tower::Layer`](https://docs.rs/tower/latest/tower/trait.Layer.html)
+//!   - [`hyper::service::Service`](https://docs.rs/hyper/latest/hyper/service/trait.Service.html)
 //!
 //! This crate is derived from [http-serve](https://github.com/scottlamb/http-serve/).
 //!
@@ -178,13 +178,12 @@ mod file;
 mod platform;
 mod range;
 /// Logic for serving entities.
-pub mod serving;
+mod serving;
 
 pub use crate::body::Body;
 pub use crate::etag::{ETag, FileHasher};
 pub use crate::file::FileEntity;
 pub use crate::served_dir::{ServedDir, ServedDirBuilder};
-pub use crate::serving::serve;
 
 #[cfg(feature = "runtime-compression")]
 mod brotli_cache;
@@ -261,7 +260,7 @@ impl FileInfo {
 
 /// A reusable, read-only, byte-rangeable HTTP entity for GET and HEAD serving.
 /// Must return exactly the same data on every call.
-pub trait Entity: 'static + Send + Sync {
+pub(crate) trait Entity: 'static + Send + Sync {
     /// The type of errors produced in [`Self::get_range`] chunks and in the final stream.
     ///
     /// [`BoxError`] is a good choice for most implementations.
