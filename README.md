@@ -1,5 +1,7 @@
 # serdir
 
+[![crates.io](https://img.shields.io/crates/v/serdir.svg)](https://crates.io/crates/serdir)
+[![Released API docs](https://docs.rs/serdir/badge.svg)](https://docs.rs/serdir/)
 [![CI](https://github.com/StupendousYappi/serdir/workflows/CI/badge.svg)](https://github.com/StupendousYappi/serdir/actions?query=workflow%3ACI)
 
 Rust helpers for serving HTTP GET and HEAD responses with
