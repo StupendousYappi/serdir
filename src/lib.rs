@@ -6,9 +6,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Helpers for serving HTTP GET and HEAD responses asynchronously with the
-//! [http](http://crates.io/crates/http) crate and [tokio](https://crates.io/crates/tokio).
-//! Works well with [hyper](https://crates.io/crates/hyper) 1.x and [tower](https://crates.io/crates/tower).
+//! Tools for serving directories of static files over HTTP using
+//! [http](http://crates.io/crates/http) and
+//! [tokio](https://crates.io/crates/tokio).
+//! Works well with [hyper](https://crates.io/crates/hyper) 1.x and
+//! [tower](https://crates.io/crates/tower).
 //!
 //! # Features
 //!
@@ -22,11 +24,11 @@
 //! - Serving directory paths using `index.html` pages
 //! - Customizing 404 response content
 //! - Support for common Rust web APIs:
-//!   -  [`tower::Service`](https://docs.rs/tower/latest/tower/trait.Service.html)
+//!   - [`tower::Service`](https://docs.rs/tower/latest/tower/trait.Service.html)
 //!   - [`tower::Layer`](https://docs.rs/tower/latest/tower/trait.Layer.html)
 //!   - [`hyper::service::Service`](https://docs.rs/hyper/latest/hyper/service/trait.Service.html)
 //!
-//! This crate is derived from [http-serve](https://github.com/scottlamb/http-serve/).
+//! This crate is gratefully derived from [http-serve](https://github.com/scottlamb/http-serve/).
 //!
 //! # Examples
 //!

@@ -33,18 +33,20 @@ static CHUNK_SIZE: u64 = 65_536;
 ///
 /// Expects to be served from a tokio threadpool.
 ///
-/// Most serdir users will not need to use `FileEntity` directly, and will instead use
-/// higher-level APIs like [`ServedDir::get_response`]. However, `FileEntity` is available for
-/// advanced use cases, like manually modifying the etag or response headers before serving.
+/// Most serdir users will not need to use `FileEntity` directly, and will
+/// instead use higher-level APIs like
+/// [`ServedDir::get_response`](crate::ServedDir::get_response). However,
+/// `FileEntity` is available for advanced use cases, like manually modifying
+/// the etag or response headers before serving.
 ///
-/// A [`FileEntity`] references its file via an open [`File`] handle, not a [`Path`], so it will be
+/// A `FileEntity` references its file via an open [`File`] handle, not a [`Path`], so it will be
 /// resilient against attempts to delete or rename its file as long as it exists. Reading data
-/// from a [`FileEntity`] does not affects its file position, so it is [`Sync`] and can, if needed,
+/// from a `FileEntity` does not affects its file position, so it is [`Sync`] and can, if needed,
 /// be used to serve many requests at once (though this crate's own request handling code doesn't
 /// attempt that).
 ///
 /// However, file metadata such as the length, last modified time and ETag are cached when the
-/// [`FileEntity`] is created, so if the underlying file is written to after the [`FileEntity`] is
+/// `FileEntity` is created, so if the underlying file is written to after the `FileEntity` is
 /// created, it's possible for it to return a corrupt response, with an ETag or last modified time
 /// that doesn't match the served contents. As such, while it is safe to replace existing static
 /// content with new files at runtime, users of this crate should do that by moving files or
