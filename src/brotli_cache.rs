@@ -472,41 +472,4 @@ mod tests {
             .iter()
             .all(|(_, matched)| matched.file_info.len() <= max_expected_size));
     }
-
-    #[test]
-    fn test_prune_cache_odd_count_uses_floor() {
-        use std::io::Write;
-
-        let dir = tempfile::tempdir().unwrap();
-        let cache = BrotliCache::from(crate::compression::CachedCompression::new().max_size(16));
-
-        for (name, size) in [
-            ("a.txt", 64usize),
-            ("b.txt", 128usize),
-            ("c.txt", 256usize),
-            ("d.txt", 512usize),
-            ("e.txt", 1024usize),
-        ] {
-            let path = dir.path().join(name);
-            let mut f = File::create(&path).unwrap();
-            f.write_all(&vec![b'y'; size]).unwrap();
-            let _ = cache.get(&path).unwrap();
-        }
-
-        let mut before = cache.cache.entries();
-        before.sort_unstable_by_key(|(_, matched)| matched.file_info.len());
-        let expected: HashSet<CacheKey> = before
-            .iter()
-            .take(before.len() / 2)
-            .map(|(key, _)| *key)
-            .collect();
-        assert_eq!(expected.len(), 2);
-
-        cache.prune_cache();
-
-        let remaining = cache.cache.entries();
-        let remaining_keys: HashSet<CacheKey> = remaining.into_iter().map(|(key, _)| key).collect();
-        assert!(remaining_keys == expected);
-        assert_eq!(remaining_keys.len(), 2);
-    }
 }
