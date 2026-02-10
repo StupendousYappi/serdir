@@ -43,9 +43,9 @@ struct Req {
     if_range: Option<String>,
 }
 
-impl serve_files::Entity for &'static FakeEntity {
+impl serdir::Entity for &'static FakeEntity {
     type Data = bytes::Bytes;
-    type Error = serve_files::BoxError;
+    type Error = std::io::Error;
 
     fn len(&self) -> u64 {
         BODY.len() as u64
@@ -99,7 +99,7 @@ fuzz_target!(|data: Req| {
         Ok(r) => r,
     };
 
-    let response = serve_files::serve(&*ENTITY_STRONG_ETAG, &request);
+    let response = serdir::serve(&*ENTITY_STRONG_ETAG, &request, http::StatusCode::OK);
     let body = response.into_body();
     futures::pin_mut!(body);
     let waker = futures::task::noop_waker();
