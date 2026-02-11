@@ -8,77 +8,59 @@
 
 //! Serves a directory on `http://127.0.0.1:1337/` using `ServedDir::into_hyper_service`.
 
-use argh::FromArgs;
+mod common;
+
+use anyhow::{Context, Result};
+use common::Config;
+use hyper::server::conn;
 use hyper_util::rt::TokioIo;
-use serdir::ServedDir;
+use serdir::ServedDirBuilder;
 use std::net::{Ipv4Addr, SocketAddr};
 use tokio::net::TcpListener;
 
-#[derive(FromArgs, Debug)]
-/// Serves a directory over HTTP using ServedDir::into_hyper_service.
-struct Config {
-    /// path to the directory to serve
-    #[argh(positional)]
-    directory: String,
-
-    /// path (relative to served directory) to use as 404 body
-    #[argh(option)]
-    not_found_path: Option<String>,
-}
-
 #[tokio::main]
-async fn main() {
-    if let Err(e) = run().await {
-        eprintln!("{e}");
-        std::process::exit(1);
-    }
+async fn main() -> Result<()> {
+    run().await
 }
 
-async fn run() -> Result<(), String> {
-    let config: Config = argh::from_env();
-
-    let mut builder = ServedDir::builder(&config.directory)
-        .map_err(|e| format!("failed to create ServedDir builder: {e}"))?
-        .append_index_html(true);
-
+async fn run() -> Result<()> {
+    let config = Config::from_env();
+    let mut builder = ServedDirBuilder::new(config.directory.as_str())
+        .context("failed to create ServedDir builder")?
+        .append_index_html(true)
+        .compression(config.compression_strategy())
+        .strip_prefix(config.strip_prefix.unwrap_or_default());
     if let Some(path) = config.not_found_path {
         builder = builder
             .not_found_path(path)
-            .map_err(|e| format!("failed to set --not-found-path: {e}"))?;
+            .context("failed to set --not-found-path")?;
     }
-
-    let service = builder.build().into_hyper_service();
+    let served_dir = builder.build();
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 1337));
     let listener = TcpListener::bind(addr)
         .await
-        .map_err(|e| format!("failed to bind {addr}: {e}"))?;
+        .with_context(|| format!("failed to bind {addr}"))?;
 
     println!(
         "Serving {} on http://{}",
-        config.directory,
+        served_dir.dir().display(),
         listener
             .local_addr()
-            .map_err(|e| format!("failed to get listener address: {e}"))?
+            .context("failed to get listener address")?
     );
+    let service = served_dir.into_hyper_service();
 
     loop {
-        let (tcp, _) = listener
-            .accept()
-            .await
-            .map_err(|e| format!("accept failed: {e}"))?;
+        let (tcp, _) = listener.accept().await.context("accept failed")?;
         let service = service.clone();
         tokio::spawn(async move {
-            if let Err(e) = tcp.set_nodelay(true) {
-                eprintln!("failed to set TCP_NODELAY: {e}");
-                return;
-            }
+            tcp.set_nodelay(true).context("failed to set TCP_NODELAY")?;
             let io = TokioIo::new(tcp);
-            if let Err(e) = hyper::server::conn::http1::Builder::new()
+            conn::http1::Builder::new()
                 .serve_connection(io, service)
                 .await
-            {
-                eprintln!("connection error: {e}");
-            }
+                .context("connection error")?;
+            Ok::<(), anyhow::Error>(())
         });
     }
 }
