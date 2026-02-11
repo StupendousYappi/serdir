@@ -155,11 +155,12 @@ async fn run() -> Result<()> {
     let mut builder = ServedDirBuilder::new(config.directory.as_str())
         .context("failed to create ServedDir builder")?
         .append_index_html(true)
-        .compression(config.compression_strategy());
+        .compression(config.compression_strategy())
+        .strip_prefix(config.strip_prefix.unwrap_or_default());
     if let Some(path) = config.not_found_path {
         builder = builder
             .not_found_path(path)
-            .map_err(|e| anyhow::anyhow!("failed to set --not-found-path: {e}"))?;
+            .context("failed to set --not-found-path")?;
     }
     let served_dir = builder.build();
     let root_path = served_dir.dir().to_path_buf();
