@@ -6,6 +6,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use bytes::BufMut;
 use crate::platform::FileExt;
 use crate::served_dir::default_hasher;
 use crate::FileInfo;
@@ -165,21 +166,60 @@ impl Entity for FileEntity {
         &self,
         range: Range<u64>,
     ) -> Pin<Box<dyn Stream<Item = Result<Self::Data, Self::Error>> + Send + Sync>> {
-        let stream = stream::unfold((range, Arc::clone(&self.f)), move |(left, f)| async {
-            if left.start == left.end {
-                return None;
-            }
-            let chunk_size = std::cmp::min(CHUNK_SIZE, left.end - left.start) as usize;
-            Some(tokio::task::block_in_place(move || {
-                match f.read_range(chunk_size, left.start) {
-                    Err(e) => (Err(e), (left, f)),
-                    Ok(v) => {
-                        let bytes_read = v.len();
-                        (Ok(v.into()), (left.start + bytes_read as u64..left.end, f))
-                    }
+        let buffer = bytes::BytesMut::new();
+        let stream = stream::unfold(
+            (range, Arc::clone(&self.f), buffer),
+            move |(left, f, mut buffer)| async {
+                if left.start == left.end {
+                    return None;
                 }
-            }))
-        });
+                Some(tokio::task::block_in_place(move || {
+                    let chunk_size = std::cmp::min(CHUNK_SIZE, left.end - left.start) as usize;
+
+                    // Ensure capacity. If we need to read chunk_size, we need at least chunk_size capacity.
+                    // We prefer to reserve more to amortize allocations.
+                    if buffer.capacity() < chunk_size {
+                        // If we are low on capacity, reserve a larger block.
+                        // The memory hint suggested CHUNK_SIZE * 16.
+                        // Note: reserve ensures at least `additional` bytes.
+                        buffer.reserve(std::cmp::max(chunk_size, (CHUNK_SIZE * 16) as usize));
+                    }
+
+                    // Read into buffer.
+                    // We must use unsafe to get mutable access to uninitialized space.
+                    // BytesMut::spare_capacity_mut() returns &mut [MaybeUninit<u8>].
+                    let spare = buffer.spare_capacity_mut();
+                    let spare_slice = &mut spare[..chunk_size];
+
+                    // Unsafe cast to &mut [u8].
+                    // SAFETY: read_range_into guarantees it only writes to the buffer.
+                    // It treats the buffer as uninitialized (overwriting it).
+                    let buffer_slice = unsafe {
+                        std::slice::from_raw_parts_mut(
+                            spare_slice.as_mut_ptr() as *mut u8,
+                            chunk_size,
+                        )
+                    };
+
+                    let result = f.read_range_into(buffer_slice, left.start);
+
+                    match result {
+                        Err(e) => (Err(e), (left, f, buffer)),
+                        Ok(0) => (Err(std::io::ErrorKind::UnexpectedEof.into()), (left, f, buffer)),
+                        Ok(bytes_read) => {
+                            unsafe {
+                                buffer.advance_mut(bytes_read);
+                            }
+                            let chunk = buffer.split_to(bytes_read).freeze();
+                            (
+                                Ok(chunk),
+                                (left.start + bytes_read as u64..left.end, f, buffer),
+                            )
+                        }
+                    }
+                }))
+            },
+        );
         let _: &dyn Stream<Item = Result<Self::Data, Self::Error>> = &stream;
         Box::pin(stream)
     }
