@@ -279,7 +279,7 @@ pub(crate) fn parse_qvalue(s: &str) -> Result<u16, ()> {
 /// A struct representing which compression encodings are supported by the
 /// client or the server.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
-pub struct CompressionSupport {
+pub(crate) struct CompressionSupport {
     gzip: bool,
     br: bool,
     zstd: bool,

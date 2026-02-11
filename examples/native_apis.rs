@@ -1,4 +1,4 @@
-// Copyright (c) 2020 The http-serve developers
+// Copyright (c) 2016-2026 Greg Steffensen and the http-serve developers
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE.txt or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -6,17 +6,18 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Serves a directory on `http://127.0.0.1:1337/` using `ServedDir::into_tower_service`.
+//! Serves a directory on `http://127.0.0.1:1337/` using the native `ServedDir` API.
 
 mod common;
 
 use anyhow::{Context, Result};
 use common::Config;
 use hyper::server::conn;
+use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
-use hyper_util::service::TowerToHyperService;
 use serdir::ServedDirBuilder;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -37,6 +38,8 @@ async fn run() -> Result<()> {
             .context("failed to set --not-found-path")?;
     }
     let served_dir = builder.build();
+    let served_dir = Arc::new(served_dir);
+
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 1337));
     let listener = TcpListener::bind(addr)
         .await
@@ -49,17 +52,20 @@ async fn run() -> Result<()> {
             .local_addr()
             .context("failed to get listener address")?
     );
-    let service = served_dir.into_tower_service();
 
     loop {
         let (tcp, _) = listener.accept().await.context("accept failed")?;
-        let service = service.clone();
+        let served_dir = Arc::clone(&served_dir);
+        let service = service_fn(move |req| {
+            let served_dir = Arc::clone(&served_dir);
+            async move { served_dir.get_response(&req).await }
+        });
+
         tokio::spawn(async move {
             tcp.set_nodelay(true).context("failed to set TCP_NODELAY")?;
             let io = TokioIo::new(tcp);
-            let hyper_service = TowerToHyperService::new(service);
             conn::http1::Builder::new()
-                .serve_connection(io, hyper_service)
+                .serve_connection(io, service)
                 .await
                 .context("connection error")?;
             Ok::<(), anyhow::Error>(())
