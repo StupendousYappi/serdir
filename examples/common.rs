@@ -8,7 +8,6 @@
 
 use anyhow::Result;
 use argh::FromArgs;
-use serdir::ServedDirBuilder;
 
 #[derive(Clone, Copy, Debug)]
 pub enum CompressionMode {
@@ -53,41 +52,23 @@ impl Config {
         argh::from_env()
     }
 
-    pub fn compression_strategy(&self) -> Result<serdir::compression::CompressionStrategy> {
+    pub fn compression_strategy(&self) -> serdir::compression::CompressionStrategy {
         match self.compression {
             CompressionMode::Static => {
-                Ok(serdir::compression::CompressionStrategy::static_compression())
+                serdir::compression::CompressionStrategy::static_compression()
             }
-            CompressionMode::None => Ok(serdir::compression::CompressionStrategy::none()),
+            CompressionMode::None => serdir::compression::CompressionStrategy::none(),
             CompressionMode::Cached => {
                 #[cfg(feature = "runtime-compression")]
                 {
-                    Ok(serdir::compression::CompressionStrategy::cached_compression())
+                    serdir::compression::CompressionStrategy::cached_compression()
                 }
                 #[cfg(not(feature = "runtime-compression"))]
                 {
-                    anyhow::bail!(
-                        "compression mode 'cached' requires the 'runtime-compression' feature"
-                    );
+                    panic!("compression mode 'cached' requires the 'runtime-compression' feature");
                 }
             }
         }
-    }
-
-    pub fn into_builder(self) -> Result<ServedDirBuilder> {
-        let mut builder = serdir::ServedDir::builder(&self.directory)
-            .map_err(|e| anyhow::anyhow!("failed to create ServedDir builder: {e}"))?
-            .append_index_html(true);
-
-        builder = builder.compression(self.compression_strategy()?);
-
-        if let Some(path) = self.not_found_path {
-            builder = builder
-                .not_found_path(path)
-                .map_err(|e| anyhow::anyhow!("failed to set --not-found-path: {e}"))?;
-        }
-
-        Ok(builder)
     }
 }
 

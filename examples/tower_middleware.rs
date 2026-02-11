@@ -10,7 +10,7 @@
 
 mod common;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use common::Config;
 use http::header::{self, HeaderValue};
 use hyper::server::conn;
@@ -24,10 +24,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
 use tokio::net::TcpListener;
-use tokio::task::JoinSet;
 use tower::{Layer, Service};
 
-use serdir::Body;
+use serdir::{Body, ServedDirBuilder};
 
 type ResponseFuture =
     Pin<Box<dyn Future<Output = Result<http::Response<Body>, std::convert::Infallible>> + Send>>;
@@ -153,7 +152,16 @@ async fn main() -> Result<()> {
 async fn run() -> Result<()> {
     env_logger::init();
     let config = Config::from_env();
-    let served_dir = config.into_builder()?.build();
+    let mut builder = ServedDirBuilder::new(config.directory.as_str())
+        .context("failed to create ServedDir builder")?
+        .append_index_html(true)
+        .compression(config.compression_strategy());
+    if let Some(path) = config.not_found_path {
+        builder = builder
+            .not_found_path(path)
+            .map_err(|e| anyhow::anyhow!("failed to set --not-found-path: {e}"))?;
+    }
+    let served_dir = builder.build();
     let root_path = served_dir.dir().to_path_buf();
     let served_dir_display = root_path.display().to_string();
     let layer = served_dir.into_tower_layer();
@@ -170,27 +178,18 @@ async fn run() -> Result<()> {
             .local_addr()
             .context("failed to get listener address")?
     );
-    let mut workers: JoinSet<Result<()>> = JoinSet::new();
     loop {
-        tokio::select! {
-            accept_result = listener.accept() => {
-                let (tcp, _) = accept_result.context("accept failed")?;
-                let service = service.clone();
-                workers.spawn(async move {
-                    tcp.set_nodelay(true)
-                        .context("failed to set TCP_NODELAY")?;
-                    let io = TokioIo::new(tcp);
-                    let hyper_service = TowerToHyperService::new(service);
-                    conn::http1::Builder::new()
-                        .serve_connection(io, hyper_service)
-                        .await
-                        .context("connection error")?;
-                    Ok(())
-                });
-            }
-            Some(task_result) = workers.join_next() => {
-                task_result.context("connection task panicked")??;
-            }
-        }
+        let (tcp, _) = listener.accept().await.context("accept failed")?;
+        let service = service.clone();
+        tokio::spawn(async move {
+            tcp.set_nodelay(true).context("failed to set TCP_NODELAY")?;
+            let io = TokioIo::new(tcp);
+            let hyper_service = TowerToHyperService::new(service);
+            conn::http1::Builder::new()
+                .serve_connection(io, hyper_service)
+                .await
+                .context("connection error")?;
+            Ok::<(), anyhow::Error>(())
+        });
     }
 }

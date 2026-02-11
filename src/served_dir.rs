@@ -316,7 +316,8 @@ impl ServedDirBuilder {
     /// contents. The recommended way to update served content live is to pass a
     /// symlink to the target directory to this function, and then update the
     /// symlink to point to the new directory when needed.
-    fn new(dirpath: PathBuf) -> Result<Self, SerdirError> {
+    pub fn new(dirpath: impl Into<PathBuf>) -> Result<Self, SerdirError> {
+        let dirpath = dirpath.into();
         if !dirpath.is_dir() {
             let msg = format!("path is not a directory: {}", dirpath.display());
             return Err(SerdirError::ConfigError(msg));

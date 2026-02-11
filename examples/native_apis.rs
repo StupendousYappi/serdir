@@ -15,10 +15,10 @@ use common::Config;
 use hyper::server::conn;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
+use serdir::ServedDirBuilder;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::task::JoinSet;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -27,7 +27,16 @@ async fn main() -> Result<()> {
 
 async fn run() -> Result<()> {
     let config = Config::from_env();
-    let served_dir = config.into_builder()?.build();
+    let mut builder = ServedDirBuilder::new(config.directory.as_str())
+        .context("failed to create ServedDir builder")?
+        .append_index_html(true)
+        .compression(config.compression_strategy());
+    if let Some(path) = config.not_found_path {
+        builder = builder
+            .not_found_path(path)
+            .map_err(|e| anyhow::anyhow!("failed to set --not-found-path: {e}"))?;
+    }
+    let served_dir = builder.build();
     let served_dir = Arc::new(served_dir);
 
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 1337));
@@ -42,32 +51,23 @@ async fn run() -> Result<()> {
             .local_addr()
             .context("failed to get listener address")?
     );
-    let mut workers: JoinSet<Result<()>> = JoinSet::new();
 
     loop {
-        tokio::select! {
-            accept_result = listener.accept() => {
-                let (tcp, _) = accept_result.context("accept failed")?;
-                let served_dir = Arc::clone(&served_dir);
-                let service = service_fn(move |req| {
-                    let served_dir = Arc::clone(&served_dir);
-                    async move { served_dir.get_response(&req).await }
-                });
+        let (tcp, _) = listener.accept().await.context("accept failed")?;
+        let served_dir = Arc::clone(&served_dir);
+        let service = service_fn(move |req| {
+            let served_dir = Arc::clone(&served_dir);
+            async move { served_dir.get_response(&req).await }
+        });
 
-                workers.spawn(async move {
-                    tcp.set_nodelay(true)
-                        .context("failed to set TCP_NODELAY")?;
-                    let io = TokioIo::new(tcp);
-                    conn::http1::Builder::new()
-                        .serve_connection(io, service)
-                        .await
-                        .context("connection error")?;
-                    Ok(())
-                });
-            }
-            Some(task_result) = workers.join_next() => {
-                task_result.context("connection task panicked")??;
-            }
-        }
+        tokio::spawn(async move {
+            tcp.set_nodelay(true).context("failed to set TCP_NODELAY")?;
+            let io = TokioIo::new(tcp);
+            conn::http1::Builder::new()
+                .serve_connection(io, service)
+                .await
+                .context("connection error")?;
+            Ok::<(), anyhow::Error>(())
+        });
     }
 }
