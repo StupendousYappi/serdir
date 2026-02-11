@@ -55,6 +55,7 @@ winapi = { version = "0.3.6", features = [
 ] }
 
 [dev-dependencies]
+anyhow = "1"
 argh = "0.1"
 criterion = { version = "0.5", features = ["async_tokio"] }
 htmlescape = "0.3"

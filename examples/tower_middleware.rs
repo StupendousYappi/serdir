@@ -8,63 +8,29 @@
 
 //! Serves a directory on `http://127.0.0.1:1337/` using `ServedDir::into_tower_layer`.
 
-use argh::FromArgs;
+mod common;
+
+use anyhow::{bail, Context, Result};
+use common::Config;
 use http::header::{self, HeaderValue};
+use hyper::server::conn;
 use hyper_util::rt::TokioIo;
 use hyper_util::service::TowerToHyperService;
-use serdir::ServedDir;
 use std::fmt::Write;
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
+use std::task::{Context as TaskContext, Poll};
 use tokio::net::TcpListener;
+use tokio::task::JoinSet;
 use tower::{Layer, Service};
 
 use serdir::Body;
 
 type ResponseFuture =
     Pin<Box<dyn Future<Output = Result<http::Response<Body>, std::convert::Infallible>> + Send>>;
-
-#[derive(Clone, Copy, Debug)]
-enum CompressionMode {
-    Cached,
-    Static,
-    None,
-}
-
-impl std::str::FromStr for CompressionMode {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "cached" => Ok(Self::Cached),
-            "static" => Ok(Self::Static),
-            "none" => Ok(Self::None),
-            _ => Err(format!(
-                "invalid value '{value}', expected one of: cached, static, none"
-            )),
-        }
-    }
-}
-
-#[derive(FromArgs, Debug)]
-/// Serves a directory over HTTP using ServedDir::into_tower_layer.
-struct Config {
-    /// path to the directory to serve
-    #[argh(positional)]
-    directory: String,
-
-    /// compression strategy: cached, static, or none
-    #[argh(option, default = "CompressionMode::None")]
-    compression: CompressionMode,
-
-    /// path (relative to served directory) to use as 404 body
-    #[argh(option)]
-    not_found_path: Option<String>,
-}
 
 #[derive(Clone)]
 struct DirectoryFallbackService {
@@ -84,7 +50,7 @@ impl Service<http::Request<hyper::body::Incoming>> for DirectoryFallbackService 
     type Error = std::convert::Infallible;
     type Future = ResponseFuture;
 
-    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(&mut self, _cx: &mut TaskContext<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
@@ -180,67 +146,51 @@ fn not_found_response() -> http::Response<Body> {
 }
 
 #[tokio::main]
-async fn main() {
-    if let Err(e) = run().await {
-        eprintln!("{e}");
-        std::process::exit(1);
-    }
+async fn main() -> Result<()> {
+    run().await
 }
 
-async fn run() -> Result<(), String> {
+async fn run() -> Result<()> {
     env_logger::init();
-    let config: Config = argh::from_env();
-
-    let mut builder = ServedDir::builder(&config.directory)
-        .map_err(|e| format!("failed to create ServedDir builder: {e}"))?
-        .append_index_html(true);
-
-    builder = match config.compression {
-        CompressionMode::Static => builder.static_compression(true, true, true),
-        CompressionMode::None => builder.no_compression(),
-        CompressionMode::Cached => builder.cached_compression(serdir::compression::BrotliLevel::L5),
-    };
-
-    if let Some(path) = config.not_found_path {
-        builder = builder
-            .not_found_path(path)
-            .map_err(|e| format!("failed to set --not-found-path: {e}"))?;
-    }
-
-    let root_path = PathBuf::from(&config.directory);
-    let layer = builder.build().into_tower_layer();
+    let config = Config::from_env();
+    let served_dir = config.into_builder()?.build();
+    let root_path = served_dir.dir().to_path_buf();
+    let served_dir_display = root_path.display().to_string();
+    let layer = served_dir.into_tower_layer();
     let service = layer.layer(DirectoryFallbackService::new(root_path));
 
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 1337));
     let listener = TcpListener::bind(addr)
         .await
-        .map_err(|e| format!("failed to bind {addr}: {e}"))?;
+        .with_context(|| format!("failed to bind {addr}"))?;
     println!(
         "Serving {} on http://{}",
-        config.directory,
+        served_dir_display,
         listener
             .local_addr()
-            .map_err(|e| format!("failed to get listener address: {e}"))?
+            .context("failed to get listener address")?
     );
+    let mut workers: JoinSet<Result<()>> = JoinSet::new();
     loop {
-        let (tcp, _) = listener
-            .accept()
-            .await
-            .map_err(|e| format!("accept failed: {e}"))?;
-        let service = service.clone();
-        tokio::spawn(async move {
-            if let Err(e) = tcp.set_nodelay(true) {
-                eprintln!("failed to set TCP_NODELAY: {e}");
-                return;
+        tokio::select! {
+            accept_result = listener.accept() => {
+                let (tcp, _) = accept_result.context("accept failed")?;
+                let service = service.clone();
+                workers.spawn(async move {
+                    tcp.set_nodelay(true)
+                        .context("failed to set TCP_NODELAY")?;
+                    let io = TokioIo::new(tcp);
+                    let hyper_service = TowerToHyperService::new(service);
+                    conn::http1::Builder::new()
+                        .serve_connection(io, hyper_service)
+                        .await
+                        .context("connection error")?;
+                    Ok(())
+                });
             }
-            let io = TokioIo::new(tcp);
-            let hyper_service = TowerToHyperService::new(service);
-            if let Err(e) = hyper::server::conn::http1::Builder::new()
-                .serve_connection(io, hyper_service)
-                .await
-            {
-                eprintln!("connection error: {e}");
+            Some(task_result) = workers.join_next() => {
+                task_result.context("connection task panicked")??;
             }
-        });
+        }
     }
 }
