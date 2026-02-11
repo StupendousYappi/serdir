@@ -25,7 +25,7 @@
 //! - Customizing 404 response content
 //! - Support for common Rust web APIs:
 //!   - [`tower::Service`](https://docs.rs/tower/latest/tower/trait.Service.html)
-//!   - [`tower::Layer`](https://docs.rs/tower/latest/tower/trait.Layer.html)
+//!   - [`tower::Layer`](https://docs.rs/tower/latest/tower/trait.Layer.html) (i.e. fallback to a `tower::Service` if no file is found)
 //!   - [`hyper::service::Service`](https://docs.rs/hyper/latest/hyper/service/trait.Service.html)
 //!
 //! This crate is gratefully derived from [http-serve](https://github.com/scottlamb/http-serve/).
@@ -72,48 +72,6 @@
 //! }
 //! # }
 //! ```
-//!
-//! Serve files via `tower::Service`:
-//!
-//! ```no_run
-//! # #[cfg(feature = "tower")]
-//! # {
-//! use hyper::server::conn;
-//! use hyper_util::rt::TokioIo;
-//! use hyper_util::service::TowerToHyperService;
-//! use serdir::ServedDir;
-//! use std::net::{Ipv4Addr, SocketAddr};
-//! use tokio::net::TcpListener;
-//!
-//! #[tokio::main]
-//! async fn main() {
-//!     let service = ServedDir::builder("./static")
-//!         .unwrap()
-//!         .append_index_html(true)
-//!         .build()
-//!         .into_tower_service();
-//!
-//!     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 1337));
-//!     let listener = TcpListener::bind(addr).await.unwrap();
-//!
-//!     loop {
-//!         let (tcp, _) = listener.accept().await.unwrap();
-//!         let service = service.clone();
-//!         tokio::spawn(async move {
-//!             let io = TokioIo::new(tcp);
-//!             let hyper_service = TowerToHyperService::new(service);
-//!             if let Err(err) = conn::http1::Builder::new()
-//!                 .serve_connection(io, hyper_service)
-//!                 .await
-//!             {
-//!                 eprintln!("connection error: {err}");
-//!             }
-//!         });
-//!     }
-//! }
-//! # }
-//! ```
-//!
 //! Serve files via native `ServedDir` API:
 //!
 //! ```no_run
