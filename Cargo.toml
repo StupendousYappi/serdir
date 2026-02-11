@@ -100,6 +100,10 @@ required-features = ["tower", "runtime-compression"]
 name = "hyper"
 required-features = ["hyper"]
 
+[[example]]
+name = "native_apis"
+required-features = ["hyper"]
+
 [[bench]]
 name = "hashing"
 harness = false

@@ -37,14 +37,15 @@
 //! ```no_run
 //! # #[cfg(feature = "hyper")]
 //! # {
+//! use hyper::server::conn;
 //! use hyper_util::rt::TokioIo;
 //! use serdir::ServedDir;
 //! use serdir::compression::BrotliLevel;
 //! use std::net::{Ipv4Addr, SocketAddr};
 //! use tokio::net::TcpListener;
 //!
-//! let runtime = tokio::runtime::Runtime::new().unwrap();
-//! runtime.block_on(async {
+//! #[tokio::main]
+//! async fn main() {
 //!     let service = ServedDir::builder("./static")
 //!         .unwrap()
 //!         .append_index_html(true)
@@ -60,7 +61,7 @@
 //!         let service = service.clone();
 //!         tokio::spawn(async move {
 //!             let io = TokioIo::new(tcp);
-//!             if let Err(err) = hyper::server::conn::http1::Builder::new()
+//!             if let Err(err) = conn::http1::Builder::new()
 //!                 .serve_connection(io, service)
 //!                 .await
 //!             {
@@ -68,7 +69,93 @@
 //!             }
 //!         });
 //!     }
-//! });
+//! }
+//! # }
+//! ```
+//!
+//! Serve files via `tower::Service`:
+//!
+//! ```no_run
+//! # #[cfg(feature = "tower")]
+//! # {
+//! use hyper::server::conn;
+//! use hyper_util::rt::TokioIo;
+//! use hyper_util::service::TowerToHyperService;
+//! use serdir::ServedDir;
+//! use std::net::{Ipv4Addr, SocketAddr};
+//! use tokio::net::TcpListener;
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!     let service = ServedDir::builder("./static")
+//!         .unwrap()
+//!         .append_index_html(true)
+//!         .build()
+//!         .into_tower_service();
+//!
+//!     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 1337));
+//!     let listener = TcpListener::bind(addr).await.unwrap();
+//!
+//!     loop {
+//!         let (tcp, _) = listener.accept().await.unwrap();
+//!         let service = service.clone();
+//!         tokio::spawn(async move {
+//!             let io = TokioIo::new(tcp);
+//!             let hyper_service = TowerToHyperService::new(service);
+//!             if let Err(err) = conn::http1::Builder::new()
+//!                 .serve_connection(io, hyper_service)
+//!                 .await
+//!             {
+//!                 eprintln!("connection error: {err}");
+//!             }
+//!         });
+//!     }
+//! }
+//! # }
+//! ```
+//!
+//! Serve files via native `ServedDir` API:
+//!
+//! ```no_run
+//! # #[cfg(feature = "hyper")]
+//! # {
+//! use hyper::server::conn;
+//! use hyper::service::service_fn;
+//! use hyper_util::rt::TokioIo;
+//! use serdir::ServedDir;
+//! use std::net::{Ipv4Addr, SocketAddr};
+//! use std::sync::Arc;
+//! use tokio::net::TcpListener;
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!     let served_dir = ServedDir::builder("./static")
+//!             .unwrap()
+//!             .append_index_html(true)
+//!             .build();
+//!     let served_dir = Arc::new(served_dir);
+//!
+//!     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 1337));
+//!     let listener = TcpListener::bind(addr).await.unwrap();
+//!
+//!     loop {
+//!         let (tcp, _) = listener.accept().await.unwrap();
+//!         let served_dir = Arc::clone(&served_dir);
+//!         let service = service_fn(move |req| {
+//!             let served_dir = Arc::clone(&served_dir);
+//!             async move { served_dir.get_response(&req).await }
+//!         });
+//!         tokio::spawn(async move {
+//!             let io = TokioIo::new(tcp);
+//!             if let Err(err) = conn::http1::Builder::new()
+//!                 .serve_connection(io, service)
+//!                 .await
+//!             {
+//!                 eprintln!("connection error: {err}");
+//!             }
+//!         });
+//!     }
+//! }
 //! # }
 //! ```
 
