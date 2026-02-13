@@ -26,7 +26,7 @@ use http::{Request, Response, StatusCode};
 
 // This stream breaks apart the file into chunks of at most CHUNK_SIZE. This size is
 // a tradeoff between memory usage and thread handoffs.
-static CHUNK_SIZE: u64 = 65_536;
+const CHUNK_SIZE: u64 = 65_536;
 
 /// HTTP entity created from a [`std::fs::File`] which reads the file chunk-by-chunk within
 /// a [`tokio::task::block_in_place`] closure.
