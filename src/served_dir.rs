@@ -139,10 +139,9 @@ impl ServedDir {
         };
         let path = path.strip_prefix('/').unwrap_or(path);
 
-        self.validate_path(path)?;
+        let full_path = self.validate_path(path)?;
 
         let preferred = CompressionSupport::detect(req_hdrs);
-        let full_path = self.dirpath.join(path);
 
         tokio::task::block_in_place(|| {
             let res = self.find_file(&full_path, preferred);
@@ -242,31 +241,34 @@ impl ServedDir {
             .unwrap_or_else(|| self.default_content_type.clone())
     }
 
-    /// Ensures path is safe: no NUL bytes, not absolute, no `..` segments.
-    fn validate_path(&self, path: &str) -> Result<(), SerdirError> {
+    /// Ensures path is safe (no NUL bytes, not absolute, no `..` segments) and
+    /// returns the full path joined to the root directory.
+    fn validate_path(&self, path: &str) -> Result<PathBuf, SerdirError> {
         if memchr::memchr(0, path.as_bytes()).is_some() {
             return Err(SerdirError::InvalidPath(
                 "path contains NUL byte".to_string(),
             ));
         }
-        if path.as_bytes().first() == Some(&b'/') {
-            return Err(SerdirError::InvalidPath("path is absolute".to_string()));
-        }
-        let mut left = path.as_bytes();
-        loop {
-            let next = memchr::memchr(b'/', left);
-            let seg = &left[0..next.unwrap_or(left.len())];
-            if seg == b".." {
-                return Err(SerdirError::InvalidPath(
-                    "path contains .. segment".to_string(),
-                ));
+
+        let mut full_path = self.dirpath.clone();
+        for component in Path::new(path).components() {
+            match component {
+                std::path::Component::Normal(seg) => full_path.push(seg),
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    return Err(SerdirError::InvalidPath(
+                        "path contains .. segment".to_string(),
+                    ));
+                }
+                std::path::Component::RootDir => {
+                    return Err(SerdirError::InvalidPath("path is absolute".to_string()));
+                }
+                std::path::Component::Prefix(_) => {
+                    return Err(SerdirError::InvalidPath("path contains a prefix".to_string()));
+                }
             }
-            match next {
-                None => break,
-                Some(n) => left = &left[n + 1..],
-            };
         }
-        Ok(())
+        Ok(full_path)
     }
 
     /// Returns a Tower service that serves files from this `ServedDir`.
@@ -686,16 +688,43 @@ mod tests {
         let served_dir = context.builder.build();
         let hdrs = HeaderMap::new();
 
-        // 1. Contains ".."
+        // 1. Contains ".." in middle
         let err = served_dir
             .get("include/../etc/passwd", &hdrs)
             .await
             .unwrap_err();
-        assert!(matches!(err, SerdirError::InvalidPath(msg) if msg.contains("..")));
+        assert!(matches!(err, SerdirError::InvalidPath(msg) if msg.contains(".. segment")));
 
-        // 2. Contains null byte
+        // 2. Contains ".." at start
+        let err = served_dir.get("../etc/passwd", &hdrs).await.unwrap_err();
+        assert!(matches!(err, SerdirError::InvalidPath(msg) if msg.contains(".. segment")));
+
+        // 3. Contains ".." at end
+        let err = served_dir.get("foo/..", &hdrs).await.unwrap_err();
+        assert!(matches!(err, SerdirError::InvalidPath(msg) if msg.contains(".. segment")));
+
+        // 4. Contains null byte
         let err = served_dir.get("test\0file.txt", &hdrs).await.unwrap_err();
         assert!(matches!(err, SerdirError::InvalidPath(msg) if msg.contains("NUL byte")));
+
+        // 5. Absolute path (leading /)
+        // Note: ServedDir::get strips one leading slash, so we test with two.
+        let err = served_dir.get("//etc/passwd", &hdrs).await.unwrap_err();
+        assert!(matches!(err, SerdirError::InvalidPath(msg) if msg.contains("absolute")));
+
+        // 6. Windows-style paths (tested if on Windows)
+        if cfg!(windows) {
+            // Backslash as separator
+            let err = served_dir.get(r"foo\..\bar", &hdrs).await.unwrap_err();
+            assert!(matches!(err, SerdirError::InvalidPath(msg) if msg.contains(".. segment")));
+
+            // Drive letter
+            let err = served_dir.get(r"C:\etc\passwd", &hdrs).await.unwrap_err();
+            assert!(matches!(
+                err,
+                SerdirError::InvalidPath(msg) if msg.contains("prefix") || msg.contains("absolute")
+            ));
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
