@@ -183,7 +183,9 @@ impl ServedDir {
             }
             Err(e) => {
                 log::error!("Internal server error: {}", e);
-                Ok(Self::make_status_response(StatusCode::INTERNAL_SERVER_ERROR))
+                Ok(Self::make_status_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                ))
             }
         }
     }
