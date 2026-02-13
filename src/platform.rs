@@ -82,7 +82,7 @@ impl FileExt for std::fs::File {
         use std::ffi::c_void;
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::Foundation::{
-            DWORD, ERROR_HANDLE_EOF, ERROR_IO_PENDING, GetLastError, HANDLE,
+            GetLastError, DWORD, ERROR_HANDLE_EOF, ERROR_IO_PENDING, HANDLE,
         };
         use windows_sys::Win32::Storage::FileSystem::ReadFile;
         use windows_sys::Win32::System::IO::OVERLAPPED;
