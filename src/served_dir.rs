@@ -4,6 +4,7 @@ use std::convert::Infallible;
 use std::fmt::Debug;
 use std::fs::File;
 use std::path::Path;
+use std::sync::LazyLock;
 use std::{collections::HashMap, path::PathBuf};
 
 #[cfg(feature = "runtime-compression")]
@@ -138,21 +139,20 @@ impl ServedDir {
         };
         let path = path.strip_prefix('/').unwrap_or(path);
 
-        self.validate_path(path)?;
+        let full_path = self.validate_path(path)?;
 
         let preferred = CompressionSupport::detect(req_hdrs);
-        let full_path = self.dirpath.join(path);
 
         tokio::task::block_in_place(|| {
-            let res = self.find_file(full_path.clone(), preferred);
+            let res = self.find_file(&full_path, preferred);
             let matched_file = match res {
                 Ok(mf) => mf,
                 Err(SerdirError::IsDirectory(_)) if self.append_index_html => {
                     let index_path = full_path.join("index.html");
-                    self.find_file(index_path, preferred)?
+                    self.find_file(&index_path, preferred)?
                 }
                 Err(SerdirError::NotFound(_)) if self.not_found_path.is_some() => {
-                    let not_found_path = self.not_found_path.as_ref().unwrap().clone();
+                    let not_found_path = self.not_found_path.as_ref().unwrap();
                     let matched_file = self.find_file(not_found_path, preferred)?;
                     let entity = self.create_entity(matched_file)?;
                     return Err(SerdirError::NotFound(Some(entity)));
@@ -219,10 +219,10 @@ impl ServedDir {
 
     fn find_file(
         &self,
-        path: impl Into<PathBuf>,
+        path: &Path,
         preferred: CompressionSupport,
     ) -> Result<MatchedFile, SerdirError> {
-        self.compression_strategy.find_file(path.into(), preferred)
+        self.compression_strategy.find_file(path, preferred)
     }
 
     fn calculate_etag(
@@ -241,31 +241,34 @@ impl ServedDir {
             .unwrap_or_else(|| self.default_content_type.clone())
     }
 
-    /// Ensures path is safe: no NUL bytes, not absolute, no `..` segments.
-    fn validate_path(&self, path: &str) -> Result<(), SerdirError> {
+    /// Ensures path is safe (no NUL bytes, not absolute, no `..` segments) and
+    /// returns the full path joined to the root directory.
+    fn validate_path(&self, path: &str) -> Result<PathBuf, SerdirError> {
         if memchr::memchr(0, path.as_bytes()).is_some() {
             return Err(SerdirError::InvalidPath(
                 "path contains NUL byte".to_string(),
             ));
         }
-        if path.as_bytes().first() == Some(&b'/') {
-            return Err(SerdirError::InvalidPath("path is absolute".to_string()));
-        }
-        let mut left = path.as_bytes();
-        loop {
-            let next = memchr::memchr(b'/', left);
-            let seg = &left[0..next.unwrap_or(left.len())];
-            if seg == b".." {
-                return Err(SerdirError::InvalidPath(
-                    "path contains .. segment".to_string(),
-                ));
+
+        let mut full_path = self.dirpath.clone();
+        for component in Path::new(path).components() {
+            match component {
+                std::path::Component::Normal(seg) => full_path.push(seg),
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    return Err(SerdirError::InvalidPath(
+                        "path contains .. segment".to_string(),
+                    ));
+                }
+                std::path::Component::RootDir => {
+                    return Err(SerdirError::InvalidPath("path is absolute".to_string()));
+                }
+                std::path::Component::Prefix(_) => {
+                    return Err(SerdirError::InvalidPath("path contains a prefix".to_string()));
+                }
             }
-            match next {
-                None => break,
-                Some(n) => left = &left[n + 1..],
-            };
         }
-        Ok(())
+        Ok(full_path)
     }
 
     /// Returns a Tower service that serves files from this `ServedDir`.
@@ -526,78 +529,81 @@ impl ServedDirBuilder {
     }
 
     fn default_extensions() -> HashMap<String, HeaderValue> {
-        let mut m = HashMap::new();
-        let extensions = [
-            ("html", "text/html"),
-            ("htm", "text/html"),
-            ("hxt", "text/html"),
-            ("css", "text/css"),
-            ("js", "text/javascript"),
-            ("es", "text/javascript"),
-            ("ecma", "text/javascript"),
-            ("jsm", "text/javascript"),
-            ("jsx", "text/javascript"),
-            ("png", "image/png"),
-            ("apng", "image/apng"),
-            ("avif", "image/avif"),
-            ("gif", "image/gif"),
-            ("ico", "image/x-icon"),
-            ("jpeg", "image/jpeg"),
-            ("jfif", "image/jpeg"),
-            ("pjpeg", "image/jpeg"),
-            ("pjp", "image/jpeg"),
-            ("jpg", "image/jpeg"),
-            ("svg", "image/svg+xml"),
-            ("tiff", "image/tiff"),
-            ("webp", "image/webp"),
-            ("bmp", "image/bmp"),
-            ("pdf", "application/pdf"),
-            ("zip", "application/zip"),
-            ("gz", "application/gzip"),
-            ("tar", "application/tar"),
-            ("bz", "application/x-bzip"),
-            ("bz2", "application/x-bzip2"),
-            ("xz", "application/x-xz"),
-            ("csv", "text/csv"),
-            ("txt", "text/plain"),
-            ("text", "text/plain"),
-            ("log", "text/plain"),
-            ("md", "text/markdown"),
-            ("markdown", "text/x-markdown"),
-            ("mkd", "text/x-markdown"),
-            ("mp4", "video/mp4"),
-            ("webm", "video/webm"),
-            ("mpeg", "video/mpeg"),
-            ("mpg", "video/mpeg"),
-            ("mpg4", "video/mp4"),
-            ("xml", "application/xml"),
-            ("json", "application/json"),
-            ("yaml", "application/yaml"),
-            ("yml", "application/yaml"),
-            ("toml", "application/toml"),
-            ("ini", "application/ini"),
-            ("ics", "text/calendar"),
-            ("doc", "application/msword"),
-            (
-                "docx",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            ),
-            ("xls", "application/vnd.ms-excel"),
-            (
-                "xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            ),
-            ("ppt", "application/vnd.ms-powerpoint"),
-            (
-                "pptx",
-                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            ),
-        ];
+        static DEFAULT_EXTENSIONS: LazyLock<HashMap<String, HeaderValue>> = LazyLock::new(|| {
+            let extensions = [
+                ("html", "text/html"),
+                ("htm", "text/html"),
+                ("hxt", "text/html"),
+                ("css", "text/css"),
+                ("js", "text/javascript"),
+                ("es", "text/javascript"),
+                ("ecma", "text/javascript"),
+                ("jsm", "text/javascript"),
+                ("jsx", "text/javascript"),
+                ("png", "image/png"),
+                ("apng", "image/apng"),
+                ("avif", "image/avif"),
+                ("gif", "image/gif"),
+                ("ico", "image/x-icon"),
+                ("jpeg", "image/jpeg"),
+                ("jfif", "image/jpeg"),
+                ("pjpeg", "image/jpeg"),
+                ("pjp", "image/jpeg"),
+                ("jpg", "image/jpeg"),
+                ("svg", "image/svg+xml"),
+                ("tiff", "image/tiff"),
+                ("webp", "image/webp"),
+                ("bmp", "image/bmp"),
+                ("pdf", "application/pdf"),
+                ("zip", "application/zip"),
+                ("gz", "application/gzip"),
+                ("tar", "application/tar"),
+                ("bz", "application/x-bzip"),
+                ("bz2", "application/x-bzip2"),
+                ("xz", "application/x-xz"),
+                ("csv", "text/csv"),
+                ("txt", "text/plain"),
+                ("text", "text/plain"),
+                ("log", "text/plain"),
+                ("md", "text/markdown"),
+                ("markdown", "text/x-markdown"),
+                ("mkd", "text/x-markdown"),
+                ("mp4", "video/mp4"),
+                ("webm", "video/webm"),
+                ("mpeg", "video/mpeg"),
+                ("mpg", "video/mpeg"),
+                ("mpg4", "video/mp4"),
+                ("xml", "application/xml"),
+                ("json", "application/json"),
+                ("yaml", "application/yaml"),
+                ("yml", "application/yaml"),
+                ("toml", "application/toml"),
+                ("ini", "application/ini"),
+                ("ics", "text/calendar"),
+                ("doc", "application/msword"),
+                (
+                    "docx",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ),
+                ("xls", "application/vnd.ms-excel"),
+                (
+                    "xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+                ("ppt", "application/vnd.ms-powerpoint"),
+                (
+                    "pptx",
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                ),
+            ];
 
-        for (ext, ct) in extensions {
-            m.insert(ext.to_string(), HeaderValue::from_static(ct));
-        }
-        m
+            extensions
+                .iter()
+                .map(|&(ext, ct)| (ext.to_string(), HeaderValue::from_static(ct)))
+                .collect()
+        });
+
+        DEFAULT_EXTENSIONS.clone()
     }
 }
 
@@ -682,16 +688,43 @@ mod tests {
         let served_dir = context.builder.build();
         let hdrs = HeaderMap::new();
 
-        // 1. Contains ".."
+        // 1. Contains ".." in middle
         let err = served_dir
             .get("include/../etc/passwd", &hdrs)
             .await
             .unwrap_err();
-        assert!(matches!(err, SerdirError::InvalidPath(msg) if msg.contains("..")));
+        assert!(matches!(err, SerdirError::InvalidPath(msg) if msg.contains(".. segment")));
 
-        // 2. Contains null byte
+        // 2. Contains ".." at start
+        let err = served_dir.get("../etc/passwd", &hdrs).await.unwrap_err();
+        assert!(matches!(err, SerdirError::InvalidPath(msg) if msg.contains(".. segment")));
+
+        // 3. Contains ".." at end
+        let err = served_dir.get("foo/..", &hdrs).await.unwrap_err();
+        assert!(matches!(err, SerdirError::InvalidPath(msg) if msg.contains(".. segment")));
+
+        // 4. Contains null byte
         let err = served_dir.get("test\0file.txt", &hdrs).await.unwrap_err();
         assert!(matches!(err, SerdirError::InvalidPath(msg) if msg.contains("NUL byte")));
+
+        // 5. Absolute path (leading /)
+        // Note: ServedDir::get strips one leading slash, so we test with two.
+        let err = served_dir.get("//etc/passwd", &hdrs).await.unwrap_err();
+        assert!(matches!(err, SerdirError::InvalidPath(msg) if msg.contains("absolute")));
+
+        // 6. Windows-style paths (tested if on Windows)
+        if cfg!(windows) {
+            // Backslash as separator
+            let err = served_dir.get(r"foo\..\bar", &hdrs).await.unwrap_err();
+            assert!(matches!(err, SerdirError::InvalidPath(msg) if msg.contains(".. segment")));
+
+            // Drive letter
+            let err = served_dir.get(r"C:\etc\passwd", &hdrs).await.unwrap_err();
+            assert!(matches!(
+                err,
+                SerdirError::InvalidPath(msg) if msg.contains("prefix") || msg.contains("absolute")
+            ));
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

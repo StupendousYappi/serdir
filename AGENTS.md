@@ -16,8 +16,8 @@ delegates requests that produce a not found response to an inner handler) or a
   compression settings, file not found behavior and common response headers
 - `FileEntity` - Returned by `ServedDir` when it matches a path to a file, it contains an open file handle
   and file metadata, such as its size, last modified time and ETag hash value
-- `SerdirError` - An error type returned by various crate APIs, such as `ServedDirBuilder` if
-  the user provides invalid configuration settings, or `ServedDir::get` if a file is not found
+- `SerdirError` - An error type returned by various crate APIs, such as `ServedDirBuilder`, if
+  the user provides invalid configuration settings, or by `ServedDir::get` if a file is not found
 - `ETag` - A 64 bit hash code of a file's contents, implemented as newtype wrapper around `u64`
 - `Body` a custom HTTP response body type that contains a stream of chunks of bytes (each up to 64kb), allowing
   efficient serving of large files
@@ -36,15 +36,15 @@ The project is organized as a library crate with the following modules:
 - `body.rs` - Custom HTTP response body type, allowing static files to be served efficiently as a
 stream of chunks
 - `brotli_cache.rs` - code for performing Brotli compression at runtime and caching the compressed
+  output
 - `compression.rs` - utilities for locating the compressed version of a file most appropriate for
 - `etag.rs` - ETag parsing and comparison
 - `file.rs` - implementation of `FileEntity`, the return type of `ServedDir`
 - `integration.rs` - adapter code allowing `ServedDir` to be called via `tower` and `hyper` APIs
 - `lib.rs` - crate-level documentation and re-exports
-  the request
 - `platform.rs` - platform-specific code handling differences between Unix and Windows environments
 - `range.rs` - range header parsing and validation
-- `served_dir.rs` - The `ServedDir` type, including code for matching a path against a file, and
+- `served_dir.rs` - The `ServedDir` type, including code for matching a path against a file,
   determining what compression strategy to use for the response and choosing a `Content-Type` header
   result
 - `serving.rs` - wrapper code for converting a `http::Request` into `http::Response` by serving a
@@ -74,7 +74,7 @@ Poem by providing APIs to convert a `ServedDir` into a `tower::Service` or
 APIs to convert a `ServedDir` into a `hyper::Service`
 
 Many tests related to these features are feature-gated. To run the full test
-suite, run `cargo test --all-features`.
+suite, run `cargo test-all`.
 
 ## Platforms
 
