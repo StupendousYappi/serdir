@@ -11,9 +11,6 @@ use std::{
 
 use brotli::enc::backward_references::BrotliEncoderMode;
 use brotli::enc::BrotliEncoderParams;
-// use bytes::Bytes; removed
-// use log::{debug, error, info, warn}; removed
-// use http::HeaderValue; removed
 use sieve_cache::ShardedSieveCache;
 use std::io::Write;
 
@@ -29,8 +26,6 @@ static DEFAULT_TEXT_TYPES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "html", "htm", "xhtml", "css", "js", "json", "xml", "svg", "txt", "csv", "tsv", "md",
     ])
 });
-
-// BrotliCacheBuilder removed
 
 /// A service that creates and reuses Brotli-compressed versions of files, returning
 /// a FileEntity for the compressed file if it's supported, or a FileEntity for the
