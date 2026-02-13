@@ -512,7 +512,10 @@ async fn serve_multipart() {
         .unwrap();
     assert_eq!(reqwest::StatusCode::PARTIAL_CONTENT, resp.status());
     let content_type = resp.headers().get(reqwest::header::CONTENT_TYPE).unwrap();
-    assert!(content_type.to_str().unwrap().starts_with("multipart/byteranges; boundary="));
+    assert!(content_type
+        .to_str()
+        .unwrap()
+        .starts_with("multipart/byteranges; boundary="));
 
     let body = resp.bytes().await.unwrap();
     // Verify it contains the boundary and parts.
@@ -595,8 +598,18 @@ async fn serve_clamped_last_modified() {
     let resp = client.get(&url).send().await.unwrap();
     assert_eq!(reqwest::StatusCode::OK, resp.status());
 
-    let date_str = resp.headers().get(reqwest::header::DATE).unwrap().to_str().unwrap();
-    let last_modified_str = resp.headers().get(reqwest::header::LAST_MODIFIED).unwrap().to_str().unwrap();
+    let date_str = resp
+        .headers()
+        .get(reqwest::header::DATE)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let last_modified_str = resp
+        .headers()
+        .get(reqwest::header::LAST_MODIFIED)
+        .unwrap()
+        .to_str()
+        .unwrap();
 
     let date = httpdate::parse_http_date(date_str).unwrap();
     let last_modified = httpdate::parse_http_date(last_modified_str).unwrap();
