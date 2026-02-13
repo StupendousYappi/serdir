@@ -491,11 +491,6 @@ async fn serve_unmodified_since() {
         .send()
         .await
         .unwrap();
-    if resp.status() != reqwest::StatusCode::PRECONDITION_FAILED {
-        println!("Last-Modified: {}", last_modified);
-        println!("If-Unmodified-Since: {}", earlier);
-        println!("Response status: {}", resp.status());
-    }
     assert_eq!(reqwest::StatusCode::PRECONDITION_FAILED, resp.status());
 }
 
