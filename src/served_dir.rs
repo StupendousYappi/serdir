@@ -4,6 +4,7 @@ use std::convert::Infallible;
 use std::fmt::Debug;
 use std::fs::File;
 use std::path::Path;
+use std::sync::LazyLock;
 use std::{collections::HashMap, path::PathBuf};
 
 #[cfg(feature = "runtime-compression")]
@@ -526,78 +527,81 @@ impl ServedDirBuilder {
     }
 
     fn default_extensions() -> HashMap<String, HeaderValue> {
-        let mut m = HashMap::new();
-        let extensions = [
-            ("html", "text/html"),
-            ("htm", "text/html"),
-            ("hxt", "text/html"),
-            ("css", "text/css"),
-            ("js", "text/javascript"),
-            ("es", "text/javascript"),
-            ("ecma", "text/javascript"),
-            ("jsm", "text/javascript"),
-            ("jsx", "text/javascript"),
-            ("png", "image/png"),
-            ("apng", "image/apng"),
-            ("avif", "image/avif"),
-            ("gif", "image/gif"),
-            ("ico", "image/x-icon"),
-            ("jpeg", "image/jpeg"),
-            ("jfif", "image/jpeg"),
-            ("pjpeg", "image/jpeg"),
-            ("pjp", "image/jpeg"),
-            ("jpg", "image/jpeg"),
-            ("svg", "image/svg+xml"),
-            ("tiff", "image/tiff"),
-            ("webp", "image/webp"),
-            ("bmp", "image/bmp"),
-            ("pdf", "application/pdf"),
-            ("zip", "application/zip"),
-            ("gz", "application/gzip"),
-            ("tar", "application/tar"),
-            ("bz", "application/x-bzip"),
-            ("bz2", "application/x-bzip2"),
-            ("xz", "application/x-xz"),
-            ("csv", "text/csv"),
-            ("txt", "text/plain"),
-            ("text", "text/plain"),
-            ("log", "text/plain"),
-            ("md", "text/markdown"),
-            ("markdown", "text/x-markdown"),
-            ("mkd", "text/x-markdown"),
-            ("mp4", "video/mp4"),
-            ("webm", "video/webm"),
-            ("mpeg", "video/mpeg"),
-            ("mpg", "video/mpeg"),
-            ("mpg4", "video/mp4"),
-            ("xml", "application/xml"),
-            ("json", "application/json"),
-            ("yaml", "application/yaml"),
-            ("yml", "application/yaml"),
-            ("toml", "application/toml"),
-            ("ini", "application/ini"),
-            ("ics", "text/calendar"),
-            ("doc", "application/msword"),
-            (
-                "docx",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            ),
-            ("xls", "application/vnd.ms-excel"),
-            (
-                "xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            ),
-            ("ppt", "application/vnd.ms-powerpoint"),
-            (
-                "pptx",
-                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            ),
-        ];
+        static DEFAULT_EXTENSIONS: LazyLock<HashMap<String, HeaderValue>> = LazyLock::new(|| {
+            let extensions = [
+                ("html", "text/html"),
+                ("htm", "text/html"),
+                ("hxt", "text/html"),
+                ("css", "text/css"),
+                ("js", "text/javascript"),
+                ("es", "text/javascript"),
+                ("ecma", "text/javascript"),
+                ("jsm", "text/javascript"),
+                ("jsx", "text/javascript"),
+                ("png", "image/png"),
+                ("apng", "image/apng"),
+                ("avif", "image/avif"),
+                ("gif", "image/gif"),
+                ("ico", "image/x-icon"),
+                ("jpeg", "image/jpeg"),
+                ("jfif", "image/jpeg"),
+                ("pjpeg", "image/jpeg"),
+                ("pjp", "image/jpeg"),
+                ("jpg", "image/jpeg"),
+                ("svg", "image/svg+xml"),
+                ("tiff", "image/tiff"),
+                ("webp", "image/webp"),
+                ("bmp", "image/bmp"),
+                ("pdf", "application/pdf"),
+                ("zip", "application/zip"),
+                ("gz", "application/gzip"),
+                ("tar", "application/tar"),
+                ("bz", "application/x-bzip"),
+                ("bz2", "application/x-bzip2"),
+                ("xz", "application/x-xz"),
+                ("csv", "text/csv"),
+                ("txt", "text/plain"),
+                ("text", "text/plain"),
+                ("log", "text/plain"),
+                ("md", "text/markdown"),
+                ("markdown", "text/x-markdown"),
+                ("mkd", "text/x-markdown"),
+                ("mp4", "video/mp4"),
+                ("webm", "video/webm"),
+                ("mpeg", "video/mpeg"),
+                ("mpg", "video/mpeg"),
+                ("mpg4", "video/mp4"),
+                ("xml", "application/xml"),
+                ("json", "application/json"),
+                ("yaml", "application/yaml"),
+                ("yml", "application/yaml"),
+                ("toml", "application/toml"),
+                ("ini", "application/ini"),
+                ("ics", "text/calendar"),
+                ("doc", "application/msword"),
+                (
+                    "docx",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ),
+                ("xls", "application/vnd.ms-excel"),
+                (
+                    "xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+                ("ppt", "application/vnd.ms-powerpoint"),
+                (
+                    "pptx",
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                ),
+            ];
 
-        for (ext, ct) in extensions {
-            m.insert(ext.to_string(), HeaderValue::from_static(ct));
-        }
-        m
+            extensions
+                .iter()
+                .map(|&(ext, ct)| (ext.to_string(), HeaderValue::from_static(ct)))
+                .collect()
+        });
+
+        DEFAULT_EXTENSIONS.clone()
     }
 }
 
