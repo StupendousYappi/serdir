@@ -144,15 +144,15 @@ impl ServedDir {
         let full_path = self.dirpath.join(path);
 
         tokio::task::block_in_place(|| {
-            let res = self.find_file(full_path.clone(), preferred);
+            let res = self.find_file(&full_path, preferred);
             let matched_file = match res {
                 Ok(mf) => mf,
                 Err(SerdirError::IsDirectory(_)) if self.append_index_html => {
                     let index_path = full_path.join("index.html");
-                    self.find_file(index_path, preferred)?
+                    self.find_file(&index_path, preferred)?
                 }
                 Err(SerdirError::NotFound(_)) if self.not_found_path.is_some() => {
-                    let not_found_path = self.not_found_path.as_ref().unwrap().clone();
+                    let not_found_path = self.not_found_path.as_ref().unwrap();
                     let matched_file = self.find_file(not_found_path, preferred)?;
                     let entity = self.create_entity(matched_file)?;
                     return Err(SerdirError::NotFound(Some(entity)));
@@ -219,10 +219,10 @@ impl ServedDir {
 
     fn find_file(
         &self,
-        path: impl Into<PathBuf>,
+        path: &Path,
         preferred: CompressionSupport,
     ) -> Result<MatchedFile, SerdirError> {
-        self.compression_strategy.find_file(path.into(), preferred)
+        self.compression_strategy.find_file(path, preferred)
     }
 
     fn calculate_etag(
