@@ -264,7 +264,9 @@ impl ServedDir {
                     return Err(SerdirError::InvalidPath("path is absolute".to_string()));
                 }
                 std::path::Component::Prefix(_) => {
-                    return Err(SerdirError::InvalidPath("path contains a prefix".to_string()));
+                    return Err(SerdirError::InvalidPath(
+                        "path contains a prefix".to_string(),
+                    ));
                 }
             }
         }
