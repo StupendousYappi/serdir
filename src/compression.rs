@@ -481,7 +481,7 @@ impl CompressionStrategyInner {
 
     pub(crate) fn find_file(
         &self,
-        path: PathBuf,
+        path: &Path,
         supported: crate::compression::CompressionSupport,
     ) -> Result<MatchedFile, SerdirError> {
         match self {
@@ -516,14 +516,14 @@ impl CompressionStrategyInner {
             #[cfg(feature = "runtime-compression")]
             CompressionStrategyInner::Cached(cache) => {
                 if supported.brotli() {
-                    let matched = cache.get(&path)?;
+                    let matched = cache.get(path)?;
                     return Ok(matched);
                 }
             }
             CompressionStrategyInner::None => {}
         }
 
-        Self::try_path(&path, ContentEncoding::Identity)
+        Self::try_path(path, ContentEncoding::Identity)
     }
 
     fn try_path(p: &Path, encoding: ContentEncoding) -> Result<MatchedFile, SerdirError> {
