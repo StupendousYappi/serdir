@@ -93,7 +93,7 @@ impl FileExt for std::fs::File {
             // SAFETY: `Vec::with_capacity` guaranteed the pointer range is valid.
             if windows_sys::Win32::Storage::FileSystem::ReadFile(
                 handle as _,
-                chunk.as_mut_ptr() as *mut core::ffi::c_void,
+                chunk.as_mut_ptr(),
                 u32::try_from(chunk_size).unwrap_or(u32::MAX), // saturating conversion
                 &mut read,
                 &mut overlapped,
