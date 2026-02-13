@@ -189,7 +189,7 @@ impl ServedDir {
         }
     }
 
-    pub(crate) fn make_status_response(status: StatusCode) -> Response<Body> {
+    fn make_status_response(status: StatusCode) -> Response<Body> {
         let reason = status.canonical_reason().unwrap_or("Unknown");
         Response::builder()
             .status(status)
