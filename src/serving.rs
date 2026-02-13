@@ -19,7 +19,7 @@ use std::io::Write;
 use std::ops::Range;
 use std::pin::Pin;
 use std::task::Poll;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 const MAX_DECIMAL_U64_BYTES: usize = 20; // u64::max_value().to_string().len()
 
@@ -28,6 +28,14 @@ fn parse_modified_hdrs(
     req_hdrs: &HeaderMap,
     last_modified: Option<SystemTime>,
 ) -> Result<(bool, bool), &'static str> {
+    let last_modified = last_modified.map(|m| {
+        let secs = m
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_secs();
+        SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
+    });
+
     let precondition_failed = if !etag::any_match(etag, req_hdrs)? {
         true
     } else if let (Some(ref m), Some(since)) =

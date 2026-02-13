@@ -1,7 +1,11 @@
 use crate::served_dir::ServedDir;
-use crate::{Body, SerdirError};
+use crate::Body;
+#[cfg(feature = "tower")]
+use crate::SerdirError;
 use futures_core::future::BoxFuture;
-use http::{Request, Response, StatusCode};
+#[cfg(feature = "tower")]
+use http::StatusCode;
+use http::{Request, Response};
 use std::convert::Infallible;
 use std::sync::Arc;
 

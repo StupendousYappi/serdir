@@ -12,12 +12,13 @@ use hyper_util::rt::TokioIo;
 use once_cell::sync::Lazy;
 use serdir::ServedDir;
 use std::fs::File;
-use std::io::{Error, ErrorKind};
+use std::io::{Error, ErrorKind, Write};
 use std::time::Duration;
 use tokio::net::TcpListener;
 
 const WITH_ETAG_BODY: &[u8] = b"01234567890123456789";
 const WITHOUT_ETAG_BODY: &[u8] = b"0123456789";
+const LARGE_BODY: &[u8] = &[0u8; 1000];
 const FIXED_ETAG: &str = r#""0000000000001234""#;
 const MIME: &str = "text/plain";
 const SOME_DATE_STR: &str = "Sun, 06 Nov 1994 08:49:37 GMT";
@@ -27,6 +28,8 @@ fn test_file_hasher(file: &File) -> Result<Option<u64>, std::io::Error> {
     match file.metadata()?.len() {
         20 => Ok(Some(0x1234)),
         10 => Ok(None),
+        1000 => Ok(Some(0x5678)),
+        6 => Ok(None),
         len => Err(Error::new(
             ErrorKind::InvalidData,
             format!("unexpected test file length: {len}"),
@@ -40,6 +43,15 @@ fn new_server() -> String {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("with_etag.txt"), WITH_ETAG_BODY).unwrap();
         std::fs::write(tmp.path().join("without_etag.txt"), WITHOUT_ETAG_BODY).unwrap();
+        std::fs::write(tmp.path().join("large.txt"), LARGE_BODY).unwrap();
+
+        let future = std::time::SystemTime::now() + Duration::from_secs(3600);
+        let future_path = tmp.path().join("future.txt");
+        let mut f = File::create(&future_path).unwrap();
+        f.write_all(b"future").unwrap();
+        f.set_modified(future).unwrap();
+        drop(f);
+
         let service = ServedDir::builder(tmp.path().to_path_buf())
             .unwrap()
             .file_hasher(test_file_hasher)
@@ -422,3 +434,180 @@ async fn serve_with_strong_etag_multiple_ranges() {
 
 // TODO: stream that returns too much data.
 // TODO: stream that returns too little data.
+
+#[tokio::test]
+async fn serve_head() {
+    let client = reqwest::Client::new();
+    let url = format!("{}/with_etag.txt", *SERVER);
+
+    let resp = client.head(&url).send().await.unwrap();
+    assert_eq!(reqwest::StatusCode::OK, resp.status());
+    assert_eq!(
+        resp.headers().get(reqwest::header::CONTENT_TYPE).unwrap(),
+        MIME
+    );
+    assert_eq!(
+        resp.headers().get(reqwest::header::CONTENT_LENGTH).unwrap(),
+        &WITH_ETAG_BODY.len().to_string()
+    );
+    assert_eq!(
+        resp.headers().get(reqwest::header::ETAG).unwrap(),
+        FIXED_ETAG
+    );
+    let buf = resp.bytes().await.unwrap();
+    assert_eq!(b"", &buf[..]);
+}
+
+#[tokio::test]
+async fn serve_unmodified_since() {
+    let client = reqwest::Client::new();
+    let url = format!("{}/without_etag.txt", *SERVER);
+
+    let resp = client.get(&url).send().await.unwrap();
+    let last_modified = resp
+        .headers()
+        .get(reqwest::header::LAST_MODIFIED)
+        .unwrap()
+        .to_str()
+        .unwrap();
+
+    // Matching If-Unmodified-Since.
+    let resp = client
+        .get(&url)
+        .header("If-Unmodified-Since", last_modified)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reqwest::StatusCode::OK, resp.status());
+    assert_eq!(WITHOUT_ETAG_BODY, &resp.bytes().await.unwrap()[..]);
+
+    // Non-matching If-Unmodified-Since (earlier than last modified).
+    let earlier = httpdate::fmt_http_date(
+        httpdate::parse_http_date(last_modified).unwrap() - Duration::from_secs(10),
+    );
+    let resp = client
+        .get(&url)
+        .header("If-Unmodified-Since", &earlier)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reqwest::StatusCode::PRECONDITION_FAILED, resp.status());
+}
+
+#[tokio::test]
+async fn serve_multipart() {
+    let client = reqwest::Client::new();
+    let url = format!("{}/large.txt", *SERVER);
+
+    let resp = client
+        .get(&url)
+        .header("Range", "bytes=0-4, 10-14")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reqwest::StatusCode::PARTIAL_CONTENT, resp.status());
+    let content_type = resp.headers().get(reqwest::header::CONTENT_TYPE).unwrap();
+    assert!(content_type
+        .to_str()
+        .unwrap()
+        .starts_with("multipart/byteranges; boundary="));
+
+    let body = resp.bytes().await.unwrap();
+    // Verify it contains the boundary and parts.
+    assert!(body.starts_with(b"\r\n--B\r\n"));
+    let p1 = b"Content-Range: bytes 0-4/1000";
+    assert!(body.windows(p1.len()).any(|w| w == p1));
+    let p2 = b"Content-Range: bytes 10-14/1000";
+    assert!(body.windows(p2.len()).any(|w| w == p2));
+    assert!(body.ends_with(b"\r\n--B--\r\n"));
+}
+
+#[tokio::test]
+async fn serve_weak_etag() {
+    let client = reqwest::Client::new();
+    let url = format!("{}/with_etag.txt", *SERVER);
+    let weak_etag = format!("W/{}", FIXED_ETAG);
+
+    // If-None-Match with weak etag should match.
+    let resp = client
+        .get(&url)
+        .header("If-None-Match", &weak_etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reqwest::StatusCode::NOT_MODIFIED, resp.status());
+
+    // If-Match with weak etag should NOT match.
+    let resp = client
+        .get(&url)
+        .header("If-Match", &weak_etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reqwest::StatusCode::PRECONDITION_FAILED, resp.status());
+
+    // If-Range with weak etag should NOT match (returns 200 OK).
+    let resp = client
+        .get(&url)
+        .header("Range", "bytes=0-4")
+        .header("If-Range", &weak_etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reqwest::StatusCode::OK, resp.status());
+    assert_eq!(WITH_ETAG_BODY, &resp.bytes().await.unwrap()[..]);
+}
+
+#[tokio::test]
+async fn serve_method_not_allowed() {
+    let client = reqwest::Client::new();
+    let url = format!("{}/without_etag.txt", *SERVER);
+
+    let resp = client.post(&url).send().await.unwrap();
+    assert_eq!(reqwest::StatusCode::METHOD_NOT_ALLOWED, resp.status());
+    assert_eq!(
+        resp.headers().get(reqwest::header::ALLOW).unwrap(),
+        "get, head"
+    );
+}
+
+#[tokio::test]
+async fn serve_bad_request() {
+    let client = reqwest::Client::new();
+    let url = format!("{}/without_etag.txt", *SERVER);
+
+    let resp = client
+        .get(&url)
+        .header("If-Modified-Since", "invalid date")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reqwest::StatusCode::BAD_REQUEST, resp.status());
+}
+
+#[tokio::test]
+async fn serve_clamped_last_modified() {
+    let client = reqwest::Client::new();
+    let url = format!("{}/future.txt", *SERVER);
+
+    let resp = client.get(&url).send().await.unwrap();
+    assert_eq!(reqwest::StatusCode::OK, resp.status());
+
+    let date_str = resp
+        .headers()
+        .get(reqwest::header::DATE)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let last_modified_str = resp
+        .headers()
+        .get(reqwest::header::LAST_MODIFIED)
+        .unwrap()
+        .to_str()
+        .unwrap();
+
+    let date = httpdate::parse_http_date(date_str).unwrap();
+    let last_modified = httpdate::parse_http_date(last_modified_str).unwrap();
+
+    assert!(last_modified <= date);
+}
