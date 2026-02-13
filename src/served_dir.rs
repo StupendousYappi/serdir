@@ -177,14 +177,16 @@ impl ServedDir {
             Err(SerdirError::NotFound(None)) | Err(SerdirError::IsDirectory(_)) => {
                 Ok(Self::make_status_response(StatusCode::NOT_FOUND))
             }
-            Err(SerdirError::InvalidPath(_)) => {
-                // TODO: log the error
+            Err(SerdirError::InvalidPath(msg)) => {
+                log::error!("Invalid path: {}", msg);
                 Ok(Self::make_status_response(StatusCode::BAD_REQUEST))
             }
-            Err(_) => Ok(Self::make_status_response(
-                // TODO: log the error
-                StatusCode::INTERNAL_SERVER_ERROR,
-            )),
+            Err(e) => {
+                log::error!("Internal server error: {}", e);
+                Ok(Self::make_status_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                ))
+            }
         }
     }
 
