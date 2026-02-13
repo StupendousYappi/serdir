@@ -24,7 +24,7 @@ pub(crate) fn open_file(path: &Path) -> io::Result<std::fs::File> {
         .read(true)
         // Allow opening directory handles so callers can classify directories
         // via metadata in a platform-consistent way.
-        .custom_flags(winapi::um::winbase::FILE_FLAG_BACKUP_SEMANTICS)
+        .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)
 }
 
@@ -37,7 +37,7 @@ pub trait FileExt {
     /// (like `std::os::unix::fs::FileExt::read_at`). The caller never uses the cursor, so this
     /// doesn't matter.
     ///
-    /// The windows implementation goes directly to `winapi` to allow soundly reading into an
+    /// The windows implementation goes directly to `windows-sys` to allow soundly reading into an
     /// uninitialized buffer. This can be changed and the implementations unified when
     /// [`read_buf`](https://github.com/rust-lang/rust/issues/78485) is stabilized, including buf
     /// equivalents of `read_at`/`seek_read`.
@@ -79,36 +79,42 @@ impl FileExt for std::fs::File {
         // References:
         // https://github.com/rust-lang/rust/blob/5ffebc2cb3a089c27a4c7da13d09fd2365c288aa/library/std/src/sys/windows/handle.rs#L230
         // https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile
+        use std::ffi::c_void;
         use std::os::windows::io::AsRawHandle;
-        use winapi::shared::minwindef::DWORD;
-        let handle = self.as_raw_handle();
+        use windows_sys::Win32::Foundation::{
+            DWORD, ERROR_HANDLE_EOF, ERROR_IO_PENDING, GetLastError, HANDLE,
+        };
+        use windows_sys::Win32::Storage::FileSystem::ReadFile;
+        use windows_sys::Win32::System::IO::OVERLAPPED;
+
+        let handle = self.as_raw_handle() as HANDLE;
         let mut read = 0;
         let mut chunk = Vec::with_capacity(chunk_size);
 
         unsafe {
             // SAFETY: a zero `OVERLAPPED` is valid.
-            let mut overlapped: winapi::um::minwinbase::OVERLAPPED = std::mem::zeroed();
-            overlapped.u.s_mut().Offset = offset as u32;
-            overlapped.u.s_mut().OffsetHigh = (offset >> 32) as u32;
+            let mut overlapped: OVERLAPPED = std::mem::zeroed();
+            overlapped.Anonymous.Anonymous.Offset = offset as u32;
+            overlapped.Anonymous.Anonymous.OffsetHigh = (offset >> 32) as u32;
 
             // SAFETY: `Vec::with_capacity` guaranteed the pointer range is valid.
-            if winapi::um::fileapi::ReadFile(
+            if ReadFile(
                 handle,
-                chunk.as_mut_ptr() as *mut winapi::ctypes::c_void,
+                chunk.as_mut_ptr() as *mut c_void,
                 DWORD::try_from(chunk_size).unwrap_or(DWORD::MAX), // saturating conversion
                 &mut read,
                 &mut overlapped,
             ) == 0
             {
-                match winapi::um::errhandlingapi::GetLastError() {
+                match GetLastError() {
                     #[allow(clippy::print_stderr)]
-                    winapi::shared::winerror::ERROR_IO_PENDING => {
+                    ERROR_IO_PENDING => {
                         // Match std's <https://github.com/rust-lang/rust/issues/81357> fix:
                         // abort the process before `overlapped` is dropped.
                         eprintln!("I/O error: operation failed to complete synchronously");
                         std::process::abort();
                     }
-                    winapi::shared::winerror::ERROR_HANDLE_EOF => {
+                    ERROR_HANDLE_EOF => {
                         // std::io::Error::from_raw_os_error converts this to ErrorKind::Other.
                         // Override that.
                         return Err(std::io::Error::new(
