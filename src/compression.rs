@@ -798,4 +798,45 @@ mod tests {
         let inner = strategy.into_inner();
         assert!(matches!(inner, CompressionStrategyInner::Cached(_)));
     }
+
+    #[test]
+    fn test_compression_strategy_none() {
+        let strategy = CompressionStrategy::none();
+        assert!(matches!(strategy, CompressionStrategy::None));
+
+        let inner = strategy.into_inner();
+        assert!(inner.is_none());
+    }
+
+    #[test]
+    fn test_compression_strategy_default() {
+        let strategy = CompressionStrategy::default();
+        assert!(matches!(strategy, CompressionStrategy::None));
+    }
+
+    #[test]
+    fn test_compression_strategy_static() {
+        let strategy = CompressionStrategy::static_compression();
+        if let CompressionStrategy::Static(static_comp) = strategy {
+            assert!(!static_comp.br);
+            assert!(!static_comp.gzip);
+            assert!(!static_comp.zstd);
+        } else {
+            panic!("expected static compression strategy");
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "runtime-compression")]
+    fn test_compression_strategy_cached() {
+        let strategy = CompressionStrategy::cached_compression();
+        assert!(matches!(strategy, CompressionStrategy::Cached(_)));
+
+        if let CompressionStrategy::Cached(cached) = strategy {
+            assert_eq!(cached.cache_size, 128);
+            assert_eq!(cached.compression_level, BrotliLevel::L5);
+            assert_eq!(cached.max_file_size, 1024 * 1024);
+            assert!(cached.supported_extensions.is_none());
+        }
+    }
 }
