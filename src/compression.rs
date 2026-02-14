@@ -479,7 +479,7 @@ impl CompressionStrategyInner {
         matches!(self, CompressionStrategyInner::None)
     }
 
-    pub(crate) fn find_file(
+    pub(crate) async fn find_file(
         &self,
         path: &Path,
         supported: crate::compression::CompressionSupport,
@@ -516,7 +516,7 @@ impl CompressionStrategyInner {
             #[cfg(feature = "runtime-compression")]
             CompressionStrategyInner::Cached(cache) => {
                 if supported.brotli() {
-                    let matched = cache.get(path)?;
+                    let matched = cache.get(path).await?;
                     return Ok(matched);
                 }
             }
