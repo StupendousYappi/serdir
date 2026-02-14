@@ -302,7 +302,10 @@ mod tests {
                 .compression_level(crate::compression::BrotliLevel::L1),
         );
 
-        let matched = cache.get(&path).await.expect("Failed to get file from cache");
+        let matched = cache
+            .get(&path)
+            .await
+            .expect("Failed to get file from cache");
 
         assert!(matches!(matched.content_encoding, ContentEncoding::Brotli));
 
@@ -349,8 +352,14 @@ mod tests {
                 .compression_level(crate::compression::BrotliLevel::L5),
         );
 
-        let matched0 = cache0.get(&path).await.expect("Failed to get file from cache0");
-        let matched5 = cache5.get(&path).await.expect("Failed to get file from cache5");
+        let matched0 = cache0
+            .get(&path)
+            .await
+            .expect("Failed to get file from cache0");
+        let matched5 = cache5
+            .get(&path)
+            .await
+            .expect("Failed to get file from cache5");
 
         assert!(matches!(matched0.content_encoding, ContentEncoding::Brotli));
         assert!(matches!(matched5.content_encoding, ContentEncoding::Brotli));
@@ -384,7 +393,10 @@ mod tests {
         // Initialize with default text types, which should NOT include jpg
         let cache = BrotliCache::from(crate::compression::CachedCompression::default());
 
-        let matched = cache.get(&path).await.expect("Failed to get file from cache");
+        let matched = cache
+            .get(&path)
+            .await
+            .expect("Failed to get file from cache");
 
         // JPG should skip compression
         assert!(matches!(
@@ -417,7 +429,10 @@ mod tests {
         let cache =
             BrotliCache::from(crate::compression::CachedCompression::new().max_file_size(10));
 
-        let matched = cache.get(&path).await.expect("Failed to get file from cache");
+        let matched = cache
+            .get(&path)
+            .await
+            .expect("Failed to get file from cache");
 
         // Should skip compression because size (49) > max_file_size (10)
         assert!(matches!(
