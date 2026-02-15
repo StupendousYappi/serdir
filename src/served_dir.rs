@@ -143,25 +143,23 @@ impl ServedDir {
 
         let preferred = CompressionSupport::detect(req_hdrs);
 
-        tokio::task::block_in_place(|| {
-            let res = self.find_file(&full_path, preferred);
-            let matched_file = match res {
-                Ok(mf) => mf,
-                Err(SerdirError::IsDirectory(_)) if self.append_index_html => {
-                    let index_path = full_path.join("index.html");
-                    self.find_file(&index_path, preferred)?
-                }
-                Err(SerdirError::NotFound(_)) if self.not_found_path.is_some() => {
-                    let not_found_path = self.not_found_path.as_ref().unwrap();
-                    let matched_file = self.find_file(not_found_path, preferred)?;
-                    let entity = self.create_entity(matched_file)?;
-                    return Err(SerdirError::NotFound(Some(entity)));
-                }
-                Err(e) => return Err(e),
-            };
+        let res = self.find_file(&full_path, preferred).await;
+        let matched_file = match res {
+            Ok(mf) => mf,
+            Err(SerdirError::IsDirectory(_)) if self.append_index_html => {
+                let index_path = full_path.join("index.html");
+                self.find_file(&index_path, preferred).await?
+            }
+            Err(SerdirError::NotFound(_)) if self.not_found_path.is_some() => {
+                let not_found_path = self.not_found_path.as_ref().unwrap();
+                let matched_file = self.find_file(not_found_path, preferred).await?;
+                let entity = self.create_entity(matched_file)?;
+                return Err(SerdirError::NotFound(Some(entity)));
+            }
+            Err(e) => return Err(e),
+        };
 
-            self.create_entity(matched_file)
-        })
+        self.create_entity(matched_file)
     }
 
     /// Returns an HTTP response for a request path and headers.
@@ -219,12 +217,12 @@ impl ServedDir {
         ))
     }
 
-    fn find_file(
+    async fn find_file(
         &self,
         path: &Path,
         preferred: CompressionSupport,
     ) -> Result<MatchedFile, SerdirError> {
-        self.compression_strategy.find_file(path, preferred)
+        self.compression_strategy.find_file(path, preferred).await
     }
 
     fn calculate_etag(
@@ -232,8 +230,15 @@ impl ServedDir {
         file_info: FileInfo,
         file: &File,
     ) -> Result<Option<ETag>, std::io::Error> {
-        self.etag_cache
-            .get_or_insert(file_info, file, self.file_hasher)
+        if let Some(etag) = self.etag_cache.get(&file_info) {
+            return Ok(etag);
+        }
+
+        let etag = tokio::task::block_in_place(|| {
+            (self.file_hasher)(file).map(|hash| hash.map(ETag::from))
+        })?;
+        self.etag_cache.insert(file_info, etag);
+        Ok(etag)
     }
 
     fn get_content_type(&self, extension: &str) -> HeaderValue {

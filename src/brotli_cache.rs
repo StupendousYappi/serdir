@@ -82,7 +82,7 @@ impl BrotliCache {
     /// dropped), or when the application is terminated (deletion is handled by
     /// the operating system and should be performed even after hard crashes of
     /// the application).
-    pub(crate) fn get(&self, path: &Path) -> Result<MatchedFile, SerdirError> {
+    pub(crate) async fn get(&self, path: &Path) -> Result<MatchedFile, SerdirError> {
         let extension: &str = path
             .extension()
             .and_then(|s| s.to_str())
@@ -113,7 +113,15 @@ impl BrotliCache {
             params.size_hint = len;
         }
 
-        let brotli_file = match self.compress(path, params) {
+        let path_buf = path.to_path_buf();
+        let tempdir = self.tempdir.clone();
+        let brotli_file = match tokio::task::spawn_blocking(move || {
+            Self::compress_internal(&tempdir, &path_buf, params)
+        })
+        .await
+        .map_err(|e| {
+            SerdirError::CompressionError("Join error".to_string(), std::io::Error::other(e))
+        })? {
             Ok(v) => v,
             Err(e) if e.kind() == ErrorKind::StorageFull => {
                 self.prune_cache();
@@ -185,8 +193,12 @@ impl BrotliCache {
         })
     }
 
-    fn compress(&self, path: &Path, params: BrotliEncoderParams) -> Result<File, crate::IOError> {
-        let brotli_file: File = tempfile::tempfile_in(&self.tempdir)?;
+    fn compress_internal(
+        tempdir: &Path,
+        path: &Path,
+        params: BrotliEncoderParams,
+    ) -> Result<File, crate::IOError> {
+        let brotli_file: File = tempfile::tempfile_in(tempdir)?;
         let mut compressor = brotli::CompressorWriter::with_params(brotli_file, BUF_SIZE, &params);
 
         let mut file = File::open(path)?;
@@ -274,8 +286,8 @@ mod tests {
         assert_eq!(cache.params.quality, 1);
     }
 
-    #[test]
-    fn test_simple_compression() {
+    #[tokio::test]
+    async fn test_simple_compression() {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.html");
@@ -290,7 +302,10 @@ mod tests {
                 .compression_level(crate::compression::BrotliLevel::L1),
         );
 
-        let matched = cache.get(&path).expect("Failed to get file from cache");
+        let matched = cache
+            .get(&path)
+            .await
+            .expect("Failed to get file from cache");
 
         assert!(matches!(matched.content_encoding, ContentEncoding::Brotli));
 
@@ -313,12 +328,13 @@ mod tests {
         // Verify second call returns cached version
         let matched2 = cache
             .get(&path)
+            .await
             .expect("Failed to get file from cache second time");
         assert_eq!(matched2.file_info.mtime(), matched.file_info.mtime());
     }
 
-    #[test]
-    fn test_compression_levels() {
+    #[tokio::test]
+    async fn test_compression_levels() {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("wonderland.txt");
@@ -336,8 +352,14 @@ mod tests {
                 .compression_level(crate::compression::BrotliLevel::L5),
         );
 
-        let matched0 = cache0.get(&path).expect("Failed to get file from cache0");
-        let matched5 = cache5.get(&path).expect("Failed to get file from cache5");
+        let matched0 = cache0
+            .get(&path)
+            .await
+            .expect("Failed to get file from cache0");
+        let matched5 = cache5
+            .get(&path)
+            .await
+            .expect("Failed to get file from cache5");
 
         assert!(matches!(matched0.content_encoding, ContentEncoding::Brotli));
         assert!(matches!(matched5.content_encoding, ContentEncoding::Brotli));
@@ -358,8 +380,8 @@ mod tests {
         assert_eq!(59317, size5);
     }
 
-    #[test]
-    fn test_skip_compression() {
+    #[tokio::test]
+    async fn test_skip_compression() {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.jpg");
@@ -371,7 +393,10 @@ mod tests {
         // Initialize with default text types, which should NOT include jpg
         let cache = BrotliCache::from(crate::compression::CachedCompression::default());
 
-        let matched = cache.get(&path).expect("Failed to get file from cache");
+        let matched = cache
+            .get(&path)
+            .await
+            .expect("Failed to get file from cache");
 
         // JPG should skip compression
         assert!(matches!(
@@ -389,8 +414,8 @@ mod tests {
         assert_eq!(bytes, CAT_PHOTO_BYTES);
     }
 
-    #[test]
-    fn test_max_file_size() {
+    #[tokio::test]
+    async fn test_max_file_size() {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("too_big.txt");
@@ -404,7 +429,10 @@ mod tests {
         let cache =
             BrotliCache::from(crate::compression::CachedCompression::new().max_file_size(10));
 
-        let matched = cache.get(&path).expect("Failed to get file from cache");
+        let matched = cache
+            .get(&path)
+            .await
+            .expect("Failed to get file from cache");
 
         // Should skip compression because size (49) > max_file_size (10)
         assert!(matches!(
@@ -422,6 +450,7 @@ mod tests {
 
         let matched_small = cache
             .get(&path_small)
+            .await
             .expect("Failed to get small file from cache");
 
         // Should NOT skip compression
@@ -431,8 +460,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn test_prune_cache_keeps_smallest_half() {
+    #[tokio::test]
+    async fn test_prune_cache_keeps_smallest_half() {
         use std::io::Write;
 
         let dir = tempfile::tempdir().unwrap();
@@ -447,7 +476,7 @@ mod tests {
             let path = dir.path().join(name);
             let mut f = File::create(&path).unwrap();
             f.write_all(&vec![b'x'; size]).unwrap();
-            let _ = cache.get(&path).unwrap();
+            let _ = cache.get(&path).await.unwrap();
         }
 
         let mut before = cache.cache.entries();

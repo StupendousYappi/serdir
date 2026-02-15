@@ -107,9 +107,9 @@ criterion_group! {
 
     // Tweak the config to run more quickly; http-serve has many bench cases.
     config = Criterion::default()
-        .sample_size(10)
-        .warm_up_time(Duration::from_millis(100))
-        .measurement_time(Duration::from_secs(1));
+        .sample_size(100)
+        .warm_up_time(Duration::from_millis(1000))
+        .measurement_time(Duration::from_secs(5));
     targets = criterion_benchmark
 }
 criterion_main!(benches);
