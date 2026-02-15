@@ -251,7 +251,7 @@ impl ServedDir {
     /// Ensures path is safe (no NUL bytes, not absolute, no `..` segments) and
     /// returns the full path joined to the root directory.
     fn validate_path(&self, path: &str) -> Result<PathBuf, SerdirError> {
-        if memchr::memchr(0, path.as_bytes()).is_some() {
+        if path.as_bytes().contains(&0) {
             return Err(SerdirError::InvalidPath(
                 "path contains NUL byte".to_string(),
             ));
