@@ -163,8 +163,7 @@ impl TryFrom<u8> for BrotliLevel {
             10 => Ok(Self::L10),
             11 => Ok(Self::L11),
             _ => Err(SerdirError::ConfigError(format!(
-                "invalid Brotli level: {}, must be between 0 and 11",
-                value
+                "invalid Brotli level: {value}, must be between 0 and 11"
             ))),
         }
     }
@@ -177,8 +176,7 @@ impl TryFrom<u32> for BrotliLevel {
         u8::try_from(value)
             .map_err(|_| {
                 SerdirError::ConfigError(format!(
-                    "invalid Brotli level: {}, must be between 0 and 11",
-                    value
+                    "invalid Brotli level: {value}, must be between 0 and 11"
                 ))
             })?
             .try_into()

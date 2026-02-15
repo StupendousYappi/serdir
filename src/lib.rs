@@ -177,15 +177,15 @@ pub enum SerdirError {
 impl Display for SerdirError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SerdirError::ConfigError(msg) => write!(f, "{}", msg),
+            SerdirError::ConfigError(msg) => write!(f, "{msg}"),
             SerdirError::IsDirectory(path) => {
                 write!(f, "Path is a directory: {}", path.display())
             }
             SerdirError::NotFound(_) => write!(f, "File not found"),
-            SerdirError::InvalidPath(msg) => write!(f, "Invalid path: {}", msg),
-            SerdirError::IOError(err) => write!(f, "I/O error: {}", err),
+            SerdirError::InvalidPath(msg) => write!(f, "Invalid path: {msg}"),
+            SerdirError::IOError(err) => write!(f, "I/O error: {err}"),
             SerdirError::CompressionError(msg, err) => {
-                write!(f, "Brotli compression error: {} (I/O error: {})", msg, err)
+                write!(f, "Brotli compression error: {msg} (I/O error: {err})")
             }
         }
     }

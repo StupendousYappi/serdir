@@ -1,19 +1,24 @@
-name: CI
+name: Release
+
 on:
-  pull_request:
-    branches:
-      - main
-    types:
-      - opened
-      - synchronize
-      - reopened
+  push:
+    tags:
+      - "v*.*.*"
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  test:
+  gate_tests:
     strategy:
       matrix:
         os:
@@ -38,7 +43,7 @@ jobs:
     - name: Test
       run: cargo test --all-features --all-targets
 
-  lint:
+  gate_checks:
     runs-on: ubuntu-24.04
     steps:
     - name: Checkout
@@ -50,7 +55,7 @@ jobs:
           ~/.cargo/registry
           ~/.cargo/git
           target
-        key: ubuntu-24.04-1.88.0-cargo-${{ hashFiles('**/Cargo.lock') }}
+        key: ubuntu-24.04-1.88.0-checks-cargo-${{ hashFiles('**/Cargo.lock') }}
     - name: Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
@@ -60,3 +65,34 @@ jobs:
       run: cargo fmt -- --check
     - name: Clippy
       run: cargo clippy --all-features -- -D warnings
+    - name: Extra release checks
+      run: cargo check-all --all-features
+
+  publish_crate:
+    needs:
+      - gate_tests
+      - gate_checks
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+    - name: Install Rust
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: 1.88.0
+    - name: Publish to crates.io
+      run: cargo publish --locked
+
+  create_github_release:
+    needs: publish_crate
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+    - name: Create GitHub release
+      uses: softprops/action-gh-release@v2
+      with:
+        generate_release_notes: true

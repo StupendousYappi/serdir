@@ -103,7 +103,7 @@ fn directory_listing(
             Ok(ents) => ents,
             Err(_) => return not_found_response(),
         };
-    ents.sort_unstable_by(|a, b| a.file_name().cmp(&b.file_name()));
+    ents.sort_unstable_by_key(|a| a.file_name());
 
     for ent in ents {
         let file_name = ent.file_name();
