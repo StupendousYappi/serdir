@@ -1,0 +1,57 @@
+name: Fuzz
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_total_time:
+        description: "Seconds to run each fuzz target"
+        required: true
+        default: "60"
+      runs:
+        description: "How many independent runs per target"
+        required: true
+        default: "1"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - detect_compression_support
+          - serve_nonempty
+    steps:
+    - name: Checkout
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      with:
+        persist-credentials: false
+    - name: Cache
+      uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          fuzz/target
+        key: ubuntu-24.04-nightly-fuzz-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock', 'fuzz/Cargo.toml') }}
+    - name: Install Rust nightly
+      uses: actions-rust-lang/setup-rust-toolchain@1780873c7b576612439a134613cc4cc74ce5538c # v1
+      with:
+        toolchain: nightly
+    - name: Install cargo-fuzz
+      run: cargo install cargo-fuzz --locked
+    - name: Run cargo fuzz
+      working-directory: fuzz
+      run: |
+        set -euo pipefail
+        cargo fuzz run "${{ matrix.target }}" -- \
+          -max_total_time="${{ github.event.inputs.max_total_time }}" \
+          -runs="${{ github.event.inputs.runs }}"
