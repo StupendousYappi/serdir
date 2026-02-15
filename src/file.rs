@@ -211,12 +211,12 @@ mod tests {
     use std::time::Duration;
     use std::time::SystemTime;
 
-    type CRF = FileEntity;
+    type E = FileEntity;
 
     async fn to_bytes(
         s: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
     ) -> Result<Bytes, std::io::Error> {
-        let concat = Pin::from(s)
+        let concat = s
             .try_fold(Vec::new(), |mut acc, item| async move {
                 acc.extend(&item[..]);
                 Ok(acc)
@@ -234,7 +234,7 @@ mod tests {
             f.write_all(b"asdf").unwrap();
             let mut headers = HeaderMap::new();
             headers.insert(http::header::CONTENT_TYPE, "text/plain".parse().unwrap());
-            let crf1 = CRF::new(&p, headers).unwrap();
+            let crf1 = E::new(&p, headers).unwrap();
             assert_eq!(4, crf1.len());
             assert_eq!(
                 Some("text/plain"),
@@ -255,7 +255,7 @@ mod tests {
 
             // A FileEntity constructed from a modified file should have a different etag.
             f.write_all(b"jkl;").unwrap();
-            let crf2 = CRF::new(&p, HeaderMap::new()).unwrap();
+            let crf2 = E::new(&p, HeaderMap::new()).unwrap();
             assert_eq!(8, crf2.len());
         })
         .await
@@ -270,7 +270,7 @@ mod tests {
             let mut f = File::create(&p).unwrap();
 
             f.write_all(b"first value").unwrap();
-            let crf1 = CRF::new(&p, HeaderMap::new()).unwrap();
+            let crf1 = E::new(&p, HeaderMap::new()).unwrap();
             let etag1 = crf1.etag().expect("etag1 was None");
             assert_eq!(r#""928c5c44c1689e3f""#, etag1.to_str().unwrap());
 
@@ -278,7 +278,7 @@ mod tests {
             f.set_len(0).unwrap();
 
             f.write_all(b"another value").unwrap();
-            let crf2 = CRF::new(&p, HeaderMap::new()).unwrap();
+            let crf2 = E::new(&p, HeaderMap::new()).unwrap();
             let etag2 = crf2.etag().expect("etag2 was None");
             assert_eq!(r#""d712812bea51c2cf""#, etag2.to_str().unwrap());
 
@@ -300,7 +300,7 @@ mod tests {
             let mut f = File::create(&p).unwrap();
             f.write_all(b"blahblah").unwrap();
 
-            let crf1 = CRF::new(&p, HeaderMap::new()).unwrap();
+            let crf1 = E::new(&p, HeaderMap::new()).unwrap();
             let expected = f.metadata().unwrap().modified().ok();
             assert_eq!(expected, crf1.last_modified());
 
@@ -308,7 +308,7 @@ mod tests {
             let t = SystemTime::UNIX_EPOCH + fifty_hours;
             f.set_modified(t).unwrap();
 
-            let crf2 = CRF::new(&p, HeaderMap::new()).unwrap();
+            let crf2 = E::new(&p, HeaderMap::new()).unwrap();
             assert_eq!(Some(t), crf2.last_modified());
 
             assert_eq!(
@@ -329,7 +329,7 @@ mod tests {
             let mut f = File::create(&p).unwrap();
             f.write_all(b"asdf").unwrap();
 
-            let crf = CRF::new(&p, HeaderMap::new()).unwrap();
+            let crf = E::new(&p, HeaderMap::new()).unwrap();
             assert_eq!(4, crf.len());
             f.set_len(3).unwrap();
 
@@ -351,7 +351,7 @@ mod tests {
             let mut f = File::create(&p).unwrap();
             f.write_all(b"hello world").unwrap();
 
-            let entity = CRF::new(&p, HeaderMap::new()).unwrap();
+            let entity = E::new(&p, HeaderMap::new()).unwrap();
             let req = http::Request::get("/").body(()).unwrap();
 
             let res: http::Response<crate::Body> = entity.serve_request(&req, http::StatusCode::OK);

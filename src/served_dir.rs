@@ -652,10 +652,7 @@ mod tests {
     }
 
     fn hash_error(_: &std::fs::File) -> Result<Option<u64>, std::io::Error> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "hash calculation failed",
-        ))
+        Err(std::io::Error::other("hash calculation failed"))
     }
 
     #[tokio::test(flavor = "multi_thread")]

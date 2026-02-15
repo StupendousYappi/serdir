@@ -163,6 +163,7 @@ mod test {
         let f = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
+            .truncate(true)
             .open(path)
             .unwrap();
         // This should fail because it's not open for reading.
