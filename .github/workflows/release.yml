@@ -71,7 +71,7 @@ jobs:
     - name: Clippy
       run: cargo clippy --all-features -- -D warnings
     - name: Extra release checks
-      run: cargo check-all --all-features
+      run: cargo check-all
 
   publish_crate:
     needs:

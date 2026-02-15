@@ -1,4 +1,4 @@
-# 0.3.0-beta1
+# 0.3.0
 
 - Improved examples, including adding more CLI options and adding an example
 with use of raw `ServedDir` APis with hyper.
