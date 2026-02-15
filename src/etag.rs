@@ -43,19 +43,12 @@ impl EtagCache {
         Self(cache)
     }
 
-    pub(crate) fn get_or_insert(
-        &self,
-        info: FileInfo,
-        file: &File,
-        hasher: FileHasher,
-    ) -> Result<Option<ETag>, io::Error> {
-        if let Some(etag) = self.0.get(&info) {
-            return Ok(etag);
-        }
+    pub(crate) fn get(&self, info: &FileInfo) -> Option<Option<ETag>> {
+        self.0.get(info)
+    }
 
-        let etag = hasher(file).map(|hash| hash.map(ETag::from))?;
+    pub(crate) fn insert(&self, info: FileInfo, etag: Option<ETag>) {
         self.0.insert(info, etag);
-        Ok(etag)
     }
 }
 

@@ -154,13 +154,13 @@ impl ServedDir {
             Err(SerdirError::NotFound(_)) if self.not_found_path.is_some() => {
                 let not_found_path = self.not_found_path.as_ref().unwrap();
                 let matched_file = self.find_file(not_found_path, preferred).await?;
-                let entity = tokio::task::block_in_place(|| self.create_entity(matched_file))?;
+                let entity = self.create_entity(matched_file)?;
                 return Err(SerdirError::NotFound(Some(entity)));
             }
             Err(e) => return Err(e),
         };
 
-        tokio::task::block_in_place(|| self.create_entity(matched_file))
+        self.create_entity(matched_file)
     }
 
     /// Returns an HTTP response for a request path and headers.
@@ -229,8 +229,15 @@ impl ServedDir {
         file_info: FileInfo,
         file: &File,
     ) -> Result<Option<ETag>, std::io::Error> {
-        self.etag_cache
-            .get_or_insert(file_info, file, self.file_hasher)
+        if let Some(etag) = self.etag_cache.get(&file_info) {
+            return Ok(etag);
+        }
+
+        let etag = tokio::task::block_in_place(|| {
+            (self.file_hasher)(file).map(|hash| hash.map(ETag::from))
+        })?;
+        self.etag_cache.insert(file_info, etag);
+        Ok(etag)
     }
 
     fn get_content_type(&self, extension: &str) -> HeaderValue {
