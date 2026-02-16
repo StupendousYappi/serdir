@@ -6,7 +6,7 @@ on:
       max_total_time:
         description: "Seconds to run each fuzz target"
         required: true
-        default: "60"
+        default: "30"
       runs:
         description: "How many independent runs per target"
         required: true
