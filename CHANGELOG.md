@@ -7,7 +7,6 @@ with use of raw `ServedDir` APis with hyper.
 - Optimized and hardened CI configuration
 - Increased test coverage
 - Eliminated `memchr` dependency
-- Improved API docs
 
 # 0.2.1
 

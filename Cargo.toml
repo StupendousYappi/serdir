@@ -1,6 +1,6 @@
 [package]
 name = "serdir"
-version = "0.3.0"
+version = "0.3.0-beta1"
 authors = [
     "Greg Steffensen <greg.steffensen@gmail.com>",
     "Scott Lamb <slamb@slamb.org>",
