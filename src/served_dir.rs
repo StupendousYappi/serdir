@@ -42,6 +42,26 @@ use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 ///   variants of files (i.e. "index.html.gz" can be served instead of "index.html"),
 ///   and for performing cached compression of files using Brotli and caching the
 ///   compressed output for reuse
+///
+/// ## Path cleanup and validation
+///
+/// The [ServedDir::get] and [ServedDir:get_response] first cleanup the input
+/// path by stripping the configured `strip_prefix` value from the start of the
+/// path. If a `strip_prefix` value is defined but the input path doesn't start
+/// with it, those methods return `SerdirError::InvalidPath`. Then, they strip
+/// a single leading slash from the path if present- this means that paths `foo`
+/// and `/foo` are equivalent.
+///
+/// The cleaned path value is then validated for safety- those methods will return
+/// `SerdirError::InvalidPath` if the cleaned path:
+/// - Contains a null byte
+/// - Contains a parent directory component (i.e. "..")
+/// - Starts with a Windows path prefix (e.g. "C:\" or "\\"")
+///
+/// If the cleaned path passes those checks, it is a relative path, and is resolved
+/// relative to the `ServedDir` instance's configured directory. The `ServedDir` will
+/// then attempt to find a encoding variant of that path that is compatible with
+/// the request client's accepted compression encodings.
 pub struct ServedDir {
     dirpath: PathBuf,
     compression_strategy: CompressionStrategyInner,
@@ -96,39 +116,50 @@ impl ServedDir {
 
     /// Returns a `FileEntity` for the given path and request headers.
     ///
-    /// This method searches for a file with the given relative path in this instance's
-    /// static files directory. If a file is found, a [FileEntity] will be returned that
-    /// can be used to serve its content in a HTTP response. This method will also
-    /// choose a `Content-Type` header value based on the extension of the matched file.
+    /// This method searches for a file with the given relative path in this
+    /// instance's static files directory. If a file is found, a [FileEntity]
+    /// will be returned that can be used to serve its content in a HTTP
+    /// response. This method will also choose a `Content-Type` header value
+    /// based on the extension of the matched file.
     ///
-    /// If static compression is configured, you can provide pre-compressed variants of
-    /// any file by creating a file with the same name as the original, with the appropriate
-    /// extension added. For example, if you have a static file with path `settings/index.html`,
-    /// this method will look for:
-    /// - the file `settings/index.html.zstd` if the client supports zstandard compression
-    /// - the file `settings/index.html.br` if the client supports brotli compression
-    /// - the file `settings/index.html.gz` if the client supports gzip compression
+    /// This method will return an error with kind `ErrorKind::NotFound` if the
+    /// file is not found.  It will return an error with kind
+    /// `ErrorKind::InvalidInput` if the path is invalid.
     ///
-    /// Under static compression, this method will always search for those variants in
-    /// the above order (zstd, then br, then gz), regardless of the prioritization the
-    /// `Accept-Encoding` header provided. If no compatible compressed version can be
-    /// found, the original file will be used (even if the `Accept-Encoding` header
-    /// explicitly rejects the `identity` encoding).
+    /// ## Compression
     ///
-    /// If cached compression is configured, this method will perform Brotli compression of matched
-    /// files on the fly if the client supports Brotli compression, and will cache the compressed
-    /// versions for reuse (Brotli is the only compression algorithm for which runtime compression
-    /// is supported). The generated Brotli contents will be cached in unlinked tempfiles that have
-    /// no visible path on the filesystem, and will be cleaned up automatically by the operating
-    /// system when the application exits, regardless of how it exits (i.e. they will be cleaned up
-    /// even if Rust panics in abort mode). Disk usage can be controlled by limiting the maximum
-    /// size of files that should be compressed, and the maximum number of compressed files to
-    /// cache, using the `CachedCompression` type. The Brotli compression level can
-    /// also be configured, allowing you to choose your own balance of compression speed and
-    /// compressed size.
+    /// If static compression is configured, you can provide pre-compressed
+    /// variants of any file by creating a file with the same name as the
+    /// original, with the appropriate extension added. For example, if you have
+    /// a static file with path `settings/index.html`, this method will look
+    /// for:
+    /// - the file `settings/index.html.zstd` if the client supports zstandard
+    /// compression
+    /// - the file `settings/index.html.br` if the client supports brotli
+    /// compression
+    /// - the file `settings/index.html.gz` if the client supports gzip
+    /// compression
     ///
-    /// This method will return an error with kind `ErrorKind::NotFound` if the file is not found.
-    /// It will return an error with kind `ErrorKind::InvalidInput` if the path is invalid.
+    /// Under static compression, this method will always search for those
+    /// variants in the above order (zstd, then br, then gz), regardless of the
+    /// prioritization the `Accept-Encoding` header provided. If no compatible
+    /// compressed version can be found, the original file will be used (even if
+    /// the `Accept-Encoding` header explicitly rejects the `identity`
+    /// encoding).
+    ///
+    /// If cached compression is configured, this method will perform Brotli
+    /// compression of matched files on the fly if the client supports Brotli
+    /// compression, and will cache the compressed versions for reuse (Brotli is
+    /// the only compression algorithm for which runtime compression is
+    /// supported). The generated Brotli contents will be cached in unlinked
+    /// tempfiles that have no visible path on the filesystem, and will be
+    /// cleaned up automatically by the operating system when the application
+    /// exits, regardless of how it exits (i.e. they will be cleaned up even if
+    /// Rust panics in abort mode). Disk usage can be controlled by limiting the
+    /// maximum size of files that should be compressed, and the maximum number
+    /// of compressed files to cache, using the `CachedCompression` type. The
+    /// Brotli compression level can also be configured, allowing you to choose
+    /// your own balance of compression speed and compressed size.
     pub async fn get(&self, path: &str, req_hdrs: &HeaderMap) -> Result<FileEntity, SerdirError> {
         let path = match self.strip_prefix.as_deref() {
             Some(prefix) if path == prefix => ".",
@@ -281,7 +312,6 @@ impl ServedDir {
     }
 
     /// Returns a Tower service that serves files from this `ServedDir`.
-    #[cfg(feature = "tower")]
     pub fn into_tower_service(self) -> TowerService {
         TowerService::new(self)
     }
@@ -292,8 +322,19 @@ impl ServedDir {
         HyperService::new(self)
     }
 
-    /// Returns a Tower layer that serves files from this `ServedDir` and
-    /// delegates unmatched requests to an inner service.
+    /// Returns a Tower layer (i.e. middleware) that serves files from this
+    /// `ServedDir` and delegates unmatched requests to an inner service.
+    ///
+    /// This method can function as a simple alternative to a URL router in
+    /// Tower-based applications that serve both static UI files and dynamic
+    /// APIs.  It allows static files to be easily mixed with dynamic URL
+    /// handlers, and allows UI developers to easily modify static content
+    /// across the site without requiring any changes to Rust code. By default,
+    /// the middleware will perform a file existence check on the filesystem for
+    /// every URL path it receives. This performance cost can be avoided if
+    /// define the [`strip_prefix`](Self::strip_prefix) option; if set, the
+    /// middleware will immediately pass on reqeusts whose path does not start
+    /// with that prefix, without any filesystem interaction.
     #[cfg(feature = "tower")]
     pub fn into_tower_layer(self) -> TowerLayer {
         TowerLayer::new(self)
@@ -398,8 +439,15 @@ impl ServedDirBuilder {
 
     /// Sets a prefix to strip from the request path.
     ///
-    /// If this value is defined, [`ServedDir::get`] will return a [`SerdirError::InvalidPath`]
+    /// If this value is defined, [`ServedDir::get`] and
+    /// [`ServedDir::get_response`] will return a [`SerdirError::InvalidPath`]
     /// error for any path that doesn't begin with the given prefix.
+    ///
+    /// This setting can serve as a useful performance optimization when using a
+    /// `ServedDir` as Tower middleware via the [`ServedDir::into_tower_layer`]
+    /// method; if the input path doesn't begin with the prefix, the request
+    /// handling logic will return quickly, without performing any file system
+    /// lookups, and fall through to the next Tower handler.
     pub fn strip_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.strip_prefix = Some(prefix.into());
         self
