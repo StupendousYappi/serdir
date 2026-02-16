@@ -6,6 +6,7 @@ with use of raw `ServedDir` APis with hyper.
 - Replaced unmaintained `winapi` dependency with `windows-sys`
 - Optimized and hardened CI configuration
 - Increased test coverage
+- Eliminated `memchr` dependency
 
 # 0.2.1
 
