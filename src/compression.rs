@@ -386,6 +386,11 @@ impl CompressionSupport {
 
 /// The strategy used to obtain compressed files compatible with the request's
 /// supported encodings.
+///
+/// Currently 3 strategies are supported: `Static` (i.e. user-provided pre-compressed
+/// files), `Cached` (compressed files generated on demand and cached at runtime) and
+/// `None`. The `Cached` strategy is only available when the `runtime-compression`
+/// feature is enabled.
 #[derive(Debug, Clone)]
 pub enum CompressionStrategy {
     /// Look for pre-compressed versions of the original file by adding the appropriate filename
