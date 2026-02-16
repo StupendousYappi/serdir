@@ -156,6 +156,11 @@ impl FileEntity {
         self.len
     }
 
+    /// Returns true if the file is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Returns the last modification time of the file.
     pub fn mtime(&self) -> SystemTime {
         self.mtime
