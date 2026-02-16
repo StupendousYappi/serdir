@@ -188,7 +188,7 @@ impl ServedDir {
         }
     }
 
-    pub(crate) fn make_status_response(status: StatusCode) -> Response<Body> {
+    fn make_status_response(status: StatusCode) -> Response<Body> {
         let reason = status.canonical_reason().unwrap_or("Unknown");
         Response::builder()
             .status(status)
@@ -197,7 +197,11 @@ impl ServedDir {
     }
 
     fn create_entity(&self, matched_file: MatchedFile) -> Result<FileEntity, SerdirError> {
-        let content_type: HeaderValue = self.get_content_type(&matched_file.extension);
+        let content_type = self
+            .known_extensions
+            .get(&matched_file.extension)
+            .cloned()
+            .unwrap_or_else(|| self.default_content_type.clone());
         let mut headers = self.common_headers.clone();
         headers.insert(http::header::CONTENT_TYPE, content_type);
 
@@ -239,13 +243,6 @@ impl ServedDir {
         })?;
         self.etag_cache.insert(file_info, etag);
         Ok(etag)
-    }
-
-    fn get_content_type(&self, extension: &str) -> HeaderValue {
-        self.known_extensions
-            .get(extension)
-            .cloned()
-            .unwrap_or_else(|| self.default_content_type.clone())
     }
 
     /// Ensures path is safe (no NUL bytes, not absolute, no `..` segments) and

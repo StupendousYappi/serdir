@@ -175,9 +175,15 @@ where
                     let response = inner.call(req).await?;
                     Ok(response.map(|body| body.map_err(Into::into).boxed_unsync()))
                 }
-                Err(_) => Ok(box_response(ServedDir::make_status_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                ))),
+                Err(_) => {
+                    let status = StatusCode::INTERNAL_SERVER_ERROR;
+                    let reason = status.canonical_reason().unwrap();
+                    let resp = Response::builder()
+                        .status(status)
+                        .body(Body::from(reason))
+                        .expect("internal server error response should be valid");
+                    Ok(resp.map(|body| body.map_err(Into::into).boxed_unsync()))
+                }
             }
         })
     }
