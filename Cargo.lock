@@ -1321,7 +1321,7 @@ dependencies = [
 
 [[package]]
 name = "serdir"
-version = "0.3.0-beta1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "argh",
