@@ -309,6 +309,7 @@ impl ServedDir {
     }
 
     /// Returns a Tower service that serves files from this `ServedDir`.
+    #[cfg(feature = "tower")]
     pub fn into_tower_service(self) -> TowerService {
         TowerService::new(self)
     }
