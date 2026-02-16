@@ -150,6 +150,16 @@ impl FileEntity {
     {
         crate::serving::serve(self, req, status).map(Into::into)
     }
+
+    /// Returns the length of the file in bytes.
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+
+    /// Returns the last modification time of the file.
+    pub fn mtime(&self) -> SystemTime {
+        self.mtime
+    }
 }
 
 impl Entity for FileEntity {

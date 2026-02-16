@@ -363,26 +363,4 @@ pub(crate) trait Entity: 'static + Send + Sync {
     /// this time is in the future, as required by [RFC 7232 section
     /// 2.2.1](https://tools.ietf.org/html/rfc7232#section-2.2.1).
     fn last_modified(&self) -> Option<SystemTime>;
-
-    /// Reads the entire body of this entity into a `Bytes`.
-    ///
-    /// This is a convenience method for testing and debugging.
-    #[cfg(test)]
-    #[allow(async_fn_in_trait)]
-    async fn read_body(&self) -> Result<bytes::Bytes, Self::Error>
-    where
-        Self: Sized,
-    {
-        use futures_util::StreamExt;
-
-        let chunks = self.get_range(0..self.len()).collect::<Vec<_>>().await;
-        let mut bytes = bytes::BytesMut::new();
-        for chunk in chunks {
-            match chunk {
-                Ok(chunk) => bytes.extend_from_slice(chunk.chunk()),
-                Err(err) => return Err(err),
-            }
-        }
-        Ok(bytes.freeze())
-    }
 }
