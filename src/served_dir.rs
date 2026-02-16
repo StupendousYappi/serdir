@@ -134,11 +134,11 @@ impl ServedDir {
     /// a static file with path `settings/index.html`, this method will look
     /// for:
     /// - the file `settings/index.html.zstd` if the client supports zstandard
-    /// compression
+    ///   compression
     /// - the file `settings/index.html.br` if the client supports brotli
-    /// compression
+    ///   compression
     /// - the file `settings/index.html.gz` if the client supports gzip
-    /// compression
+    ///   compression
     ///
     /// Under static compression, this method will always search for those
     /// variants in the above order (zstd, then br, then gz), regardless of the
