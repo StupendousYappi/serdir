@@ -171,11 +171,11 @@ pub enum SerdirError {
 }
 
 impl SerdirError {
-    /// Constructor for ConfigError variant, logs an internal server error.
+    /// Constructor for ConfigError variant, logs a config error.
     pub fn config_error(msg: impl Into<String>) -> Self {
         let msg = msg.into();
         let err = SerdirError::ConfigError(msg);
-        log::error!("Internal server error: {err}");
+        log::error!("{err}");
         err
     }
 
@@ -200,8 +200,9 @@ impl SerdirError {
     /// Constructor for InvalidPath variant, logs an invalid path error.
     pub fn invalid_path(msg: impl Into<String>) -> Self {
         let msg = msg.into();
-        log::error!("Invalid path: {msg}");
-        SerdirError::InvalidPath(msg)
+        let err = SerdirError::InvalidPath(msg);
+        log::error!("{err}");
+        err
     }
 
     /// Constructor for IOError variant, logs an internal server error.
@@ -215,7 +216,7 @@ impl SerdirError {
 impl Display for SerdirError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SerdirError::ConfigError(msg) => write!(f, "{msg}"),
+            SerdirError::ConfigError(msg) => write!(f, "Config error: {msg}"),
             SerdirError::IsDirectory(path) => {
                 write!(f, "Path is a directory: {}", path.display())
             }

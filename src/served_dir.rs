@@ -222,11 +222,9 @@ impl ServedDir {
             Err(SerdirError::InvalidPath(_)) => {
                 Ok(Self::make_status_response(StatusCode::BAD_REQUEST))
             }
-            Err(_) => {
-                Ok(Self::make_status_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                ))
-            }
+            Err(_) => Ok(Self::make_status_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )),
         }
     }
 
