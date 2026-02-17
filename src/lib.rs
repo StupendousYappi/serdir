@@ -189,11 +189,11 @@ impl SerdirError {
         SerdirError::NotFound(resource)
     }
 
-    /// Constructor for CompressionError variant, logs an internal server error.
+    /// Constructor for CompressionError variant, logs a compression error.
     pub fn compression_error(msg: impl Into<String>, io_err: IOError) -> Self {
         let msg = msg.into();
         let err = SerdirError::CompressionError(msg, io_err);
-        log::error!("Internal server error: {err}");
+        log::error!("{err}");
         err
     }
 
@@ -205,10 +205,10 @@ impl SerdirError {
         err
     }
 
-    /// Constructor for IOError variant, logs an internal server error.
+    /// Constructor for IOError variant, logs an I/O error.
     pub fn io_error(err: IOError) -> Self {
         let err = SerdirError::IOError(err);
-        log::error!("Internal server error: {err}");
+        log::error!("{err}");
         err
     }
 }
@@ -222,9 +222,9 @@ impl Display for SerdirError {
             }
             SerdirError::NotFound(_) => write!(f, "File not found"),
             SerdirError::InvalidPath(msg) => write!(f, "Invalid path: {msg}"),
-            SerdirError::IOError(err) => write!(f, "I/O error: {err}"),
+            SerdirError::IOError(err) => write!(f, "{err}"),
             SerdirError::CompressionError(msg, err) => {
-                write!(f, "Brotli compression error: {msg} (I/O error: {err})")
+                write!(f, "{msg} (I/O error: {err})")
             }
         }
     }
