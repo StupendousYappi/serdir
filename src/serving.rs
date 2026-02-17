@@ -215,7 +215,9 @@ fn serve_inner(
 
     if precondition_failed {
         res = res.status(StatusCode::PRECONDITION_FAILED);
-        return ServeInner::Simple(Box::new(res.body(Body::from("Precondition failed")).unwrap()));
+        return ServeInner::Simple(Box::new(
+            res.body(Body::from("Precondition failed")).unwrap(),
+        ));
     }
 
     if not_modified {
