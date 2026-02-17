@@ -222,9 +222,9 @@ impl Display for SerdirError {
             }
             SerdirError::NotFound(_) => write!(f, "File not found"),
             SerdirError::InvalidPath(msg) => write!(f, "Invalid path: {msg}"),
-            SerdirError::IOError(err) => write!(f, "{err}"),
+            SerdirError::IOError(err) => write!(f, "IO error: {err}"),
             SerdirError::CompressionError(msg, err) => {
-                write!(f, "{msg} (I/O error: {err})")
+                write!(f, "Compression error: {msg} (I/O error: {err})")
             }
         }
     }
