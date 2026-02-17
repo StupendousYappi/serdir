@@ -210,7 +210,8 @@ impl ServedDir {
     /// A convenience wrapper method for [ServedDir::get], converting a HTTP request
     /// into a HTTP response by serving static files using this `ServedDir`.
     pub async fn get_response<B>(&self, req: &Request<B>) -> Result<Response<Body>, Infallible> {
-        match self.get(req.uri().path(), req.headers()).await {
+        let result = self.get(req.uri().path(), req.headers()).await;
+        match result {
             Ok(entity) => Ok(entity.serve_request(req, StatusCode::OK)),
             Err(SerdirError::NotFound(Some(entity))) => {
                 Ok(entity.serve_request(req, StatusCode::NOT_FOUND))
