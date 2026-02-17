@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::etag::ETag;
-use crate::{Entity, SerdirError};
+use crate::SerdirError;
 use http::{Request, Response, StatusCode};
 
 // This stream breaks apart the file into chunks of at most CHUNK_SIZE. This size is
@@ -33,20 +33,20 @@ const CHUNK_SIZE: u64 = 65_536;
 ///
 /// Expects to be served from a tokio threadpool.
 ///
-/// Most serdir users will not need to use `FileEntity` directly, and will
+/// Most serdir users will not need to use `Resource` directly, and will
 /// instead use higher-level APIs like
 /// [`ServedDir::get_response`](crate::ServedDir::get_response). However,
-/// `FileEntity` is available for advanced use cases, like manually modifying
+/// `Resource` is available for advanced use cases, like manually modifying
 /// the etag or response headers before serving.
 ///
-/// A `FileEntity` references its file via an open [`File`] handle, not a [`Path`], so it will be
+/// A `Resource` references its file via an open [`File`] handle, not a [`Path`], so it will be
 /// resilient against attempts to delete or rename its file as long as it exists. Reading data
-/// from a `FileEntity` does not affects its file position, so it is [`Sync`] and can, if needed,
+/// from a `Resource` does not affects its file position, so it is [`Sync`] and can, if needed,
 /// be used to serve many requests at once (though this crate's own request handling code doesn't
 /// attempt that).
 ///
 /// However, file metadata such as the length, last modified time and ETag are cached when the
-/// `FileEntity` is created, so if the underlying file is written to after the `FileEntity` is
+/// `Resource` is created, so if the underlying file is written to after the `Resource` is
 /// created, it's possible for it to return a corrupt response, with an ETag or last modified time
 /// that doesn't match the served contents. As such, while it is safe to replace existing static
 /// content with new files at runtime, users of this crate should do that by moving files or
@@ -57,7 +57,7 @@ const CHUNK_SIZE: u64 = 65_536;
 /// ```
 /// # use http::{Request, StatusCode};
 /// # use http::header::{HeaderMap, CONTENT_TYPE};
-/// # use serdir::{Body, FileEntity};
+/// # use serdir::{Body, Resource};
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let tmp = tempfile::NamedTempFile::new()?;
 /// std::fs::write(tmp.path(), b"Hello, world!")?;
@@ -65,7 +65,7 @@ const CHUNK_SIZE: u64 = 65_536;
 /// let mut headers = HeaderMap::new();
 /// headers.insert(CONTENT_TYPE, "text/plain".parse()?);
 ///
-/// let entity = FileEntity::new(tmp.path(), headers)?;
+/// let entity = Resource::new(tmp.path(), headers)?;
 /// let request = Request::get("/").body(())?;
 /// let response: http::Response<Body> = entity.serve_request(&request, StatusCode::OK);
 ///
@@ -75,7 +75,7 @@ const CHUNK_SIZE: u64 = 65_536;
 /// # }
 /// ```
 #[derive(Debug, Clone)]
-pub struct FileEntity {
+pub struct Resource {
     len: u64,
     mtime: SystemTime,
     /// An open file handle to the file being served.
@@ -86,15 +86,15 @@ pub struct FileEntity {
     pub etag: Option<ETag>,
 }
 
-impl FileEntity {
-    /// Creates a new FileEntity that serves the file at the given path.
+impl Resource {
+    /// Creates a new Resource that serves the file at the given path.
     ///
     /// The `headers` value specifies HTTP response headers that should be included whenever serving
     /// this file, such as the `Content-Type`, `Encoding` and `Vary` headers.
     ///
     /// This function performs blocking disk IO- calls to it from an async context should be wrapped in a
     /// call to [`tokio::task::block_in_place`] to avoid blocking the tokio reactor thread. Attempts
-    /// to read file data via [`FileEntity::serve_request`] will also block, and should also be wrapped
+    /// to read file data via [`Resource::serve_request`] will also block, and should also be wrapped
     /// in [`tokio::task::block_in_place`] if called from an async context.
     pub fn new(path: impl AsRef<Path>, headers: HeaderMap) -> Result<Self, SerdirError> {
         let path = path.as_ref();
@@ -103,11 +103,11 @@ impl FileEntity {
 
         let etag: Option<ETag> = default_hasher(&file)?.map(Into::into);
 
-        let entity = FileEntity::new_with_metadata(Arc::new(file), file_info, headers, etag);
+        let entity = Resource::new_with_metadata(Arc::new(file), file_info, headers, etag);
         Ok(entity)
     }
 
-    /// Creates a new FileEntity, with presupplied metadata and a pre-opened file.
+    /// Creates a new Resource, with presupplied metadata and a pre-opened file.
     ///
     /// The `headers` value specifies HTTP response headers that should be included whenever serving
     /// this file, such as the `Content-Type`, `Encoding` and `Vary` headers.
@@ -127,7 +127,7 @@ impl FileEntity {
     ) -> Self {
         debug_assert!(file.metadata().unwrap().is_file());
 
-        FileEntity {
+        Resource {
             len: file_info.len(),
             mtime: file_info.mtime(),
             headers,
@@ -143,7 +143,7 @@ impl FileEntity {
 
     /// Serves this entity as a response to the given request.
     ///
-    /// Consumes the `FileEntity` and returns an HTTP response.
+    /// Consumes the `Resource` and returns an HTTP response.
     pub fn serve_request<B, D>(self, req: &Request<B>, status: StatusCode) -> Response<D>
     where
         D: From<crate::Body>,
@@ -165,21 +165,12 @@ impl FileEntity {
     pub fn mtime(&self) -> SystemTime {
         self.mtime
     }
-}
-
-impl Entity for FileEntity {
-    type Data = bytes::Bytes;
-    type Error = crate::IOError;
-
-    fn len(&self) -> u64 {
-        self.len
-    }
 
     // Reads the bytes of the given range from this entity's file.
-    fn get_range(
+    pub(crate) fn get_range(
         &self,
         range: Range<u64>,
-    ) -> Pin<Box<dyn Stream<Item = Result<Self::Data, Self::Error>> + Send + Sync>> {
+    ) -> Pin<Box<dyn Stream<Item = Result<bytes::Bytes, crate::IOError>> + Send>> {
         let stream = stream::unfold((range, Arc::clone(&self.f)), move |(left, f)| async {
             if left.start == left.end {
                 return None;
@@ -195,27 +186,25 @@ impl Entity for FileEntity {
                 }
             }))
         });
-        let _: &dyn Stream<Item = Result<Self::Data, Self::Error>> = &stream;
         Box::pin(stream)
     }
 
-    fn add_headers(&self, h: &mut HeaderMap) {
+    pub(crate) fn add_headers(&self, h: &mut HeaderMap) {
         h.extend(self.headers.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
 
-    fn etag(&self) -> Option<HeaderValue> {
+    pub(crate) fn etag(&self) -> Option<HeaderValue> {
         self.etag.map(|e| e.into())
     }
 
-    fn last_modified(&self) -> Option<SystemTime> {
+    pub(crate) fn last_modified(&self) -> Option<SystemTime> {
         Some(self.mtime)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Entity;
-    use super::FileEntity;
+    use super::Resource;
     use bytes::Bytes;
     use futures_core::Stream;
     use futures_util::stream::TryStreamExt;
@@ -226,7 +215,7 @@ mod tests {
     use std::time::Duration;
     use std::time::SystemTime;
 
-    type E = FileEntity;
+    type E = Resource;
 
     async fn to_bytes(
         s: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
@@ -268,7 +257,7 @@ mod tests {
                 b"sd"
             );
 
-            // A FileEntity constructed from a modified file should have a different etag.
+            // A Resource constructed from a modified file should have a different etag.
             f.write_all(b"jkl;").unwrap();
             let crf2 = E::new(&p, HeaderMap::new()).unwrap();
             assert_eq!(8, crf2.len());

@@ -121,18 +121,13 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(clippy::result_large_err)]
 
-use bytes::Buf;
-use futures_core::Stream;
-use http::header::{HeaderMap, HeaderValue};
 use std::error::Error;
 use std::fmt::Display;
 use std::fs::File;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Error as IOError;
 use std::io::ErrorKind;
-use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::time::SystemTime;
 
 /// Returns a HeaderValue for the given formatted data.
@@ -165,7 +160,7 @@ pub enum SerdirError {
     /// The path is a directory when it was expected to be a file
     IsDirectory(PathBuf),
     /// The requested file was not found.
-    NotFound(Option<FileEntity>),
+    NotFound(Option<Resource>),
     /// Error compressing file with Brotli.
     CompressionError(String, IOError),
     /// The input path is invalid (e.g., contains NUL bytes or ".." segments).
@@ -221,15 +216,15 @@ pub mod integration;
 
 pub mod compression;
 mod etag;
-mod file;
 mod platform;
 mod range;
+mod resource;
 /// Logic for serving entities.
 mod serving;
 
 pub use crate::body::Body;
 pub use crate::etag::{ETag, FileHasher};
-pub use crate::file::FileEntity;
+pub use crate::resource::Resource;
 pub use crate::served_dir::{ServedDir, ServedDirBuilder};
 
 #[cfg(feature = "runtime-compression")]
@@ -303,64 +298,4 @@ impl FileInfo {
         self.hash(&mut hasher);
         hasher.finish()
     }
-}
-
-/// A reusable, read-only, byte-rangeable HTTP entity for GET and HEAD serving.
-/// Must return exactly the same data on every call.
-pub(crate) trait Entity: 'static + Send + Sync {
-    /// The type of errors produced in [`Self::get_range`] chunks and in the final stream.
-    ///
-    /// [`BoxError`] is a good choice for most implementations.
-    ///
-    /// This must be convertable from [`BoxError`] to allow `serdir` to
-    /// inject errors.
-    ///
-    /// Note that errors returned directly from the body to `hyper` just drop
-    /// the stream abruptly without being logged. Callers might use an
-    /// intermediary service for better observability.
-    type Error: 'static + Send + Sync;
-
-    /// The type of a data chunk.
-    ///
-    /// Commonly `bytes::Bytes` but may be something more exotic.
-    type Data: 'static + Buf + From<Vec<u8>> + From<&'static [u8]>;
-
-    /// Returns the length of the entity's body in bytes.
-    fn len(&self) -> u64;
-
-    /// Returns true if the entity's body is empty.
-    #[allow(dead_code)]
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Gets the body bytes indicated by `range`.
-    ///
-    /// The stream must return exactly `range.end - range.start` bytes or fail early with an `Err`.
-    #[allow(clippy::type_complexity)]
-    fn get_range(
-        &self,
-        range: Range<u64>,
-    ) -> Pin<Box<dyn Stream<Item = Result<Self::Data, Self::Error>> + Send + Sync>>;
-
-    /// Adds entity headers such as `Content-Type` to the supplied `HeaderMap`.
-    /// In particular, these headers are the "other representation header fields" described by [RFC
-    /// 7233 section 4.1](https://tools.ietf.org/html/rfc7233#section-4.1); they should exclude
-    /// `Content-Range`, `Date`, `Cache-Control`, `ETag`, `Expires`, `Content-Location`, and `Vary`.
-    ///
-    /// This function will be called only when that section says that headers such as
-    /// `Content-Type` should be included in the response.
-    fn add_headers(&self, _: &mut HeaderMap);
-
-    /// Returns an etag for this entity, if available.
-    /// Implementations are encouraged to provide a strong etag. [RFC 7232 section
-    /// 2.1](https://tools.ietf.org/html/rfc7232#section-2.1) notes that only strong etags
-    /// are usable for sub-range retrieval.
-    fn etag(&self) -> Option<HeaderValue>;
-
-    /// Returns the last modified time of this entity, if available.
-    /// Note that `serve` may serve an earlier `Last-Modified:` date than the one returned here if
-    /// this time is in the future, as required by [RFC 7232 section
-    /// 2.2.1](https://tools.ietf.org/html/rfc7232#section-2.2.1).
-    fn last_modified(&self) -> Option<SystemTime>;
 }

@@ -28,7 +28,7 @@ static DEFAULT_TEXT_TYPES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 });
 
 /// A service that creates and reuses Brotli-compressed versions of files, returning
-/// a FileEntity for the compressed file if it's supported, or a FileEntity for the
+/// a Resource for the compressed file if it's supported, or a Resource for the
 /// original file if it's not.
 pub(crate) struct BrotliCache {
     tempdir: PathBuf,
@@ -70,15 +70,15 @@ impl BrotliCache {
         }
     }
 
-    /// Returns a FileEntity for the compressed file if it's supported, or a FileEntity for the
+    /// Returns a Resource for the compressed file if it's supported, or a Resource for the
     /// original file if it's not.
     ///
-    /// If a cached FileEntity already exists for the given file, it will be reused. Otherwise,
-    /// the file will be compressed and a new FileEntity will be created and cached.
+    /// If a cached Resource already exists for the given file, it will be reused. Otherwise,
+    /// the file will be compressed and a new Resource will be created and cached.
     ///
     /// The underlying tempfile for the compressed file is unlinked on the
     /// filesystem and inaccessible externally. It will be deleted when the last
-    /// `FileEntity` referencing it is dropped (such as when the BrotliCache is
+    /// `Resource` referencing it is dropped (such as when the BrotliCache is
     /// dropped), or when the application is terminated (deletion is handled by
     /// the operating system and should be performed even after hard crashes of
     /// the application).
@@ -88,7 +88,7 @@ impl BrotliCache {
             .and_then(|s| s.to_str())
             .unwrap_or_default();
         // We don't bother compressing file types that are already compressed, and instead
-        // just return a FileEntity for the original file.
+        // just return a Resource for the original file.
         if !self.supported_extensions.contains(extension) {
             return Self::wrap_orig(path, extension);
         }
@@ -178,7 +178,7 @@ impl BrotliCache {
         self.cache.retain(|key, _| keep_keys.contains(key));
     }
 
-    /// Returns a FileEntity for the uncompressed file
+    /// Returns a Resource for the uncompressed file
     ///
     /// Used when skipping compression.
     fn wrap_orig(path: &Path, extension: &str) -> Result<MatchedFile, SerdirError> {
