@@ -14,6 +14,7 @@ use futures_util::stream;
 use http::header::{HeaderMap, HeaderValue};
 use http::HeaderName;
 use std::fs::File;
+use std::io::{Error, ErrorKind};
 use std::ops::Range;
 use std::path::Path;
 use std::pin::Pin;
@@ -27,6 +28,49 @@ use http::{Request, Response, StatusCode};
 // This stream breaks apart the file into chunks of at most CHUNK_SIZE. This size is
 // a tradeoff between memory usage and thread handoffs.
 const CHUNK_SIZE: u64 = 65_536;
+
+#[derive(Debug, Clone)]
+enum ResourceContent {
+    File(Arc<std::fs::File>),
+    Bytes(bytes::Bytes),
+}
+
+impl ResourceContent {
+    fn for_file(file: Arc<std::fs::File>) -> Self {
+        Self::File(file)
+    }
+
+    fn for_bytes(bytes: bytes::Bytes) -> Self {
+        Self::Bytes(bytes)
+    }
+
+    fn read_range(&self, range: Range<u64>) -> Result<bytes::Bytes, crate::IOError> {
+        let start = usize::try_from(range.start)
+            .map_err(|_| Error::new(ErrorKind::InvalidInput, "range start cannot fit in usize"))?;
+        let end = usize::try_from(range.end)
+            .map_err(|_| Error::new(ErrorKind::InvalidInput, "range end cannot fit in usize"))?;
+        if start > end {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "range start is greater than range end",
+            ));
+        }
+        let len = end - start;
+
+        match self {
+            Self::File(f) => f.read_range(len, range.start).map(Into::into),
+            Self::Bytes(bytes) => {
+                if end > bytes.len() {
+                    return Err(Error::new(
+                        ErrorKind::UnexpectedEof,
+                        "range exceeds bytes length",
+                    ));
+                }
+                Ok(bytes.slice(start..end))
+            }
+        }
+    }
+}
 
 /// HTTP entity created from a [`std::fs::File`] which reads the file chunk-by-chunk within
 /// a [`tokio::task::block_in_place`] closure.
@@ -65,7 +109,7 @@ const CHUNK_SIZE: u64 = 65_536;
 /// let mut headers = HeaderMap::new();
 /// headers.insert(CONTENT_TYPE, "text/plain".parse()?);
 ///
-/// let entity = Resource::new(tmp.path(), headers)?;
+/// let entity = Resource::for_file(tmp.path(), headers)?;
 /// let request = Request::get("/").body(())?;
 /// let response: http::Response<Body> = entity.serve_request(&request, StatusCode::OK);
 ///
@@ -78,8 +122,7 @@ const CHUNK_SIZE: u64 = 65_536;
 pub struct Resource {
     len: u64,
     mtime: SystemTime,
-    /// An open file handle to the file being served.
-    pub f: Arc<std::fs::File>,
+    content: ResourceContent,
     /// The HTTP response headers to include when serving this file
     pub headers: HeaderMap,
     /// The ETag for the file, if any
@@ -96,7 +139,7 @@ impl Resource {
     /// call to [`tokio::task::block_in_place`] to avoid blocking the tokio reactor thread. Attempts
     /// to read file data via [`Resource::serve_request`] will also block, and should also be wrapped
     /// in [`tokio::task::block_in_place`] if called from an async context.
-    pub fn new(path: impl AsRef<Path>, headers: HeaderMap) -> Result<Self, SerdirError> {
+    pub fn for_file(path: impl AsRef<Path>, headers: HeaderMap) -> Result<Self, SerdirError> {
         let path = path.as_ref();
         let file = File::open(path)?;
         let file_info = FileInfo::open_file(path, &file)?;
@@ -104,8 +147,28 @@ impl Resource {
         let mut reader = &file;
         let etag: Option<ETag> = default_hasher(&mut reader)?.map(Into::into);
 
-        let entity = Resource::new_with_metadata(Arc::new(file), file_info, headers, etag);
+        let entity = Resource::for_file_with_metadata(Arc::new(file), file_info, headers, etag);
         Ok(entity)
+    }
+
+    /// Creates a new Resource backed by in-memory bytes.
+    ///
+    /// The caller must provide a last-modified time for conditional request handling.
+    pub fn for_bytes(
+        bytes: bytes::Bytes,
+        mtime: SystemTime,
+        headers: HeaderMap,
+    ) -> Result<Self, SerdirError> {
+        let mut reader = std::io::Cursor::new(bytes.clone());
+        let etag: Option<ETag> = default_hasher(&mut reader)?.map(Into::into);
+
+        Ok(Self {
+            len: crate::as_u64(bytes.len()),
+            mtime,
+            headers,
+            content: ResourceContent::for_bytes(bytes),
+            etag,
+        })
     }
 
     /// Creates a new Resource, with presupplied metadata and a pre-opened file.
@@ -120,7 +183,7 @@ impl Resource {
     /// It is the caller's responsibility to ensure that the the path, file and metadata all refer
     /// to the same file- the metadata should be retrieved from the opened file handle to ensure
     /// this.
-    pub(crate) fn new_with_metadata(
+    pub(crate) fn for_file_with_metadata(
         file: Arc<std::fs::File>,
         file_info: FileInfo,
         headers: HeaderMap,
@@ -132,7 +195,7 @@ impl Resource {
             len: file_info.len(),
             mtime: file_info.mtime(),
             headers,
-            f: file,
+            content: ResourceContent::for_file(file),
             etag,
         }
     }
@@ -167,25 +230,36 @@ impl Resource {
         self.mtime
     }
 
-    // Reads the bytes of the given range from this entity's file.
+    /// Reads and returns the complete content as bytes.
+    ///
+    /// For file-backed resources, this method performs blocking disk IO.
+    pub fn read_bytes(&self) -> Result<bytes::Bytes, std::io::Error> {
+        match &self.content {
+            ResourceContent::File(f) => {
+                tokio::task::block_in_place(|| f.read_range(self.len as usize, 0).map(Into::into))
+            }
+            ResourceContent::Bytes(bytes) => Ok(bytes.clone()),
+        }
+    }
+
+    // Reads the bytes of the given range from this entity.
     pub(crate) fn get_range(
         &self,
         range: Range<u64>,
     ) -> Pin<Box<dyn Stream<Item = Result<bytes::Bytes, crate::IOError>> + Send>> {
-        let stream = stream::unfold((range, Arc::clone(&self.f)), move |(left, f)| async {
+        let content = self.content.clone();
+        let stream = stream::unfold((range, content), move |(left, content)| async move {
             if left.start == left.end {
                 return None;
             }
-            let chunk_size = std::cmp::min(CHUNK_SIZE, left.end - left.start) as usize;
-            Some(tokio::task::block_in_place(move || {
-                match f.read_range(chunk_size, left.start) {
-                    Err(e) => (Err(e), (left, f)),
-                    Ok(v) => {
-                        let bytes_read = v.len();
-                        (Ok(v.into()), (left.start + bytes_read as u64..left.end, f))
-                    }
-                }
-            }))
+            let chunk_size = std::cmp::min(CHUNK_SIZE, left.end - left.start);
+            let chunk_range = left.start..left.start + chunk_size;
+            let result = tokio::task::block_in_place(|| content.read_range(chunk_range));
+            let next = match &result {
+                Ok(bytes) => left.start + crate::as_u64(bytes.len())..left.end,
+                Err(_) => left,
+            };
+            Some((result, (next, content)))
         });
         Box::pin(stream)
     }
@@ -239,7 +313,7 @@ mod tests {
             f.write_all(b"asdf").unwrap();
             let mut headers = HeaderMap::new();
             headers.insert(http::header::CONTENT_TYPE, "text/plain".parse().unwrap());
-            let crf1 = E::new(&p, headers).unwrap();
+            let crf1 = E::for_file(&p, headers).unwrap();
             assert_eq!(4, crf1.len());
             assert_eq!(
                 Some("text/plain"),
@@ -260,7 +334,7 @@ mod tests {
 
             // A Resource constructed from a modified file should have a different etag.
             f.write_all(b"jkl;").unwrap();
-            let crf2 = E::new(&p, HeaderMap::new()).unwrap();
+            let crf2 = E::for_file(&p, HeaderMap::new()).unwrap();
             assert_eq!(8, crf2.len());
         })
         .await
@@ -275,7 +349,7 @@ mod tests {
             let mut f = File::create(&p).unwrap();
 
             f.write_all(b"first value").unwrap();
-            let crf1 = E::new(&p, HeaderMap::new()).unwrap();
+            let crf1 = E::for_file(&p, HeaderMap::new()).unwrap();
             let etag1 = crf1.etag().expect("etag1 was None");
             assert_eq!(r#""928c5c44c1689e3f""#, etag1.to_str().unwrap());
 
@@ -283,7 +357,7 @@ mod tests {
             f.set_len(0).unwrap();
 
             f.write_all(b"another value").unwrap();
-            let crf2 = E::new(&p, HeaderMap::new()).unwrap();
+            let crf2 = E::for_file(&p, HeaderMap::new()).unwrap();
             let etag2 = crf2.etag().expect("etag2 was None");
             assert_eq!(r#""d712812bea51c2cf""#, etag2.to_str().unwrap());
 
@@ -305,7 +379,7 @@ mod tests {
             let mut f = File::create(&p).unwrap();
             f.write_all(b"blahblah").unwrap();
 
-            let crf1 = E::new(&p, HeaderMap::new()).unwrap();
+            let crf1 = E::for_file(&p, HeaderMap::new()).unwrap();
             let expected = f.metadata().unwrap().modified().ok();
             assert_eq!(expected, crf1.last_modified());
 
@@ -313,7 +387,7 @@ mod tests {
             let t = SystemTime::UNIX_EPOCH + fifty_hours;
             f.set_modified(t).unwrap();
 
-            let crf2 = E::new(&p, HeaderMap::new()).unwrap();
+            let crf2 = E::for_file(&p, HeaderMap::new()).unwrap();
             assert_eq!(Some(t), crf2.last_modified());
 
             assert_eq!(
@@ -334,7 +408,7 @@ mod tests {
             let mut f = File::create(&p).unwrap();
             f.write_all(b"asdf").unwrap();
 
-            let crf = E::new(&p, HeaderMap::new()).unwrap();
+            let crf = E::for_file(&p, HeaderMap::new()).unwrap();
             assert_eq!(4, crf.len());
             f.set_len(3).unwrap();
 
@@ -356,13 +430,36 @@ mod tests {
             let mut f = File::create(&p).unwrap();
             f.write_all(b"hello world").unwrap();
 
-            let entity = E::new(&p, HeaderMap::new()).unwrap();
+            let entity = E::for_file(&p, HeaderMap::new()).unwrap();
             let req = http::Request::get("/").body(()).unwrap();
 
             let res: http::Response<crate::Body> = entity.serve_request(&req, http::StatusCode::OK);
             assert_eq!(res.status(), http::StatusCode::OK);
             let body = res.into_body().collect().await.unwrap().to_bytes();
             assert_eq!(body, "hello world");
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn for_bytes_roundtrip() {
+        tokio::spawn(async move {
+            let mut headers = HeaderMap::new();
+            headers.insert(http::header::CONTENT_TYPE, "text/plain".parse().unwrap());
+            let mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(42);
+            let entity = E::for_bytes(Bytes::from_static(b"hello bytes"), mtime, headers).unwrap();
+            assert_eq!(entity.len(), 11);
+            assert_eq!(entity.mtime(), mtime);
+            assert_eq!(
+                entity.read_bytes().unwrap(),
+                Bytes::from_static(b"hello bytes")
+            );
+            assert!(entity.etag().is_some());
+            assert_eq!(
+                &to_bytes(entity.get_range(6..11)).await.unwrap().as_ref(),
+                b"bytes"
+            );
         })
         .await
         .unwrap();

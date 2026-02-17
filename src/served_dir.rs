@@ -245,7 +245,7 @@ impl ServedDir {
             headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
         }
         let etag = self.calculate_etag(matched_file.file_info, matched_file.file.as_ref())?;
-        Ok(Resource::new_with_metadata(
+        Ok(Resource::for_file_with_metadata(
             matched_file.file,
             matched_file.file_info,
             headers,

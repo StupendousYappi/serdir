@@ -1,16 +1,8 @@
-use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
-use serdir::{Resource, SerdirError, ServedDir, ServedDirBuilder};
+use http::{header, HeaderMap, HeaderValue};
+use serdir::{SerdirError, ServedDir, ServedDirBuilder};
 use std::collections::HashMap;
 use std::io::Read;
 use tempfile::TempDir;
-
-// Helper to read the body of a Resource in integration tests
-async fn read_body(entity: &Resource) -> bytes::Bytes {
-    use http_body_util::BodyExt;
-    let req = Request::get("/").body(()).unwrap();
-    let res: Response<serdir::Body> = entity.clone().serve_request(&req, StatusCode::OK);
-    res.into_body().collect().await.unwrap().to_bytes()
-}
 
 struct TestContext {
     tmp: TempDir,
@@ -134,7 +126,7 @@ async fn test_served_dir_strip_prefix() {
 
     // Should work with the prefix
     let e = served_dir.get("/static/real.txt", &hdrs).await.unwrap();
-    assert_eq!(read_body(&e).await, "real content");
+    assert_eq!(e.read_bytes().unwrap(), "real content");
 
     // Should fail without the prefix
     let err = served_dir.get("real.txt", &hdrs).await.unwrap_err();
@@ -217,7 +209,7 @@ async fn test_served_dir_unexpected_br_path() {
     // Should ignore the directory and serve the raw file
     let e = served_dir.get("test.txt", &hdrs).await.unwrap();
     assert!(e.header(&header::CONTENT_ENCODING).is_none());
-    assert_eq!(read_body(&e).await, "raw content");
+    assert_eq!(e.read_bytes().unwrap(), "raw content");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -238,7 +230,7 @@ async fn test_served_dir_unexpected_gz_path() {
     // Should ignore the directory and serve the raw file
     let e = served_dir.get("test.txt", &hdrs).await.unwrap();
     assert!(e.header(&header::CONTENT_ENCODING).is_none());
-    assert_eq!(read_body(&e).await, "raw content");
+    assert_eq!(e.read_bytes().unwrap(), "raw content");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -275,7 +267,7 @@ async fn test_served_dir_symlink() {
 
     // Should follow the symlink and serve the target file
     let e = served_dir.get("link.txt", &hdrs).await.unwrap();
-    assert_eq!(read_body(&e).await, "target content");
+    assert_eq!(e.read_bytes().unwrap(), "target content");
     assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/plain");
 }
 
@@ -298,7 +290,7 @@ async fn test_served_dir_append_index_html() {
     let builder = ServedDir::builder(path.to_path_buf()).unwrap();
     let served_dir = builder.append_index_html(true).build();
     let e = served_dir.get("subdir", &hdrs).await.unwrap();
-    assert_eq!(read_body(&e).await, "index content");
+    assert_eq!(e.read_bytes().unwrap(), "index content");
     assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/html");
 
     // 3. append_index_html enabled, but index.html missing
@@ -325,25 +317,25 @@ async fn test_served_dir_compression_priority() {
     // 1. All 3 available -> Brotli used
     let e = served_dir.get("test.txt", &hdrs).await.unwrap();
     assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "br");
-    assert_eq!(read_body(&e).await, "fake brotli content");
+    assert_eq!(e.read_bytes().unwrap(), "fake brotli content");
 
     // 2. Zstandard and Gzip available -> Zstandard used
     std::fs::remove_file(context.tmp.path().join("test.txt.br")).unwrap();
     let e = served_dir.get("test.txt", &hdrs).await.unwrap();
     assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "zstd");
-    assert_eq!(read_body(&e).await, "fake zstd content");
+    assert_eq!(e.read_bytes().unwrap(), "fake zstd content");
 
     // 3. Only Gzip available -> Gzip used
     std::fs::remove_file(context.tmp.path().join("test.txt.zstd")).unwrap();
     let e = served_dir.get("test.txt", &hdrs).await.unwrap();
     assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "gzip");
-    assert_eq!(read_body(&e).await, "fake gzip content");
+    assert_eq!(e.read_bytes().unwrap(), "fake gzip content");
 
     // 4. None available -> Raw used
     std::fs::remove_file(context.tmp.path().join("test.txt.gz")).unwrap();
     let e = served_dir.get("test.txt", &hdrs).await.unwrap();
     assert!(e.header(&header::CONTENT_ENCODING).is_none());
-    assert_eq!(read_body(&e).await, "raw content");
+    assert_eq!(e.read_bytes().unwrap(), "raw content");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -419,12 +411,12 @@ async fn test_served_dir_not_found_path_behavior() {
 
     // 1. Existing file -> Ok
     let e = served_dir.get("exists.txt", &hdrs).await.unwrap();
-    assert_eq!(read_body(&e).await, "found");
+    assert_eq!(e.read_bytes().unwrap(), "found");
 
     // 2. Non-existent file -> NotFound(Some(entity))
     let err = served_dir.get("missing.txt", &hdrs).await.unwrap_err();
     if let SerdirError::NotFound(Some(entity)) = err {
-        assert_eq!(read_body(&entity).await, "custom 404 content");
+        assert_eq!(entity.read_bytes().unwrap(), "custom 404 content");
         assert_eq!(entity.header(&header::CONTENT_TYPE).unwrap(), "text/html");
     } else {
         panic!("expected NotFound(Some(_)), got {:?}", err);
