@@ -271,6 +271,24 @@ pub use crate::etag::ETag;
 pub use crate::resource::{Resource, ResourceBuilder};
 pub use crate::served_dir::{ServedDir, ServedDirBuilder};
 
+#[derive(Clone, Copy)]
+struct RequestStartTime(std::time::SystemTime);
+
+/// Returns a Request based on the input request, but with an empty body and a start time extension.
+pub(crate) fn request_head<B>(req: &http::Request<B>) -> http::Request<()> {
+    let mut request = http::Request::builder()
+        .method(req.method().clone())
+        .uri(req.uri().clone())
+        .version(req.version())
+        .body(())
+        .expect("request head should be valid");
+    *request.headers_mut() = req.headers().clone();
+    request
+        .extensions_mut()
+        .insert(RequestStartTime(std::time::SystemTime::now()));
+    request
+}
+
 /// Function pointer type used to calculate ETag hash values from opened resources.
 ///
 /// The function should return a 64-bit hash of the full resource contents,

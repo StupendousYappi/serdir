@@ -76,12 +76,12 @@ fn parse_modified_hdrs(
 /// Handles conditional & subrange requests.
 /// The caller is expected to have already determined the correct entity and appended
 /// `Expires`, `Cache-Control`, and `Vary` headers if desired.
-pub(crate) fn serve<BI>(
+pub(crate) fn serve(
     entity: Resource,
-    req: &http::Request<BI>,
+    req: &http::Request<()>,
     status_code: http::StatusCode,
 ) -> http::Response<Body> {
-    match serve_inner(&entity, req.method(), req.headers(), status_code) {
+    let res = match serve_inner(&entity, req.method(), req.headers(), status_code) {
         ServeInner::Simple(res) => res,
         ServeInner::Multipart {
             res,
@@ -93,9 +93,32 @@ pub(crate) fn serve<BI>(
                 stream: crate::body::BodyStream::Multipart {
                     s: MultipartStream::new(entity, part_headers, ranges, len),
                 },
+                tracking: crate::body::TrackingGuard::new(None),
             })
             .expect("multipart response should be valid"),
+    };
+    attach_tracking(res, req)
+}
+
+pub(crate) fn attach_tracking(mut res: Response<Body>, req: &http::Request<()>) -> Response<Body> {
+    let start_time = req
+        .extensions()
+        .get::<crate::RequestStartTime>()
+        .expect("RequestStartTime extension missing; forgot to call request_head?")
+        .0;
+
+    if log::log_enabled!(log::Level::Trace) {
+        let tracking = crate::body::RequestTracking {
+            method: req.method().clone(),
+            uri: req.uri().clone(),
+            start_time,
+            encoding: res.headers().get(http::header::CONTENT_ENCODING).cloned(),
+            bytes_sent: 0,
+        };
+        let body = std::mem::replace(res.body_mut(), Body::empty());
+        *res.body_mut() = body.with_tracking(tracking);
     }
+    res
 }
 
 /// An instruction from `serve_inner` to `serve` on how to respond.
@@ -276,6 +299,7 @@ fn serve_inner(
             stream: crate::body::BodyStream::ExactLen {
                 s: crate::body::ExactLenStream::new(range.end - range.start, ent.get_range(range)),
             },
+            tracking: crate::body::TrackingGuard::new(None),
         },
     };
     let mut res = res.body(body).unwrap();

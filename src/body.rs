@@ -17,6 +17,54 @@ pin_project_lite::pin_project! {
     pub struct Body {
         #[pin]
         pub(crate) stream: BodyStream,
+        pub(crate) tracking: TrackingGuard,
+    }
+}
+
+pub(crate) struct RequestTracking {
+    pub(crate) method: http::Method,
+    pub(crate) uri: http::Uri,
+    pub(crate) start_time: std::time::SystemTime,
+    pub(crate) encoding: Option<http::header::HeaderValue>,
+    pub(crate) bytes_sent: u64,
+}
+
+impl RequestTracking {
+    fn emit_log(&self) {
+        let duration = self.start_time.elapsed().unwrap_or_default();
+        let encoding = self
+            .encoding
+            .as_ref()
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("identity");
+        log::trace!(
+            "{} {} {} {} {:?}",
+            self.method,
+            self.uri,
+            encoding,
+            self.bytes_sent,
+            duration
+        );
+    }
+}
+
+pub(crate) struct TrackingGuard(pub(crate) Option<Box<RequestTracking>>);
+
+impl TrackingGuard {
+    pub(crate) fn new(tracking: Option<RequestTracking>) -> Self {
+        Self(tracking.map(Box::new))
+    }
+
+    pub(crate) fn take(&mut self) -> Option<Box<RequestTracking>> {
+        self.0.take()
+    }
+}
+
+impl Drop for TrackingGuard {
+    fn drop(&mut self) {
+        if let Some(tracking) = self.0.take() {
+            tracking.emit_log();
+        }
     }
 }
 
@@ -29,11 +77,22 @@ impl http_body::Body for Body {
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-        self.as_mut()
-            .project()
-            .stream
-            .poll_next(cx)
-            .map(|p| p.map(|o| o.map(http_body::Frame::data)))
+        let this = self.as_mut().project();
+        let res = this.stream.poll_next(cx);
+        match res {
+            Poll::Ready(Some(Ok(ref d))) => {
+                if let Some(tracking) = &mut this.tracking.0 {
+                    tracking.bytes_sent += crate::as_u64(d.remaining());
+                }
+            }
+            Poll::Ready(None) => {
+                if let Some(tracking) = this.tracking.take() {
+                    tracking.emit_log();
+                }
+            }
+            _ => {}
+        }
+        res.map(|p| p.map(|o| o.map(http_body::Frame::data)))
     }
 
     fn size_hint(&self) -> http_body::SizeHint {
@@ -62,7 +121,13 @@ impl Body {
     pub fn empty() -> Self {
         Self {
             stream: BodyStream::Once { chunk: None },
+            tracking: TrackingGuard::new(None),
         }
+    }
+
+    pub(crate) fn with_tracking(mut self, tracking: RequestTracking) -> Self {
+        self.tracking = TrackingGuard::new(Some(tracking));
+        self
     }
 }
 
@@ -73,6 +138,7 @@ impl From<&'static [u8]> for Body {
             stream: BodyStream::Once {
                 chunk: Some(Ok(value.into())),
             },
+            tracking: TrackingGuard::new(None),
         }
     }
 }
@@ -84,6 +150,7 @@ impl From<&'static str> for Body {
             stream: BodyStream::Once {
                 chunk: Some(Ok(value.as_bytes().into())),
             },
+            tracking: TrackingGuard::new(None),
         }
     }
 }
@@ -95,6 +162,7 @@ impl From<Vec<u8>> for Body {
             stream: BodyStream::Once {
                 chunk: Some(Ok(value.into())),
             },
+            tracking: TrackingGuard::new(None),
         }
     }
 }
@@ -106,6 +174,7 @@ impl From<String> for Body {
             stream: BodyStream::Once {
                 chunk: Some(Ok(value.into_bytes().into())),
             },
+            tracking: TrackingGuard::new(None),
         }
     }
 }

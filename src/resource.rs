@@ -244,7 +244,16 @@ impl Resource {
     where
         D: From<crate::Body>,
     {
-        crate::serving::serve(self, req, status).map(Into::into)
+        let req = crate::request_head(req);
+        self.serve_request_inner(&req, status).map(Into::into)
+    }
+
+    pub(crate) fn serve_request_inner(
+        self,
+        req: &Request<()>,
+        status: StatusCode,
+    ) -> Response<crate::Body> {
+        crate::serving::serve(self, req, status)
     }
 
     /// Returns the length of the file in bytes.

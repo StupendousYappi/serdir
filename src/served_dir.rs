@@ -210,30 +210,34 @@ impl ServedDir {
     /// A convenience wrapper method for [ServedDir::get], converting a HTTP request
     /// into a HTTP response by serving static files using this `ServedDir`.
     pub async fn get_response<B>(&self, req: &Request<B>) -> Result<Response<Body>, Infallible> {
+        let req = crate::request_head(req);
+        Ok(self.get_response_inner(&req).await)
+    }
+
+    pub(crate) async fn get_response_inner(&self, req: &Request<()>) -> Response<Body> {
         let result = self.get(req.uri().path(), req.headers()).await;
         match result {
-            Ok(entity) => Ok(entity.serve_request(req, StatusCode::OK)),
+            Ok(entity) => entity.serve_request_inner(req, StatusCode::OK),
             Err(SerdirError::NotFound(Some(entity))) => {
-                Ok(entity.serve_request(req, StatusCode::NOT_FOUND))
+                entity.serve_request_inner(req, StatusCode::NOT_FOUND)
             }
             Err(SerdirError::NotFound(None)) | Err(SerdirError::IsDirectory(_)) => {
-                Ok(Self::make_status_response(StatusCode::NOT_FOUND))
+                Self::make_status_response(req, StatusCode::NOT_FOUND)
             }
             Err(SerdirError::InvalidPath(_)) => {
-                Ok(Self::make_status_response(StatusCode::BAD_REQUEST))
+                Self::make_status_response(req, StatusCode::BAD_REQUEST)
             }
-            Err(_) => Ok(Self::make_status_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-            )),
+            Err(_) => Self::make_status_response(req, StatusCode::INTERNAL_SERVER_ERROR),
         }
     }
 
-    fn make_status_response(status: StatusCode) -> Response<Body> {
+    fn make_status_response(req: &Request<()>, status: StatusCode) -> Response<Body> {
         let reason = status.canonical_reason().unwrap_or("Unknown");
-        Response::builder()
+        let res = Response::builder()
             .status(status)
             .body(Body::from(reason))
-            .expect("status response should be valid")
+            .expect("status response should be valid");
+        crate::serving::attach_tracking(res, req)
     }
 
     fn create_entity(&self, matched_file: MatchedFile) -> Result<Resource, SerdirError> {
