@@ -1,6 +1,6 @@
 [package]
 name = "serdir"
-version = "0.3.0"
+version = "0.4.0-dev"
 authors = [
     "Greg Steffensen <greg.steffensen@gmail.com>",
     "Scott Lamb <slamb@slamb.org>",
@@ -41,7 +41,7 @@ tokio = { version = "1.49", features = ["rt-multi-thread"] }
 brotli = { version = "7.0", optional = true }
 tempfile = { version = "3.11", optional = true }
 log = { version = "0.4.29", features = ["std"] }
-tower = { version = "0.4", optional = true }
+tower = { version = "0.4", optional = true, default-features = false }
 http-body-util = { version = "0.1", optional = true }
 hyper = { version = "1.0", default-features = false, optional = true }
 
