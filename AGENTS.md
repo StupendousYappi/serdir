@@ -14,8 +14,7 @@ delegates requests that produce a not found response to an inner handler) or a
 - `ServedDir` - A directory of static files that can be served along with various configuration options
 - `ServedDirBuilder` - A builder that provides a fluent API for configuring a `ServedDir`, including
   compression settings, file not found behavior and common response headers
-- `FileEntity` - Returned by `ServedDir` when it matches a path to a file, it contains an open file handle
-  and file metadata, such as its size, last modified time and ETag hash value
+- `Resource` - Represents a servanle resource, backed either by a file or in memory bytes. Returned by `ServedDir` when it matches a path to a file. Contains metadata including the content size, last modified time and ETag hash value
 - `SerdirError` - An error type returned by various crate APIs, such as `ServedDirBuilder`, if
   the user provides invalid configuration settings, or by `ServedDir::get` if a file is not found
 - `ETag` - A 64 bit hash code of a file's contents, implemented as newtype wrapper around `u64`
@@ -39,7 +38,7 @@ stream of chunks
   output
 - `compression.rs` - utilities for locating the compressed version of a file most appropriate for
 - `etag.rs` - ETag parsing and comparison
-- `file.rs` - implementation of `FileEntity`, the return type of `ServedDir`
+- `resource.rs` - implementation of `Resource`, the main output of `ServedDir`
 - `integration.rs` - adapter code allowing `ServedDir` to be called via `tower` and `hyper` APIs
 - `lib.rs` - crate-level documentation and re-exports
 - `platform.rs` - platform-specific code handling differences between Unix and Windows environments
