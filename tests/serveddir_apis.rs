@@ -1,11 +1,11 @@
 use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
-use serdir::{FileEntity, SerdirError, ServedDir, ServedDirBuilder};
+use serdir::{Resource, SerdirError, ServedDir, ServedDirBuilder};
 use std::collections::HashMap;
 use std::fs::File;
 use tempfile::TempDir;
 
-// Helper to read the body of a FileEntity in integration tests
-async fn read_body(entity: &FileEntity) -> bytes::Bytes {
+// Helper to read the body of a Resource in integration tests
+async fn read_body(entity: &Resource) -> bytes::Bytes {
     use http_body_util::BodyExt;
     let req = Request::get("/").body(()).unwrap();
     let res: Response<serdir::Body> = entity.clone().serve_request(&req, StatusCode::OK);

@@ -13,18 +13,15 @@ use futures_core::Stream;
 use sync_wrapper::SyncWrapper;
 
 pin_project_lite::pin_project! {
-    /// A streaming [`http_body::Body`] implementation used by [`FileEntity`](crate::FileEntity)
-    pub struct Body<D = bytes::Bytes> {
+    /// A streaming [`http_body::Body`] implementation used by [`Resource`](crate::Resource)
+    pub struct Body {
         #[pin]
-        pub(crate) stream: BodyStream<D>,
+        pub(crate) stream: BodyStream,
     }
 }
 
-impl<D> http_body::Body for Body<D>
-where
-    D: Buf + From<Vec<u8>> + From<&'static [u8]> + 'static,
-{
-    type Data = D;
+impl http_body::Body for Body {
+    type Data = bytes::Bytes;
     type Error = crate::IOError;
 
     #[inline]
@@ -59,7 +56,7 @@ where
     }
 }
 
-impl<D> Body<D> {
+impl Body {
     /// Returns a 0-byte body.
     #[inline]
     pub fn empty() -> Self {
@@ -69,10 +66,7 @@ impl<D> Body<D> {
     }
 }
 
-impl<D> From<&'static [u8]> for Body<D>
-where
-    D: From<&'static [u8]>,
-{
+impl From<&'static [u8]> for Body {
     #[inline]
     fn from(value: &'static [u8]) -> Self {
         Self {
@@ -83,10 +77,7 @@ where
     }
 }
 
-impl<D> From<&'static str> for Body<D>
-where
-    D: From<&'static [u8]>,
-{
+impl From<&'static str> for Body {
     #[inline]
     fn from(value: &'static str) -> Self {
         Self {
@@ -97,10 +88,7 @@ where
     }
 }
 
-impl<D> From<Vec<u8>> for Body<D>
-where
-    D: From<Vec<u8>>,
-{
+impl From<Vec<u8>> for Body {
     #[inline]
     fn from(value: Vec<u8>) -> Self {
         Self {
@@ -111,10 +99,7 @@ where
     }
 }
 
-impl<D> From<String> for Body<D>
-where
-    D: From<Vec<u8>>,
-{
+impl From<String> for Body {
     #[inline]
     fn from(value: String) -> Self {
         Self {
@@ -127,31 +112,28 @@ where
 
 pin_project_lite::pin_project! {
     #[project = BodyStreamProj]
-    pub(crate) enum BodyStream<D> {
+    pub(crate) enum BodyStream {
         Once {
-            chunk: Option<Result<D, crate::IOError>>,
+            chunk: Option<Result<bytes::Bytes, crate::IOError>>,
         },
         ExactLen {
             #[pin]
-            s: ExactLenStream<D>,
+            s: ExactLenStream,
         },
         Multipart {
             #[pin]
-            s: crate::serving::MultipartStream<D>,
+            s: crate::serving::MultipartStream,
         },
     }
 }
 
-impl<D> Stream for BodyStream<D>
-where
-    D: 'static + Buf + From<Vec<u8>> + From<&'static [u8]>,
-{
-    type Item = Result<D, crate::IOError>;
+impl Stream for BodyStream {
+    type Item = Result<bytes::Bytes, crate::IOError>;
 
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Result<D, crate::IOError>>> {
+    ) -> Poll<Option<Result<bytes::Bytes, crate::IOError>>> {
         match self.project() {
             BodyStreamProj::Once { chunk } => Poll::Ready(chunk.take()),
             BodyStreamProj::ExactLen { s } => s.poll_next(cx),
@@ -194,16 +176,16 @@ impl std::fmt::Display for StreamTooLongError {
 
 impl std::error::Error for StreamTooLongError {}
 
-pub(crate) struct ExactLenStream<D> {
+pub(crate) struct ExactLenStream {
     #[allow(clippy::type_complexity)]
-    stream: SyncWrapper<Pin<Box<dyn Stream<Item = Result<D, crate::IOError>> + Send>>>,
+    stream: SyncWrapper<Pin<Box<dyn Stream<Item = Result<bytes::Bytes, crate::IOError>> + Send>>>,
     remaining: u64,
 }
 
-impl<D> ExactLenStream<D> {
+impl ExactLenStream {
     pub(crate) fn new(
         len: u64,
-        stream: Pin<Box<dyn Stream<Item = Result<D, crate::IOError>> + Send>>,
+        stream: Pin<Box<dyn Stream<Item = Result<bytes::Bytes, crate::IOError>> + Send>>,
     ) -> Self {
         Self {
             stream: SyncWrapper::new(stream),
@@ -212,16 +194,13 @@ impl<D> ExactLenStream<D> {
     }
 }
 
-impl<D> futures_core::Stream for ExactLenStream<D>
-where
-    D: Buf,
-{
-    type Item = Result<D, crate::IOError>;
+impl futures_core::Stream for ExactLenStream {
+    type Item = Result<bytes::Bytes, crate::IOError>;
 
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Result<D, crate::IOError>>> {
+    ) -> Poll<Option<Result<bytes::Bytes, crate::IOError>>> {
         let this = Pin::into_inner(self);
         match this.stream.get_mut().as_mut().poll_next(cx) {
             Poll::Ready(Some(Ok(d))) => {
@@ -261,7 +240,6 @@ const _: () = {
 
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
     use futures_util::StreamExt as _;
 
     use super::*;
@@ -269,7 +247,7 @@ mod tests {
     #[tokio::test]
     async fn correct_exact_len_stream() {
         let inner = futures_util::stream::iter(vec![Ok("h".into()), Ok("ello".into())]);
-        let mut exact_len = std::pin::pin!(ExactLenStream::<Bytes>::new(5, Box::pin(inner)));
+        let mut exact_len = std::pin::pin!(ExactLenStream::new(5, Box::pin(inner)));
         assert_eq!(exact_len.remaining, 5);
         let frame = exact_len.next().await.unwrap().unwrap();
         assert_eq!(frame.remaining(), 1);
@@ -284,7 +262,7 @@ mod tests {
     #[tokio::test]
     async fn short_exact_len_stream() {
         let inner = futures_util::stream::iter(vec![Ok("hello".into())]);
-        let mut exact_len = std::pin::pin!(ExactLenStream::<Bytes>::new(10, Box::pin(inner)));
+        let mut exact_len = std::pin::pin!(ExactLenStream::new(10, Box::pin(inner)));
         assert_eq!(exact_len.remaining, 10);
         let frame = exact_len.next().await.unwrap().unwrap();
         assert_eq!(frame.remaining(), 5);
@@ -298,7 +276,7 @@ mod tests {
     #[tokio::test]
     async fn long_exact_len_stream() {
         let inner = futures_util::stream::iter(vec![Ok("h".into()), Ok("ello".into())]);
-        let mut exact_len = std::pin::pin!(ExactLenStream::<Bytes>::new(3, Box::pin(inner)));
+        let mut exact_len = std::pin::pin!(ExactLenStream::new(3, Box::pin(inner)));
         assert_eq!(exact_len.remaining, 3);
         let frame = exact_len.next().await.unwrap().unwrap();
         assert_eq!(frame.remaining(), 1);

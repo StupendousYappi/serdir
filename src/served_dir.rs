@@ -19,15 +19,15 @@ use crate::integration::HyperService;
 use crate::integration::{TowerLayer, TowerService};
 
 use crate::etag::EtagCache;
-use crate::{Body, ETag, FileEntity, FileHasher, FileInfo, SerdirError};
+use crate::{Body, ETag, FileHasher, FileInfo, Resource, SerdirError};
 use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 
-/// Returns [`FileEntity`] values for file paths within a directory.
+/// Returns [`Resource`] values for file paths within a directory.
 ///
 /// A `ServedDir` is created using a [ServedDirBuilder], and must be configured with
 /// the path to the static file root directory. When [ServedDir::get] is called,
 /// it will attempt to find a file in the root directory with that relative path,
-/// detect its content type using the filename extension, and return a [FileEntity]
+/// detect its content type using the filename extension, and return a [Resource]
 /// that can be used to serve its content.
 ///
 /// Its behavior can be optionally customized in the following ways:
@@ -114,10 +114,10 @@ impl ServedDir {
         &self.dirpath
     }
 
-    /// Returns a `FileEntity` for the given path and request headers.
+    /// Returns a `Resource` for the given path and request headers.
     ///
     /// This method searches for a file with the given relative path in this
-    /// instance's static files directory. If a file is found, a [FileEntity]
+    /// instance's static files directory. If a file is found, a [Resource]
     /// will be returned that can be used to serve its content in a HTTP
     /// response. This method will also choose a `Content-Type` header value
     /// based on the extension of the matched file.
@@ -160,7 +160,7 @@ impl ServedDir {
     /// of compressed files to cache, using the `CachedCompression` type. The
     /// Brotli compression level can also be configured, allowing you to choose
     /// your own balance of compression speed and compressed size.
-    pub async fn get(&self, path: &str, req_hdrs: &HeaderMap) -> Result<FileEntity, SerdirError> {
+    pub async fn get(&self, path: &str, req_hdrs: &HeaderMap) -> Result<Resource, SerdirError> {
         let path = match self.strip_prefix.as_deref() {
             Some(prefix) if path == prefix => ".",
             Some(prefix) => path
@@ -227,7 +227,7 @@ impl ServedDir {
             .expect("status response should be valid")
     }
 
-    fn create_entity(&self, matched_file: MatchedFile) -> Result<FileEntity, SerdirError> {
+    fn create_entity(&self, matched_file: MatchedFile) -> Result<Resource, SerdirError> {
         let content_type = self
             .known_extensions
             .get(&matched_file.extension)
@@ -244,7 +244,7 @@ impl ServedDir {
             headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
         }
         let etag = self.calculate_etag(matched_file.file_info, matched_file.file.as_ref())?;
-        Ok(FileEntity::new_with_metadata(
+        Ok(Resource::new_with_metadata(
             matched_file.file,
             matched_file.file_info,
             headers,
@@ -537,7 +537,7 @@ impl ServedDirBuilder {
 
     /// Adds a common header to be added to all successful responses.
     ///
-    /// The header will added to the `FileEntity` if the `ServedDir` returns one, but
+    /// The header will added to the `Resource` if the `ServedDir` returns one, but
     /// will not be recoded anywhere in an error response.
     pub fn common_header(mut self, name: header::HeaderName, value: HeaderValue) -> Self {
         self.common_headers.insert(name, value);
