@@ -16,12 +16,9 @@ use http::header::{self, HeaderValue};
 use hyper::server::conn;
 use hyper_util::rt::TokioIo;
 use hyper_util::service::TowerToHyperService;
-use std::fmt::Write;
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
 use tokio::net::TcpListener;
 use tower::{Layer, Service};
@@ -32,19 +29,9 @@ type ResponseFuture =
     Pin<Box<dyn Future<Output = Result<http::Response<Body>, std::convert::Infallible>> + Send>>;
 
 #[derive(Clone)]
-struct DirectoryFallbackService {
-    root: Arc<PathBuf>,
-}
+struct DynamicFallbackService;
 
-impl DirectoryFallbackService {
-    fn new(root: PathBuf) -> Self {
-        Self {
-            root: Arc::new(root),
-        }
-    }
-}
-
-impl Service<http::Request<hyper::body::Incoming>> for DirectoryFallbackService {
+impl Service<http::Request<hyper::body::Incoming>> for DynamicFallbackService {
     type Response = http::Response<Body>;
     type Error = std::convert::Infallible;
     type Future = ResponseFuture;
@@ -54,93 +41,33 @@ impl Service<http::Request<hyper::body::Incoming>> for DirectoryFallbackService 
     }
 
     fn call(&mut self, req: http::Request<hyper::body::Incoming>) -> Self::Future {
-        let root = self.root.clone();
-        Box::pin(async move {
-            Ok(match path_for_request(root.as_path(), req.uri().path()) {
-                Some(path) if path.is_dir() => directory_listing(&req, &path),
-                _ => not_found_response(),
-            })
-        })
+        Box::pin(async move { Ok(dynamic_fallback_response(&req)) })
     }
 }
 
-fn path_for_request(root: &Path, request_path: &str) -> Option<PathBuf> {
-    let rel = request_path.trim_start_matches('/');
-    let path = Path::new(rel);
-
-    for component in path.components() {
-        if matches!(
-            component,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_)
-        ) {
-            return None;
-        }
+fn dynamic_fallback_response(req: &http::Request<hyper::body::Incoming>) -> http::Response<Body> {
+    let mut html = String::new();
+    html.push_str("<!DOCTYPE html>\n<title>fallback handler</title>\n");
+    html.push_str("<h1>Dynamic fallback response</h1>\n");
+    html.push_str("<p>URL: <code>");
+    html.push_str(&htmlescape::encode_minimal(&req.uri().to_string()));
+    html.push_str("</code></p>\n");
+    html.push_str("<h2>Headers</h2>\n<ul>\n");
+    for (name, value) in req.headers() {
+        html.push_str("<li><strong>");
+        html.push_str(&htmlescape::encode_minimal(name.as_str()));
+        html.push_str("</strong>: <code>");
+        html.push_str(&htmlescape::encode_minimal(&String::from_utf8_lossy(
+            value.as_bytes(),
+        )));
+        html.push_str("</code></li>\n");
     }
+    html.push_str("</ul>\n");
 
-    Some(root.join(path))
-}
-
-fn directory_listing(
-    req: &http::Request<hyper::body::Incoming>,
-    path: &Path,
-) -> http::Response<Body> {
-    if !req.uri().path().ends_with("/") {
-        let mut loc = ::bytes::BytesMut::with_capacity(req.uri().path().len() + 1);
-        write!(loc, "{}/", req.uri().path()).unwrap();
-        let loc = HeaderValue::from_maybe_shared(loc.freeze()).unwrap();
-        return http::Response::builder()
-            .status(http::StatusCode::MOVED_PERMANENTLY)
-            .header(http::header::LOCATION, loc)
-            .body(serdir::Body::empty())
-            .unwrap();
-    }
-
-    let mut listing = String::new();
-    listing.push_str("<!DOCTYPE html>\n<title>directory listing</title>\n<ul>\n");
-
-    let mut ents =
-        match std::fs::read_dir(path).and_then(|iter| iter.collect::<Result<Vec<_>, _>>()) {
-            Ok(ents) => ents,
-            Err(_) => return not_found_response(),
-        };
-    ents.sort_unstable_by_key(|a| a.file_name());
-
-    for ent in ents {
-        let file_name = ent.file_name();
-        let p = match file_name.to_str() {
-            None => continue, // skip non-UTF-8
-            Some(".") => continue,
-            Some(p) => p,
-        };
-        if p == ".." && req.uri().path() == "/" {
-            continue;
-        }
-
-        listing.push_str("<li><a href=\"");
-        listing.push_str(&htmlescape::encode_minimal(p));
-        let is_dir = ent.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        if is_dir {
-            listing.push('/');
-        }
-        listing.push_str("\">");
-        listing.push_str(&htmlescape::encode_minimal(p));
-        if is_dir {
-            listing.push('/');
-        }
-        listing.push_str("</a>\n");
-    }
-
-    listing.push_str("</ul>\n");
-    let mut resp = http::Response::new(serdir::Body::from(listing));
-    resp.headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
-    resp
-}
-
-fn not_found_response() -> http::Response<Body> {
     http::Response::builder()
-        .status(http::StatusCode::NOT_FOUND)
-        .body(serdir::Body::from("Not Found"))
+        .status(http::StatusCode::OK)
+        .header(header::CONTENT_TYPE, HeaderValue::from_static("text/html"))
+        .body(Body::from(html))
         .unwrap()
 }
 
@@ -163,10 +90,9 @@ async fn run() -> Result<()> {
             .context("failed to set --not-found-path")?;
     }
     let served_dir = builder.build();
-    let root_path = served_dir.dir().to_path_buf();
-    let served_dir_display = root_path.display().to_string();
+    let served_dir_display = served_dir.dir().display().to_string();
     let layer = served_dir.into_tower_layer();
-    let service = layer.layer(DirectoryFallbackService::new(root_path));
+    let service = layer.layer(DynamicFallbackService);
 
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 1337));
     let listener = TcpListener::bind(addr)
