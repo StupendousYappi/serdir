@@ -76,9 +76,8 @@ impl Body {
 
     #[inline]
     #[allow(dead_code)]
-    pub(crate) fn with_on_complete(mut self, f: OnComplete) -> Self {
+    pub(crate) fn set_on_complete(&mut self, f: OnComplete) {
         self.on_complete = Some(f);
-        self
     }
 
     #[inline]
@@ -326,9 +325,11 @@ mod tests {
 
         let called = Arc::new(AtomicBool::new(false));
         let called2 = called.clone();
-        let mut body = std::pin::pin!(Body::from("done").with_on_complete(Box::new(move || {
+        let mut body = Body::from("done");
+        body.set_on_complete(Box::new(move || {
             called2.store(true, Ordering::SeqCst);
-        })));
+        }));
+        let mut body = std::pin::pin!(body);
 
         while let Some(frame) =
             futures_util::future::poll_fn(|cx| body.as_mut().poll_frame(cx)).await
