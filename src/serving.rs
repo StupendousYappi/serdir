@@ -82,7 +82,7 @@ pub(crate) fn serve(
     status_code: http::StatusCode,
 ) -> http::Response<Body> {
     let res = match serve_inner(&entity, req.method(), req.headers(), status_code) {
-        ServeInner::Simple(res) => res,
+        ServeInner::Simple(res) => *res,
         ServeInner::Multipart {
             res,
             part_headers,
@@ -123,7 +123,7 @@ pub(crate) fn attach_tracking(mut res: Response<Body>, req: &http::Request<()>) 
 
 /// An instruction from `serve_inner` to `serve` on how to respond.
 enum ServeInner {
-    Simple(Response<Body>),
+    Simple(Box<Response<Body>>),
     Multipart {
         res: http::response::Builder,
         part_headers: Vec<Vec<u8>>,
@@ -140,13 +140,13 @@ fn serve_inner(
     status_code: StatusCode,
 ) -> ServeInner {
     if method != Method::GET && method != Method::HEAD {
-        return ServeInner::Simple(
+        return ServeInner::Simple(Box::new(
             Response::builder()
                 .status(StatusCode::METHOD_NOT_ALLOWED)
                 .header(header::ALLOW, HeaderValue::from_static("get, head"))
                 .body(Body::from("This resource only supports GET and HEAD."))
                 .unwrap(),
-        );
+        ));
     }
 
     let last_modified = ent.last_modified();
@@ -155,12 +155,12 @@ fn serve_inner(
     let (precondition_failed, not_modified) =
         match parse_modified_hdrs(&etag, req_hdrs, last_modified) {
             Err(s) => {
-                return ServeInner::Simple(
+                return ServeInner::Simple(Box::new(
                     Response::builder()
                         .status(StatusCode::BAD_REQUEST)
                         .body(Body::from(s))
                         .unwrap(),
-                )
+                ))
             }
             Ok(p) => p,
         };
@@ -215,12 +215,12 @@ fn serve_inner(
 
     if precondition_failed {
         res = res.status(StatusCode::PRECONDITION_FAILED);
-        return ServeInner::Simple(res.body(Body::from("Precondition failed")).unwrap());
+        return ServeInner::Simple(Box::new(res.body(Body::from("Precondition failed")).unwrap()));
     }
 
     if not_modified {
         res = res.status(StatusCode::NOT_MODIFIED);
-        return ServeInner::Simple(res.body(Body::empty()).unwrap());
+        return ServeInner::Simple(Box::new(res.body(Body::empty()).unwrap()));
     }
 
     let len = ent.len();
@@ -258,16 +258,16 @@ fn serve_inner(
                     match prepare_multipart(res, &ranges[..], len, each_part_hdrs) {
                         Ok(v) => v,
                         Err(MultipartLenOverflowError) => {
-                            return ServeInner::Simple(
+                            return ServeInner::Simple(Box::new(
                                 Response::builder()
                                     .status(StatusCode::PAYLOAD_TOO_LARGE)
                                     .body(Body::from("Multipart response too large"))
                                     .unwrap(),
-                            );
+                            ));
                         }
                     };
                 if method == Method::HEAD {
-                    return ServeInner::Simple(res.body(Body::empty()).unwrap());
+                    return ServeInner::Simple(Box::new(res.body(Body::empty()).unwrap()));
                 }
                 return ServeInner::Multipart {
                     res,
@@ -285,7 +285,7 @@ fn serve_inner(
                 unsafe_fmt_ascii_val!(MAX_DECIMAL_U64_BYTES + "bytes */".len(), "bytes */{}", len),
             );
             res = res.status(StatusCode::RANGE_NOT_SATISFIABLE);
-            return ServeInner::Simple(res.body(Body::empty()).unwrap());
+            return ServeInner::Simple(Box::new(res.body(Body::empty()).unwrap()));
         }
     };
     let len = range.end - range.start;
@@ -306,7 +306,7 @@ fn serve_inner(
     if include_entity_headers {
         ent.add_headers(res.headers_mut());
     }
-    ServeInner::Simple(res)
+    ServeInner::Simple(Box::new(res))
 }
 
 struct MultipartLenOverflowError;
