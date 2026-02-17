@@ -6,7 +6,6 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::sync::LazyLock;
-use std::time::SystemTime;
 use std::{collections::HashMap, path::PathBuf};
 
 #[cfg(feature = "runtime-compression")]
@@ -21,7 +20,7 @@ use crate::integration::HyperService;
 use crate::integration::{TowerLayer, TowerService};
 
 use crate::etag::EtagCache;
-use crate::{Body, ContentGenerator, ETag, FileInfo, Resource, ResourceHasher, SerdirError};
+use crate::{Body, ETag, FileInfo, Resource, ResourceHasher, SerdirError};
 use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 
 /// Returns [`Resource`] values for file paths within a directory.
@@ -73,7 +72,6 @@ pub struct ServedDir {
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
     append_index_html: bool,
-    directory_handler: Option<ContentGenerator>,
     not_found_path: Option<PathBuf>,
     etag_cache: EtagCache,
 }
@@ -91,7 +89,6 @@ impl Debug for ServedDir {
             .field("dirpath", &self.dirpath)
             .field("strip_prefix", &self.strip_prefix)
             .field("append_index_html", &self.append_index_html)
-            .field("directory_handler", &self.directory_handler.is_some())
             .field("not_found_path", &self.not_found_path)
             .field("default_content_type", &self.default_content_type)
             .field("compression_strategy", &strategy)
@@ -181,27 +178,9 @@ impl ServedDir {
         let res = self.find_file(&full_path, preferred).await;
         let matched_file = match res {
             Ok(mf) => mf,
-            Err(SerdirError::IsDirectory(dir_path)) => {
-                let mut missing_index = false;
-                if self.append_index_html {
-                    let index_path = full_path.join("index.html");
-                    match self.find_file(&index_path, preferred).await {
-                        Ok(mf) => return self.create_entity(mf),
-                        Err(SerdirError::NotFound(_)) => {
-                            missing_index = true;
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
-
-                if self.directory_handler.is_some() {
-                    return self.create_generated_directory_entity(&dir_path);
-                }
-                if missing_index {
-                    return Err(SerdirError::NotFound(None));
-                }
-
-                return Err(SerdirError::IsDirectory(dir_path));
+            Err(SerdirError::IsDirectory(_)) if self.append_index_html => {
+                let index_path = full_path.join("index.html");
+                self.find_file(&index_path, preferred).await?
             }
             Err(SerdirError::NotFound(_)) if self.not_found_path.is_some() => {
                 let not_found_path = self.not_found_path.as_ref().unwrap();
@@ -272,18 +251,6 @@ impl ServedDir {
             headers,
             etag,
         ))
-    }
-
-    fn create_generated_directory_entity(&self, dirpath: &Path) -> Result<Resource, SerdirError> {
-        let handler = self
-            .directory_handler
-            .expect("directory_handler must be set");
-        let (content, content_type) = handler(dirpath)?;
-
-        let mut headers = self.common_headers.clone();
-        headers.insert(http::header::CONTENT_TYPE, content_type);
-
-        Resource::for_bytes(content, SystemTime::now(), headers)
     }
 
     async fn find_file(
@@ -385,7 +352,6 @@ pub struct ServedDirBuilder {
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
     append_index_html: bool,
-    directory_handler: Option<ContentGenerator>,
     not_found_path: Option<PathBuf>,
 }
 
@@ -418,7 +384,6 @@ impl ServedDirBuilder {
             default_content_type: OCTET_STREAM.clone(),
             common_headers: HeaderMap::new(),
             append_index_html: false,
-            directory_handler: None,
             not_found_path: None,
         })
     }
@@ -456,16 +421,6 @@ impl ServedDirBuilder {
     /// If false, a 404 will be returned for directory paths.
     pub fn append_index_html(mut self, append: bool) -> Self {
         self.append_index_html = append;
-        self
-    }
-
-    /// Sets a custom handler to generate dynamic responses for directory paths.
-    ///
-    /// When configured, `ServedDir` will call this handler for requests that
-    /// resolve to a directory path and are not resolved to an `index.html` file.
-    /// The handler receives the resolved full filesystem path to the directory.
-    pub fn directory_handler(mut self, handler: ContentGenerator) -> Self {
-        self.directory_handler = Some(handler);
         self
     }
 
@@ -625,7 +580,6 @@ impl ServedDirBuilder {
             default_content_type: self.default_content_type,
             common_headers: self.common_headers,
             append_index_html: self.append_index_html,
-            directory_handler: self.directory_handler,
             not_found_path: self.not_found_path,
             etag_cache: EtagCache::new(),
         }
