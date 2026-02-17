@@ -170,18 +170,61 @@ pub enum SerdirError {
     IOError(IOError),
 }
 
+impl SerdirError {
+    /// Constructor for ConfigError variant, logs a config error.
+    pub fn config_error(msg: impl Into<String>) -> Self {
+        let msg = msg.into();
+        let err = SerdirError::ConfigError(msg);
+        log::error!("{err}");
+        err
+    }
+
+    /// Constructor for IsDirectory variant.
+    pub fn is_directory(path: PathBuf) -> Self {
+        SerdirError::IsDirectory(path)
+    }
+
+    /// Constructor for NotFound variant.
+    pub fn not_found(resource: Option<Resource>) -> Self {
+        SerdirError::NotFound(resource)
+    }
+
+    /// Constructor for CompressionError variant, logs a compression error.
+    pub fn compression_error(msg: impl Into<String>, io_err: IOError) -> Self {
+        let msg = msg.into();
+        let err = SerdirError::CompressionError(msg, io_err);
+        log::error!("{err}");
+        err
+    }
+
+    /// Constructor for InvalidPath variant, logs an invalid path error.
+    pub fn invalid_path(msg: impl Into<String>) -> Self {
+        let msg = msg.into();
+        let err = SerdirError::InvalidPath(msg);
+        log::error!("{err}");
+        err
+    }
+
+    /// Constructor for IOError variant, logs an I/O error.
+    pub fn io_error(err: IOError) -> Self {
+        let err = SerdirError::IOError(err);
+        log::error!("{err}");
+        err
+    }
+}
+
 impl Display for SerdirError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SerdirError::ConfigError(msg) => write!(f, "{msg}"),
+            SerdirError::ConfigError(msg) => write!(f, "Config error: {msg}"),
             SerdirError::IsDirectory(path) => {
                 write!(f, "Path is a directory: {}", path.display())
             }
             SerdirError::NotFound(_) => write!(f, "File not found"),
             SerdirError::InvalidPath(msg) => write!(f, "Invalid path: {msg}"),
-            SerdirError::IOError(err) => write!(f, "I/O error: {err}"),
+            SerdirError::IOError(err) => write!(f, "IO error: {err}"),
             SerdirError::CompressionError(msg, err) => {
-                write!(f, "Brotli compression error: {msg} (I/O error: {err})")
+                write!(f, "Compression error: {msg} (I/O error: {err})")
             }
         }
     }
@@ -200,9 +243,9 @@ impl Error for SerdirError {
 impl From<IOError> for SerdirError {
     fn from(err: IOError) -> Self {
         if err.kind() == ErrorKind::NotFound {
-            SerdirError::NotFound(None)
+            SerdirError::not_found(None)
         } else {
-            SerdirError::IOError(err)
+            SerdirError::io_error(err)
         }
     }
 }
@@ -271,12 +314,12 @@ impl FileInfo {
         let metadata = file.metadata()?;
         let file_type = metadata.file_type();
         if file_type.is_dir() {
-            return Err(SerdirError::IsDirectory(path.to_path_buf()));
+            return Err(SerdirError::is_directory(path.to_path_buf()));
         }
         // if it's not a directory and not a file, we don't want to handle it
         // and behave as if it doesn't exist
         if !file_type.is_file() {
-            return Err(SerdirError::NotFound(None));
+            return Err(SerdirError::not_found(None));
         }
         Ok(Self {
             path_hash,

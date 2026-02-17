@@ -177,7 +177,7 @@ impl ServedDir {
             Some(prefix) if path == prefix => ".",
             Some(prefix) => path
                 .strip_prefix(prefix)
-                .ok_or(SerdirError::NotFound(None))?,
+                .ok_or(SerdirError::not_found(None))?,
             None => path,
         };
         let path = path.strip_prefix('/').unwrap_or(path);
@@ -197,7 +197,7 @@ impl ServedDir {
                 let not_found_path = self.not_found_path.as_ref().unwrap();
                 let matched_file = self.find_file(not_found_path, preferred).await?;
                 let entity = self.create_entity(matched_file)?;
-                return Err(SerdirError::NotFound(Some(entity)));
+                return Err(SerdirError::not_found(Some(entity)));
             }
             Err(e) => return Err(e),
         };
@@ -219,16 +219,12 @@ impl ServedDir {
             Err(SerdirError::NotFound(None)) | Err(SerdirError::IsDirectory(_)) => {
                 Ok(Self::make_status_response(StatusCode::NOT_FOUND))
             }
-            Err(SerdirError::InvalidPath(msg)) => {
-                log::error!("Invalid path: {msg}");
+            Err(SerdirError::InvalidPath(_)) => {
                 Ok(Self::make_status_response(StatusCode::BAD_REQUEST))
             }
-            Err(e) => {
-                log::error!("Internal server error: {e}");
-                Ok(Self::make_status_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                ))
-            }
+            Err(_) => Ok(Self::make_status_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )),
         }
     }
 
@@ -294,7 +290,7 @@ impl ServedDir {
     /// returns the full path joined to the root directory.
     fn validate_path(&self, path: &str) -> Result<PathBuf, SerdirError> {
         if path.as_bytes().contains(&0) {
-            return Err(SerdirError::InvalidPath(
+            return Err(SerdirError::invalid_path(
                 "path contains NUL byte".to_string(),
             ));
         }
@@ -305,15 +301,15 @@ impl ServedDir {
                 std::path::Component::Normal(seg) => full_path.push(seg),
                 std::path::Component::CurDir => {}
                 std::path::Component::ParentDir => {
-                    return Err(SerdirError::InvalidPath(
+                    return Err(SerdirError::invalid_path(
                         "path contains .. segment".to_string(),
                     ));
                 }
                 std::path::Component::RootDir => {
-                    return Err(SerdirError::InvalidPath("path is absolute".to_string()));
+                    return Err(SerdirError::invalid_path("path is absolute".to_string()));
                 }
                 std::path::Component::Prefix(_) => {
-                    return Err(SerdirError::InvalidPath(
+                    return Err(SerdirError::invalid_path(
                         "path contains a prefix".to_string(),
                     ));
                 }
@@ -386,7 +382,7 @@ impl ServedDirBuilder {
         let dirpath = dirpath.into();
         if !dirpath.is_dir() {
             let msg = format!("path is not a directory: {}", dirpath.display());
-            return Err(SerdirError::ConfigError(msg));
+            return Err(SerdirError::config_error(msg));
         }
         Ok(Self {
             dirpath,
@@ -574,13 +570,13 @@ impl ServedDirBuilder {
     pub fn not_found_path(mut self, path: impl Into<PathBuf>) -> Result<Self, SerdirError> {
         let path = path.into();
         if path.is_absolute() || path.has_root() {
-            return Err(SerdirError::ConfigError(
+            return Err(SerdirError::config_error(
                 "not_found_path must be relative".to_string(),
             ));
         }
         let full_path = self.dirpath.join(path);
         if !full_path.is_file() {
-            return Err(SerdirError::ConfigError(format!(
+            return Err(SerdirError::config_error(format!(
                 "not_found_path is not a file: {}",
                 full_path.display()
             )));
