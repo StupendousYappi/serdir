@@ -3,8 +3,10 @@
 use std::convert::Infallible;
 use std::fmt::Debug;
 use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 use std::sync::LazyLock;
+use std::time::SystemTime;
 use std::{collections::HashMap, path::PathBuf};
 
 #[cfg(feature = "runtime-compression")]
@@ -19,7 +21,7 @@ use crate::integration::HyperService;
 use crate::integration::{TowerLayer, TowerService};
 
 use crate::etag::EtagCache;
-use crate::{Body, ETag, FileHasher, FileInfo, Resource, SerdirError};
+use crate::{Body, ContentGenerator, ETag, FileInfo, Resource, ResourceHasher, SerdirError};
 use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 
 /// Returns [`Resource`] values for file paths within a directory.
@@ -65,12 +67,13 @@ use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 pub struct ServedDir {
     dirpath: PathBuf,
     compression_strategy: CompressionStrategyInner,
-    file_hasher: FileHasher,
+    file_hasher: ResourceHasher,
     strip_prefix: Option<String>,
     known_extensions: HashMap<String, HeaderValue>,
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
     append_index_html: bool,
+    directory_handler: Option<ContentGenerator>,
     not_found_path: Option<PathBuf>,
     etag_cache: EtagCache,
 }
@@ -88,6 +91,7 @@ impl Debug for ServedDir {
             .field("dirpath", &self.dirpath)
             .field("strip_prefix", &self.strip_prefix)
             .field("append_index_html", &self.append_index_html)
+            .field("directory_handler", &self.directory_handler.is_some())
             .field("not_found_path", &self.not_found_path)
             .field("default_content_type", &self.default_content_type)
             .field("compression_strategy", &strategy)
@@ -98,7 +102,7 @@ impl Debug for ServedDir {
 static OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-stream");
 
 /// The default function used to create ETag values by hashing file contents
-pub(crate) fn default_hasher(file: &File) -> Result<Option<u64>, std::io::Error> {
+pub(crate) fn default_hasher(file: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
     let hash = rapidhash::v3::rapidhash_v3_file(file)?;
     Ok(Some(hash))
 }
@@ -177,9 +181,27 @@ impl ServedDir {
         let res = self.find_file(&full_path, preferred).await;
         let matched_file = match res {
             Ok(mf) => mf,
-            Err(SerdirError::IsDirectory(_)) if self.append_index_html => {
-                let index_path = full_path.join("index.html");
-                self.find_file(&index_path, preferred).await?
+            Err(SerdirError::IsDirectory(dir_path)) => {
+                let mut missing_index = false;
+                if self.append_index_html {
+                    let index_path = full_path.join("index.html");
+                    match self.find_file(&index_path, preferred).await {
+                        Ok(mf) => return self.create_entity(mf),
+                        Err(SerdirError::NotFound(_)) => {
+                            missing_index = true;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+
+                if self.directory_handler.is_some() {
+                    return self.create_generated_directory_entity(&dir_path);
+                }
+                if missing_index {
+                    return Err(SerdirError::NotFound(None));
+                }
+
+                return Err(SerdirError::IsDirectory(dir_path));
             }
             Err(SerdirError::NotFound(_)) if self.not_found_path.is_some() => {
                 let not_found_path = self.not_found_path.as_ref().unwrap();
@@ -244,12 +266,24 @@ impl ServedDir {
             headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
         }
         let etag = self.calculate_etag(matched_file.file_info, matched_file.file.as_ref())?;
-        Ok(Resource::new_with_metadata(
+        Ok(Resource::for_file_with_metadata(
             matched_file.file,
             matched_file.file_info,
             headers,
             etag,
         ))
+    }
+
+    fn create_generated_directory_entity(&self, dirpath: &Path) -> Result<Resource, SerdirError> {
+        let handler = self
+            .directory_handler
+            .expect("directory_handler must be set");
+        let (content, content_type) = handler(dirpath)?;
+
+        let mut headers = self.common_headers.clone();
+        headers.insert(http::header::CONTENT_TYPE, content_type);
+
+        Resource::for_bytes(content, SystemTime::now(), headers)
     }
 
     async fn find_file(
@@ -270,7 +304,8 @@ impl ServedDir {
         }
 
         let etag = tokio::task::block_in_place(|| {
-            (self.file_hasher)(file).map(|hash| hash.map(ETag::from))
+            let mut reader = file;
+            (self.file_hasher)(&mut reader).map(|hash| hash.map(ETag::from))
         })?;
         self.etag_cache.insert(file_info, etag);
         Ok(etag)
@@ -344,12 +379,13 @@ impl ServedDir {
 pub struct ServedDirBuilder {
     dirpath: PathBuf,
     compression_strategy: CompressionStrategy,
-    file_hasher: Option<FileHasher>,
+    file_hasher: Option<ResourceHasher>,
     strip_prefix: Option<String>,
     known_extensions: HashMap<String, HeaderValue>,
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
     append_index_html: bool,
+    directory_handler: Option<ContentGenerator>,
     not_found_path: Option<PathBuf>,
 }
 
@@ -382,6 +418,7 @@ impl ServedDirBuilder {
             default_content_type: OCTET_STREAM.clone(),
             common_headers: HeaderMap::new(),
             append_index_html: false,
+            directory_handler: None,
             not_found_path: None,
         })
     }
@@ -422,6 +459,16 @@ impl ServedDirBuilder {
         self
     }
 
+    /// Sets a custom handler to generate dynamic responses for directory paths.
+    ///
+    /// When configured, `ServedDir` will call this handler for requests that
+    /// resolve to a directory path and are not resolved to an `index.html` file.
+    /// The handler receives the resolved full filesystem path to the directory.
+    pub fn directory_handler(mut self, handler: ContentGenerator) -> Self {
+        self.directory_handler = Some(handler);
+        self
+    }
+
     /// Sets the hash function used to compute ETag values for served files.
     ///
     /// The function receives the opened file handle and should return:
@@ -430,7 +477,7 @@ impl ServedDirBuilder {
     /// - `Err(e)` to propagate an I/O error.
     ///
     /// If not set, `ServedDir` defaults to hashing file contents with `rapidhash`.
-    pub fn file_hasher(mut self, file_hasher: FileHasher) -> Self {
+    pub fn file_hasher(mut self, file_hasher: ResourceHasher) -> Self {
         self.file_hasher = Some(file_hasher);
         self
     }
@@ -578,6 +625,7 @@ impl ServedDirBuilder {
             default_content_type: self.default_content_type,
             common_headers: self.common_headers,
             append_index_html: self.append_index_html,
+            directory_handler: self.directory_handler,
             not_found_path: self.not_found_path,
             etag_cache: EtagCache::new(),
         }

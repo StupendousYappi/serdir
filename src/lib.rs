@@ -121,12 +121,15 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(clippy::result_large_err)]
 
+use bytes::Bytes;
+use http::HeaderValue;
 use std::error::Error;
 use std::fmt::Display;
 use std::fs::File;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Error as IOError;
 use std::io::ErrorKind;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -223,9 +226,18 @@ mod resource;
 mod serving;
 
 pub use crate::body::Body;
-pub use crate::etag::{ETag, FileHasher};
+pub use crate::etag::ETag;
 pub use crate::resource::Resource;
 pub use crate::served_dir::{ServedDir, ServedDirBuilder};
+
+/// Function pointer type used to calculate ETag hash values from opened resources.
+///
+/// The function should return a 64-bit hash of the full resource contents,
+/// or `None` to suppress ETag emission for that resource.
+pub type ResourceHasher = fn(&mut dyn Read) -> Result<Option<u64>, std::io::Error>;
+
+/// Function pointer type used to define dynamic content generators for resources
+pub type ContentGenerator = fn(&Path) -> Result<(Bytes, HeaderValue), crate::SerdirError>;
 
 #[cfg(feature = "runtime-compression")]
 mod brotli_cache;

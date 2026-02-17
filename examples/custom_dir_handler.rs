@@ -6,65 +6,56 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Serves a directory on `http://127.0.0.1:1337/` using `ServedDir::into_tower_layer`.
+//! Serves a directory on `http://127.0.0.1:1337/` using `ServedDir::into_tower_service`
+//! with a custom directory handler for listing directory contents.
 
 mod common;
 
 use anyhow::{Context, Result};
+use bytes::Bytes;
 use common::Config;
-use http::header::{self, HeaderValue};
+use http::HeaderValue;
 use hyper::server::conn;
 use hyper_util::rt::TokioIo;
 use hyper_util::service::TowerToHyperService;
-use std::future::Future;
+use serdir::{SerdirError, ServedDirBuilder};
 use std::net::{Ipv4Addr, SocketAddr};
-use std::pin::Pin;
-use std::task::{Context as TaskContext, Poll};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::Path;
 use tokio::net::TcpListener;
-use tower::{Layer, Service};
 
-use serdir::{Body, ServedDirBuilder};
+fn custom_directory_listing(path: &Path) -> Result<(Bytes, HeaderValue), SerdirError> {
+    let mut listing = String::new();
+    listing.push_str("<!DOCTYPE html>\n<title>directory listing</title>\n<ul>\n");
 
-type ResponseFuture =
-    Pin<Box<dyn Future<Output = Result<http::Response<Body>, std::convert::Infallible>> + Send>>;
+    let mut entries = std::fs::read_dir(path)
+        .and_then(|iter| iter.collect::<Result<Vec<_>, _>>())
+        .map_err(SerdirError::IOError)?;
+    entries.sort_unstable_by_key(|entry| entry.file_name());
 
-#[derive(Clone)]
-struct DirectoryFallbackService;
+    for entry in entries {
+        let file_name = entry.file_name();
+        let name = match file_name.to_str() {
+            None => continue,
+            Some(".") => continue,
+            Some(name) => name,
+        };
 
-impl Service<http::Request<hyper::body::Incoming>> for DirectoryFallbackService {
-    type Response = http::Response<Body>;
-    type Error = std::convert::Infallible;
-    type Future = ResponseFuture;
-
-    fn poll_ready(&mut self, _cx: &mut TaskContext<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
+        listing.push_str("<li><a href=\"");
+        listing.push_str(&htmlescape::encode_minimal(name));
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if is_dir {
+            listing.push('/');
+        }
+        listing.push_str("\">");
+        listing.push_str(&htmlescape::encode_minimal(name));
+        if is_dir {
+            listing.push('/');
+        }
+        listing.push_str("</a></li>\n");
     }
 
-    fn call(&mut self, req: http::Request<hyper::body::Incoming>) -> Self::Future {
-        Box::pin(async move {
-            let _ = req;
-            Ok(current_time_response())
-        })
-    }
-}
-
-fn current_time_response() -> http::Response<Body> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is before UNIX_EPOCH");
-    let millis = now.subsec_millis();
-    let body = format!(
-        "<!DOCTYPE html><html><head><title>Current Time</title></head>\
-         <body><h1>Current Time</h1><p>{}.{:03}</p></body></html>",
-        now.as_secs(),
-        millis
-    );
-
-    let mut resp = http::Response::new(serdir::Body::from(body));
-    resp.headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
-    resp
+    listing.push_str("</ul>\n");
+    Ok((Bytes::from(listing), HeaderValue::from_static("text/html")))
 }
 
 #[tokio::main]
@@ -73,34 +64,33 @@ async fn main() -> Result<()> {
 }
 
 async fn run() -> Result<()> {
-    env_logger::init();
     let config = Config::from_env();
     let mut builder = ServedDirBuilder::new(config.directory.as_str())
         .context("failed to create ServedDir builder")?
         .append_index_html(true)
         .compression(config.compression_strategy())
-        .strip_prefix(config.strip_prefix.unwrap_or_default());
+        .strip_prefix(config.strip_prefix.unwrap_or_default())
+        .directory_handler(custom_directory_listing);
     if let Some(path) = config.not_found_path {
         builder = builder
             .not_found_path(path)
             .context("failed to set --not-found-path")?;
     }
     let served_dir = builder.build();
-    let served_dir_display = served_dir.dir().display().to_string();
-    let layer = served_dir.into_tower_layer();
-    let service = layer.layer(DirectoryFallbackService);
-
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 1337));
     let listener = TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind {addr}"))?;
+
     println!(
         "Serving {} on http://{}",
-        served_dir_display,
+        served_dir.dir().display(),
         listener
             .local_addr()
             .context("failed to get listener address")?
     );
+    let service = served_dir.into_tower_service();
+
     loop {
         let (tcp, _) = listener.accept().await.context("accept failed")?;
         let service = service.clone();

@@ -1,16 +1,9 @@
-use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
-use serdir::{Resource, SerdirError, ServedDir, ServedDirBuilder};
+use http::{header, HeaderMap, HeaderValue};
+use serdir::{SerdirError, ServedDir, ServedDirBuilder};
 use std::collections::HashMap;
-use std::fs::File;
+use std::io::Read;
+use std::path::Path;
 use tempfile::TempDir;
-
-// Helper to read the body of a Resource in integration tests
-async fn read_body(entity: &Resource) -> bytes::Bytes {
-    use http_body_util::BodyExt;
-    let req = Request::get("/").body(()).unwrap();
-    let res: Response<serdir::Body> = entity.clone().serve_request(&req, StatusCode::OK);
-    res.into_body().collect().await.unwrap().to_bytes()
-}
 
 struct TestContext {
     tmp: TempDir,
@@ -33,16 +26,40 @@ impl TestContext {
     }
 }
 
-fn fixed_hash(_: &File) -> Result<Option<u64>, std::io::Error> {
+fn fixed_hash(_: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
     Ok(Some(0x1234))
 }
 
-fn no_hash(_: &File) -> Result<Option<u64>, std::io::Error> {
+fn no_hash(_: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
     Ok(None)
 }
 
-fn hash_error(_: &File) -> Result<Option<u64>, std::io::Error> {
+fn hash_error(_: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
     Err(std::io::Error::other("hash calculation failed"))
+}
+
+fn default_hasher(file: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
+    Ok(Some(rapidhash::v3::rapidhash_v3_file(file)?))
+}
+
+fn fixed_directory_handler(_: &Path) -> Result<(bytes::Bytes, HeaderValue), SerdirError> {
+    Ok((
+        bytes::Bytes::from_static(b"generated directory content"),
+        HeaderValue::from_static("text/plain"),
+    ))
+}
+
+fn failing_directory_handler(_: &Path) -> Result<(bytes::Bytes, HeaderValue), SerdirError> {
+    Err(SerdirError::IOError(std::io::Error::other(
+        "directory handler failed",
+    )))
+}
+
+fn path_echo_directory_handler(path: &Path) -> Result<(bytes::Bytes, HeaderValue), SerdirError> {
+    Ok((
+        bytes::Bytes::from(path.display().to_string()),
+        HeaderValue::from_static("text/plain"),
+    ))
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -130,7 +147,7 @@ async fn test_served_dir_strip_prefix() {
 
     // Should work with the prefix
     let e = served_dir.get("/static/real.txt", &hdrs).await.unwrap();
-    assert_eq!(read_body(&e).await, "real content");
+    assert_eq!(e.read_bytes().unwrap(), "real content");
 
     // Should fail without the prefix
     let err = served_dir.get("real.txt", &hdrs).await.unwrap_err();
@@ -213,7 +230,7 @@ async fn test_served_dir_unexpected_br_path() {
     // Should ignore the directory and serve the raw file
     let e = served_dir.get("test.txt", &hdrs).await.unwrap();
     assert!(e.header(&header::CONTENT_ENCODING).is_none());
-    assert_eq!(read_body(&e).await, "raw content");
+    assert_eq!(e.read_bytes().unwrap(), "raw content");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -234,7 +251,7 @@ async fn test_served_dir_unexpected_gz_path() {
     // Should ignore the directory and serve the raw file
     let e = served_dir.get("test.txt", &hdrs).await.unwrap();
     assert!(e.header(&header::CONTENT_ENCODING).is_none());
-    assert_eq!(read_body(&e).await, "raw content");
+    assert_eq!(e.read_bytes().unwrap(), "raw content");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -271,7 +288,7 @@ async fn test_served_dir_symlink() {
 
     // Should follow the symlink and serve the target file
     let e = served_dir.get("link.txt", &hdrs).await.unwrap();
-    assert_eq!(read_body(&e).await, "target content");
+    assert_eq!(e.read_bytes().unwrap(), "target content");
     assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/plain");
 }
 
@@ -294,13 +311,115 @@ async fn test_served_dir_append_index_html() {
     let builder = ServedDir::builder(path.to_path_buf()).unwrap();
     let served_dir = builder.append_index_html(true).build();
     let e = served_dir.get("subdir", &hdrs).await.unwrap();
-    assert_eq!(read_body(&e).await, "index content");
+    assert_eq!(e.read_bytes().unwrap(), "index content");
     assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/html");
 
     // 3. append_index_html enabled, but index.html missing
     std::fs::create_dir(path.join("empty_subdir")).unwrap();
     let err = served_dir.get("empty_subdir", &hdrs).await.unwrap_err();
     assert!(matches!(err, SerdirError::NotFound(_)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_served_dir_directory_handler_for_directory() {
+    let context = TestContext::new();
+    std::fs::create_dir(context.tmp.path().join("subdir")).unwrap();
+
+    let served_dir = context
+        .builder
+        .directory_handler(fixed_directory_handler)
+        .build();
+    let hdrs = HeaderMap::new();
+
+    let e = served_dir.get("subdir", &hdrs).await.unwrap();
+    assert_eq!(e.read_bytes().unwrap(), "generated directory content");
+    assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/plain");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_served_dir_directory_handler_after_missing_index() {
+    let context = TestContext::new();
+    std::fs::create_dir(context.tmp.path().join("subdir")).unwrap();
+
+    let served_dir = context
+        .builder
+        .append_index_html(true)
+        .directory_handler(fixed_directory_handler)
+        .build();
+    let hdrs = HeaderMap::new();
+
+    let e = served_dir.get("subdir", &hdrs).await.unwrap();
+    assert_eq!(e.read_bytes().unwrap(), "generated directory content");
+    assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/plain");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_served_dir_append_index_takes_precedence_over_directory_handler() {
+    let context = TestContext::new();
+    std::fs::create_dir(context.tmp.path().join("subdir")).unwrap();
+    context.write_file("subdir/index.html", "index content");
+
+    let served_dir = context
+        .builder
+        .append_index_html(true)
+        .directory_handler(fixed_directory_handler)
+        .build();
+    let hdrs = HeaderMap::new();
+
+    let e = served_dir.get("subdir", &hdrs).await.unwrap();
+    assert_eq!(e.read_bytes().unwrap(), "index content");
+    assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/html");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_served_dir_directory_handler_not_used_for_files() {
+    let context = TestContext::new();
+    context.write_file("one.txt", "one");
+
+    let served_dir = context
+        .builder
+        .directory_handler(failing_directory_handler)
+        .build();
+    let hdrs = HeaderMap::new();
+
+    let e = served_dir.get("one.txt", &hdrs).await.unwrap();
+    assert_eq!(e.read_bytes().unwrap(), "one");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_served_dir_directory_handler_receives_resolved_path() {
+    let context = TestContext::new();
+    std::fs::create_dir(context.tmp.path().join("subdir")).unwrap();
+
+    let served_dir = context
+        .builder
+        .directory_handler(path_echo_directory_handler)
+        .build();
+    let hdrs = HeaderMap::new();
+
+    let e = served_dir.get("subdir", &hdrs).await.unwrap();
+    let expected = context.tmp.path().join("subdir").display().to_string();
+    assert_eq!(e.read_bytes().unwrap(), expected);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_served_dir_directory_handler_error_is_propagated() {
+    let context = TestContext::new();
+    std::fs::create_dir(context.tmp.path().join("subdir")).unwrap();
+
+    let served_dir = context
+        .builder
+        .directory_handler(failing_directory_handler)
+        .build();
+    let hdrs = HeaderMap::new();
+
+    let err = served_dir.get("subdir", &hdrs).await.unwrap_err();
+    match err {
+        SerdirError::IOError(inner) => {
+            assert_eq!(inner.to_string(), "directory handler failed");
+        }
+        other => panic!("expected IOError, got {:?}", other),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -321,25 +440,25 @@ async fn test_served_dir_compression_priority() {
     // 1. All 3 available -> Brotli used
     let e = served_dir.get("test.txt", &hdrs).await.unwrap();
     assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "br");
-    assert_eq!(read_body(&e).await, "fake brotli content");
+    assert_eq!(e.read_bytes().unwrap(), "fake brotli content");
 
     // 2. Zstandard and Gzip available -> Zstandard used
     std::fs::remove_file(context.tmp.path().join("test.txt.br")).unwrap();
     let e = served_dir.get("test.txt", &hdrs).await.unwrap();
     assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "zstd");
-    assert_eq!(read_body(&e).await, "fake zstd content");
+    assert_eq!(e.read_bytes().unwrap(), "fake zstd content");
 
     // 3. Only Gzip available -> Gzip used
     std::fs::remove_file(context.tmp.path().join("test.txt.zstd")).unwrap();
     let e = served_dir.get("test.txt", &hdrs).await.unwrap();
     assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "gzip");
-    assert_eq!(read_body(&e).await, "fake gzip content");
+    assert_eq!(e.read_bytes().unwrap(), "fake gzip content");
 
     // 4. None available -> Raw used
     std::fs::remove_file(context.tmp.path().join("test.txt.gz")).unwrap();
     let e = served_dir.get("test.txt", &hdrs).await.unwrap();
     assert!(e.header(&header::CONTENT_ENCODING).is_none());
-    assert_eq!(read_body(&e).await, "raw content");
+    assert_eq!(e.read_bytes().unwrap(), "raw content");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -415,12 +534,12 @@ async fn test_served_dir_not_found_path_behavior() {
 
     // 1. Existing file -> Ok
     let e = served_dir.get("exists.txt", &hdrs).await.unwrap();
-    assert_eq!(read_body(&e).await, "found");
+    assert_eq!(e.read_bytes().unwrap(), "found");
 
     // 2. Non-existent file -> NotFound(Some(entity))
     let err = served_dir.get("missing.txt", &hdrs).await.unwrap_err();
     if let SerdirError::NotFound(Some(entity)) = err {
-        assert_eq!(read_body(&entity).await, "custom 404 content");
+        assert_eq!(entity.read_bytes().unwrap(), "custom 404 content");
         assert_eq!(entity.header(&header::CONTENT_TYPE).unwrap(), "text/html");
     } else {
         panic!("expected NotFound(Some(_)), got {:?}", err);
@@ -431,7 +550,7 @@ async fn test_served_dir_not_found_path_behavior() {
 async fn test_served_dir_default_hash_function_sets_etag() {
     let context = TestContext::new();
     context.write_file("one.txt", "one");
-    let served_dir = context.builder.build();
+    let served_dir = context.builder.file_hasher(default_hasher).build();
     let hdrs = HeaderMap::new();
 
     let entity = served_dir.get("one.txt", &hdrs).await.unwrap();
@@ -508,7 +627,7 @@ async fn test_served_dir_etag_cache_is_used() {
 
     static CALL_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-    fn counting_hasher(_: &File) -> Result<Option<u64>, std::io::Error> {
+    fn counting_hasher(_: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
         CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(Some(0x1234))
     }
