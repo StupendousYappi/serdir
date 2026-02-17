@@ -223,7 +223,7 @@ mod resource;
 mod serving;
 
 pub use crate::body::Body;
-pub use crate::etag::{ETag, FileHasher};
+pub use crate::etag::{ETag, ResourceHasher};
 pub use crate::resource::Resource;
 pub use crate::served_dir::{ServedDir, ServedDirBuilder};
 

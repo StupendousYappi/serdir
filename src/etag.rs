@@ -9,8 +9,7 @@
 use crate::FileInfo;
 use http::header::{self, HeaderMap, HeaderValue};
 use sieve_cache::ShardedSieveCache;
-use std::fs::File;
-use std::io;
+use std::io::{self, Read};
 
 const CACHE_SIZE: usize = 256;
 
@@ -32,7 +31,7 @@ pub struct ETag(pub u64);
 ///
 /// The function should return a u64 based on hashing the complete contents of the file,
 /// or None if no ETag should be used for this file.
-pub type FileHasher = fn(&File) -> Result<Option<u64>, io::Error>;
+pub type ResourceHasher = fn(&mut dyn Read) -> Result<Option<u64>, io::Error>;
 
 /// A cache for ETag values, indexed by file metadata.
 pub(crate) struct EtagCache(ShardedSieveCache<FileInfo, Option<ETag>>);

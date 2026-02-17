@@ -3,6 +3,7 @@
 use std::convert::Infallible;
 use std::fmt::Debug;
 use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 use std::sync::LazyLock;
 use std::{collections::HashMap, path::PathBuf};
@@ -19,7 +20,7 @@ use crate::integration::HyperService;
 use crate::integration::{TowerLayer, TowerService};
 
 use crate::etag::EtagCache;
-use crate::{Body, ETag, FileHasher, FileInfo, Resource, SerdirError};
+use crate::{Body, ETag, FileInfo, Resource, ResourceHasher, SerdirError};
 use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 
 /// Returns [`Resource`] values for file paths within a directory.
@@ -65,7 +66,7 @@ use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 pub struct ServedDir {
     dirpath: PathBuf,
     compression_strategy: CompressionStrategyInner,
-    file_hasher: FileHasher,
+    file_hasher: ResourceHasher,
     strip_prefix: Option<String>,
     known_extensions: HashMap<String, HeaderValue>,
     default_content_type: HeaderValue,
@@ -98,7 +99,7 @@ impl Debug for ServedDir {
 static OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-stream");
 
 /// The default function used to create ETag values by hashing file contents
-pub(crate) fn default_hasher(file: &File) -> Result<Option<u64>, std::io::Error> {
+pub(crate) fn default_hasher(file: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
     let hash = rapidhash::v3::rapidhash_v3_file(file)?;
     Ok(Some(hash))
 }
@@ -270,7 +271,8 @@ impl ServedDir {
         }
 
         let etag = tokio::task::block_in_place(|| {
-            (self.file_hasher)(file).map(|hash| hash.map(ETag::from))
+            let mut reader = file;
+            (self.file_hasher)(&mut reader).map(|hash| hash.map(ETag::from))
         })?;
         self.etag_cache.insert(file_info, etag);
         Ok(etag)
@@ -344,7 +346,7 @@ impl ServedDir {
 pub struct ServedDirBuilder {
     dirpath: PathBuf,
     compression_strategy: CompressionStrategy,
-    file_hasher: Option<FileHasher>,
+    file_hasher: Option<ResourceHasher>,
     strip_prefix: Option<String>,
     known_extensions: HashMap<String, HeaderValue>,
     default_content_type: HeaderValue,
@@ -430,7 +432,7 @@ impl ServedDirBuilder {
     /// - `Err(e)` to propagate an I/O error.
     ///
     /// If not set, `ServedDir` defaults to hashing file contents with `rapidhash`.
-    pub fn file_hasher(mut self, file_hasher: FileHasher) -> Self {
+    pub fn file_hasher(mut self, file_hasher: ResourceHasher) -> Self {
         self.file_hasher = Some(file_hasher);
         self
     }

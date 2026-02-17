@@ -101,7 +101,8 @@ impl Resource {
         let file = File::open(path)?;
         let file_info = FileInfo::open_file(path, &file)?;
 
-        let etag: Option<ETag> = default_hasher(&file)?.map(Into::into);
+        let mut reader = &file;
+        let etag: Option<ETag> = default_hasher(&mut reader)?.map(Into::into);
 
         let entity = Resource::new_with_metadata(Arc::new(file), file_info, headers, etag);
         Ok(entity)

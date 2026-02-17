@@ -1,7 +1,7 @@
 use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 use serdir::{Resource, SerdirError, ServedDir, ServedDirBuilder};
 use std::collections::HashMap;
-use std::fs::File;
+use std::io::Read;
 use tempfile::TempDir;
 
 // Helper to read the body of a Resource in integration tests
@@ -33,16 +33,20 @@ impl TestContext {
     }
 }
 
-fn fixed_hash(_: &File) -> Result<Option<u64>, std::io::Error> {
+fn fixed_hash(_: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
     Ok(Some(0x1234))
 }
 
-fn no_hash(_: &File) -> Result<Option<u64>, std::io::Error> {
+fn no_hash(_: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
     Ok(None)
 }
 
-fn hash_error(_: &File) -> Result<Option<u64>, std::io::Error> {
+fn hash_error(_: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
     Err(std::io::Error::other("hash calculation failed"))
+}
+
+fn default_hasher(file: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
+    Ok(Some(rapidhash::v3::rapidhash_v3_file(file)?))
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -431,7 +435,7 @@ async fn test_served_dir_not_found_path_behavior() {
 async fn test_served_dir_default_hash_function_sets_etag() {
     let context = TestContext::new();
     context.write_file("one.txt", "one");
-    let served_dir = context.builder.build();
+    let served_dir = context.builder.file_hasher(default_hasher).build();
     let hdrs = HeaderMap::new();
 
     let entity = served_dir.get("one.txt", &hdrs).await.unwrap();
@@ -508,7 +512,7 @@ async fn test_served_dir_etag_cache_is_used() {
 
     static CALL_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-    fn counting_hasher(_: &File) -> Result<Option<u64>, std::io::Error> {
+    fn counting_hasher(_: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
         CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(Some(0x1234))
     }

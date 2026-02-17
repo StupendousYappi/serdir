@@ -12,7 +12,7 @@ use hyper_util::rt::TokioIo;
 use once_cell::sync::Lazy;
 use serdir::ServedDir;
 use std::fs::File;
-use std::io::{Error, ErrorKind, Write};
+use std::io::{Error, ErrorKind, Read, Write};
 use std::time::Duration;
 use tokio::net::TcpListener;
 
@@ -24,8 +24,9 @@ const MIME: &str = "text/plain";
 const SOME_DATE_STR: &str = "Sun, 06 Nov 1994 08:49:37 GMT";
 const LATER_DATE_STR: &str = "Sun, 06 Nov 1994 09:49:37 GMT";
 
-fn test_file_hasher(file: &File) -> Result<Option<u64>, std::io::Error> {
-    match file.metadata()?.len() {
+fn test_file_hasher(file: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
+    let len = std::io::copy(file, &mut std::io::sink())?;
+    match len {
         20 => Ok(Some(0x1234)),
         10 => Ok(None),
         1000 => Ok(Some(0x5678)),
