@@ -81,7 +81,7 @@ async fn run() -> Result<()> {
     let config = Config::from_env();
     let mut builder = ServedDirBuilder::new(config.directory.as_str())
         .context("failed to create ServedDir builder")?
-        .append_index_html(true)
+        .append_index_html(false)
         .compression(config.compression_strategy())
         .strip_prefix(config.strip_prefix.unwrap_or_default())
         .error_handler(custom_error_handler);
