@@ -2,6 +2,7 @@ use http::{header, HeaderMap, HeaderValue};
 use serdir::{SerdirError, ServedDir, ServedDirBuilder};
 use std::collections::HashMap;
 use std::io::Read;
+use std::path::Path;
 use tempfile::TempDir;
 
 struct TestContext {
@@ -39,6 +40,26 @@ fn hash_error(_: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
 
 fn default_hasher(file: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
     Ok(Some(rapidhash::v3::rapidhash_v3_file(file)?))
+}
+
+fn fixed_directory_handler(_: &Path) -> Result<(bytes::Bytes, HeaderValue), SerdirError> {
+    Ok((
+        bytes::Bytes::from_static(b"generated directory content"),
+        HeaderValue::from_static("text/plain"),
+    ))
+}
+
+fn failing_directory_handler(_: &Path) -> Result<(bytes::Bytes, HeaderValue), SerdirError> {
+    Err(SerdirError::IOError(std::io::Error::other(
+        "directory handler failed",
+    )))
+}
+
+fn path_echo_directory_handler(path: &Path) -> Result<(bytes::Bytes, HeaderValue), SerdirError> {
+    Ok((
+        bytes::Bytes::from(path.display().to_string()),
+        HeaderValue::from_static("text/plain"),
+    ))
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -297,6 +318,108 @@ async fn test_served_dir_append_index_html() {
     std::fs::create_dir(path.join("empty_subdir")).unwrap();
     let err = served_dir.get("empty_subdir", &hdrs).await.unwrap_err();
     assert!(matches!(err, SerdirError::NotFound(_)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_served_dir_directory_handler_for_directory() {
+    let context = TestContext::new();
+    std::fs::create_dir(context.tmp.path().join("subdir")).unwrap();
+
+    let served_dir = context
+        .builder
+        .directory_handler(fixed_directory_handler)
+        .build();
+    let hdrs = HeaderMap::new();
+
+    let e = served_dir.get("subdir", &hdrs).await.unwrap();
+    assert_eq!(e.read_bytes().unwrap(), "generated directory content");
+    assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/plain");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_served_dir_directory_handler_after_missing_index() {
+    let context = TestContext::new();
+    std::fs::create_dir(context.tmp.path().join("subdir")).unwrap();
+
+    let served_dir = context
+        .builder
+        .append_index_html(true)
+        .directory_handler(fixed_directory_handler)
+        .build();
+    let hdrs = HeaderMap::new();
+
+    let e = served_dir.get("subdir", &hdrs).await.unwrap();
+    assert_eq!(e.read_bytes().unwrap(), "generated directory content");
+    assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/plain");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_served_dir_append_index_takes_precedence_over_directory_handler() {
+    let context = TestContext::new();
+    std::fs::create_dir(context.tmp.path().join("subdir")).unwrap();
+    context.write_file("subdir/index.html", "index content");
+
+    let served_dir = context
+        .builder
+        .append_index_html(true)
+        .directory_handler(fixed_directory_handler)
+        .build();
+    let hdrs = HeaderMap::new();
+
+    let e = served_dir.get("subdir", &hdrs).await.unwrap();
+    assert_eq!(e.read_bytes().unwrap(), "index content");
+    assert_eq!(e.header(&header::CONTENT_TYPE).unwrap(), "text/html");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_served_dir_directory_handler_not_used_for_files() {
+    let context = TestContext::new();
+    context.write_file("one.txt", "one");
+
+    let served_dir = context
+        .builder
+        .directory_handler(failing_directory_handler)
+        .build();
+    let hdrs = HeaderMap::new();
+
+    let e = served_dir.get("one.txt", &hdrs).await.unwrap();
+    assert_eq!(e.read_bytes().unwrap(), "one");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_served_dir_directory_handler_receives_resolved_path() {
+    let context = TestContext::new();
+    std::fs::create_dir(context.tmp.path().join("subdir")).unwrap();
+
+    let served_dir = context
+        .builder
+        .directory_handler(path_echo_directory_handler)
+        .build();
+    let hdrs = HeaderMap::new();
+
+    let e = served_dir.get("subdir", &hdrs).await.unwrap();
+    let expected = context.tmp.path().join("subdir").display().to_string();
+    assert_eq!(e.read_bytes().unwrap(), expected);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_served_dir_directory_handler_error_is_propagated() {
+    let context = TestContext::new();
+    std::fs::create_dir(context.tmp.path().join("subdir")).unwrap();
+
+    let served_dir = context
+        .builder
+        .directory_handler(failing_directory_handler)
+        .build();
+    let hdrs = HeaderMap::new();
+
+    let err = served_dir.get("subdir", &hdrs).await.unwrap_err();
+    match err {
+        SerdirError::IOError(inner) => {
+            assert_eq!(inner.to_string(), "directory handler failed");
+        }
+        other => panic!("expected IOError, got {:?}", other),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
