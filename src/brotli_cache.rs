@@ -120,7 +120,7 @@ impl BrotliCache {
         })
         .await
         .map_err(|e| {
-            SerdirError::CompressionError("Join error".to_string(), std::io::Error::other(e))
+            SerdirError::compression_error("Join error".to_string(), std::io::Error::other(e))
         })? {
             Ok(v) => v,
             Err(e) if e.kind() == ErrorKind::StorageFull => {
@@ -129,7 +129,7 @@ impl BrotliCache {
             }
             Err(e) => {
                 let msg = format!("Brotli compression failed for {}", path.display());
-                return Err(SerdirError::CompressionError(msg, e));
+                return Err(SerdirError::compression_error(msg, e));
             }
         };
 

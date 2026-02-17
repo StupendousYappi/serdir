@@ -162,7 +162,7 @@ impl TryFrom<u8> for BrotliLevel {
             9 => Ok(Self::L9),
             10 => Ok(Self::L10),
             11 => Ok(Self::L11),
-            _ => Err(SerdirError::ConfigError(format!(
+            _ => Err(SerdirError::config_error(format!(
                 "invalid Brotli level: {value}, must be between 0 and 11"
             ))),
         }
@@ -175,7 +175,7 @@ impl TryFrom<u32> for BrotliLevel {
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         u8::try_from(value)
             .map_err(|_| {
-                SerdirError::ConfigError(format!(
+                SerdirError::config_error(format!(
                     "invalid Brotli level: {value}, must be between 0 and 11"
                 ))
             })?
@@ -550,8 +550,8 @@ impl CompressionStrategyInner {
                     extension,
                 })
             }
-            Err(e) if e.kind() == ErrorKind::NotFound => Err(SerdirError::NotFound(None)),
-            Err(e) => Err(SerdirError::IOError(e)),
+            Err(e) if e.kind() == ErrorKind::NotFound => Err(SerdirError::not_found(None)),
+            Err(e) => Err(SerdirError::io_error(e)),
         }
     }
 }
