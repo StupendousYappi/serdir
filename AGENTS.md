@@ -97,6 +97,11 @@ Run the full test suite via `cargo test-all`.
 
 Perform syntax checking of all code via `cargo check-all`.
 
+Where possible, new tests should be implemented as integration tests in the
+`tests` directory, and not as unit tests within a module. This is to keep the
+tests based on public APIs, so that developers have more flexibility to change
+internal implementation details without breaking tests.
+
 ## Documentation
 
 When making changes to the code, don't change the crate-level documentation in `src/lib.rs`. I'll update it myself
