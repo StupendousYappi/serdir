@@ -17,8 +17,11 @@ pin_project_lite::pin_project! {
     pub struct Body {
         #[pin]
         pub(crate) stream: BodyStream,
+        pub(crate) on_complete: Option<OnComplete>,
     }
 }
+
+pub(crate) type OnComplete = Box<dyn FnOnce() + Send + Sync + 'static>;
 
 impl http_body::Body for Body {
     type Data = bytes::Bytes;
@@ -29,11 +32,16 @@ impl http_body::Body for Body {
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-        self.as_mut()
+        let poll = self
+            .as_mut()
             .project()
             .stream
             .poll_next(cx)
-            .map(|p| p.map(|o| o.map(http_body::Frame::data)))
+            .map(|p| p.map(|o| o.map(http_body::Frame::data)));
+        if matches!(&poll, Poll::Ready(None) | Poll::Ready(Some(Err(_)))) {
+            self.complete();
+        }
+        poll
     }
 
     fn size_hint(&self) -> http_body::SizeHint {
@@ -62,6 +70,21 @@ impl Body {
     pub fn empty() -> Self {
         Self {
             stream: BodyStream::Once { chunk: None },
+            on_complete: None,
+        }
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn with_on_complete(mut self, f: OnComplete) -> Self {
+        self.on_complete = Some(f);
+        self
+    }
+
+    #[inline]
+    pub(crate) fn complete(self: Pin<&mut Self>) {
+        if let Some(f) = Pin::into_inner(self).on_complete.take() {
+            f();
         }
     }
 }
@@ -73,6 +96,8 @@ impl From<&'static [u8]> for Body {
             stream: BodyStream::Once {
                 chunk: Some(Ok(value.into())),
             },
+
+            on_complete: None,
         }
     }
 }
@@ -84,6 +109,8 @@ impl From<&'static str> for Body {
             stream: BodyStream::Once {
                 chunk: Some(Ok(value.as_bytes().into())),
             },
+
+            on_complete: None,
         }
     }
 }
@@ -95,6 +122,8 @@ impl From<Vec<u8>> for Body {
             stream: BodyStream::Once {
                 chunk: Some(Ok(value.into())),
             },
+
+            on_complete: None,
         }
     }
 }
@@ -106,6 +135,8 @@ impl From<String> for Body {
             stream: BodyStream::Once {
                 chunk: Some(Ok(value.into_bytes().into())),
             },
+
+            on_complete: None,
         }
     }
 }
@@ -241,6 +272,7 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use futures_util::StreamExt as _;
+    use http_body::Body as _;
 
     use super::*;
 
@@ -285,5 +317,25 @@ mod tests {
         let err = err.downcast::<StreamTooLongError>().unwrap();
         assert_eq!(err, StreamTooLongError { extra: 2 });
         assert!(exact_len.next().await.is_none()); // fused.
+    }
+
+    #[tokio::test]
+    async fn on_complete_called_when_body_finishes() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let called = Arc::new(AtomicBool::new(false));
+        let called2 = called.clone();
+        let mut body = std::pin::pin!(Body::from("done").with_on_complete(Box::new(move || {
+            called2.store(true, Ordering::SeqCst);
+        })));
+
+        while let Some(frame) =
+            futures_util::future::poll_fn(|cx| body.as_mut().poll_frame(cx)).await
+        {
+            frame.unwrap();
+        }
+
+        assert!(called.load(Ordering::SeqCst));
     }
 }

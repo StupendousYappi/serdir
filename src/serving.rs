@@ -93,6 +93,7 @@ pub(crate) fn serve<BI>(
                 stream: crate::body::BodyStream::Multipart {
                     s: MultipartStream::new(entity, part_headers, ranges, len),
                 },
+                on_complete: None,
             })
             .expect("multipart response should be valid"),
     }
@@ -276,6 +277,7 @@ fn serve_inner(
             stream: crate::body::BodyStream::ExactLen {
                 s: crate::body::ExactLenStream::new(range.end - range.start, ent.get_range(range)),
             },
+            on_complete: None,
         },
     };
     let mut res = res.body(body).unwrap();
