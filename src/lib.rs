@@ -234,6 +234,9 @@ pub use crate::served_dir::{ServedDir, ServedDirBuilder};
 /// or `None` to suppress ETag emission for that resource.
 pub type ResourceHasher = fn(&mut dyn Read) -> Result<Option<u64>, std::io::Error>;
 
+/// A function pointer that can convert certain errors into servable resources.
+pub type ErrorHandler = fn(SerdirError) -> Result<Resource, SerdirError>;
+
 #[cfg(feature = "runtime-compression")]
 mod brotli_cache;
 

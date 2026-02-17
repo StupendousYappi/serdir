@@ -283,7 +283,7 @@ mod tests {
     use bytes::Bytes;
     use futures_core::Stream;
     use futures_util::stream::TryStreamExt;
-    use http::header::HeaderMap;
+    use http::header::{HeaderMap, HeaderValue};
     use std::fs::File;
     use std::io::{Seek, SeekFrom, Write};
     use std::pin::Pin;
@@ -312,7 +312,8 @@ mod tests {
             let mut f = File::create(&p).unwrap();
             f.write_all(b"asdf").unwrap();
             let mut headers = HeaderMap::new();
-            headers.insert(http::header::CONTENT_TYPE, "text/plain".parse().unwrap());
+            let content_type = HeaderValue::from_static("text/plain");
+            headers.insert(http::header::CONTENT_TYPE, content_type);
             let crf1 = E::for_file(&p, headers).unwrap();
             assert_eq!(4, crf1.len());
             assert_eq!(
@@ -446,7 +447,8 @@ mod tests {
     async fn for_bytes_roundtrip() {
         tokio::spawn(async move {
             let mut headers = HeaderMap::new();
-            headers.insert(http::header::CONTENT_TYPE, "text/plain".parse().unwrap());
+            let content_type = HeaderValue::from_static("text/plain");
+            headers.insert(http::header::CONTENT_TYPE, content_type);
             let mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(42);
             let entity = E::for_bytes(Bytes::from_static(b"hello bytes"), mtime, headers).unwrap();
             assert_eq!(entity.len(), 11);

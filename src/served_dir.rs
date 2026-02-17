@@ -20,7 +20,7 @@ use crate::integration::HyperService;
 use crate::integration::{TowerLayer, TowerService};
 
 use crate::etag::EtagCache;
-use crate::{Body, ETag, FileInfo, Resource, ResourceHasher, SerdirError};
+use crate::{Body, ETag, ErrorHandler, FileInfo, Resource, ResourceHasher, SerdirError};
 use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 
 /// Returns [`Resource`] values for file paths within a directory.
@@ -67,6 +67,7 @@ pub struct ServedDir {
     dirpath: PathBuf,
     compression_strategy: CompressionStrategyInner,
     file_hasher: ResourceHasher,
+    error_handler: Option<ErrorHandler>,
     strip_prefix: Option<String>,
     known_extensions: HashMap<String, HeaderValue>,
     default_content_type: HeaderValue,
@@ -162,6 +163,16 @@ impl ServedDir {
     /// Brotli compression level can also be configured, allowing you to choose
     /// your own balance of compression speed and compressed size.
     pub async fn get(&self, path: &str, req_hdrs: &HeaderMap) -> Result<Resource, SerdirError> {
+        match self.resolve(path, req_hdrs).await {
+            Ok(entity) => Ok(entity),
+            Err(err) => match self.error_handler {
+                Some(error_handler) => error_handler(err),
+                None => Err(err),
+            },
+        }
+    }
+
+    async fn resolve(&self, path: &str, req_hdrs: &HeaderMap) -> Result<Resource, SerdirError> {
         let path = match self.strip_prefix.as_deref() {
             Some(prefix) if path == prefix => ".",
             Some(prefix) => path
@@ -347,6 +358,7 @@ pub struct ServedDirBuilder {
     dirpath: PathBuf,
     compression_strategy: CompressionStrategy,
     file_hasher: Option<ResourceHasher>,
+    error_handler: Option<ErrorHandler>,
     strip_prefix: Option<String>,
     known_extensions: HashMap<String, HeaderValue>,
     default_content_type: HeaderValue,
@@ -379,6 +391,7 @@ impl ServedDirBuilder {
             dirpath,
             compression_strategy: CompressionStrategy::none(),
             file_hasher: None,
+            error_handler: None,
             strip_prefix: None,
             known_extensions: Self::default_extensions(),
             default_content_type: OCTET_STREAM.clone(),
@@ -434,6 +447,12 @@ impl ServedDirBuilder {
     /// If not set, `ServedDir` defaults to hashing file contents with `rapidhash`.
     pub fn file_hasher(mut self, file_hasher: ResourceHasher) -> Self {
         self.file_hasher = Some(file_hasher);
+        self
+    }
+
+    /// Sets a function that can transform certain errors into servable resources.
+    pub fn error_handler(mut self, error_handler: ErrorHandler) -> Self {
+        self.error_handler = Some(error_handler);
         self
     }
 
@@ -575,6 +594,7 @@ impl ServedDirBuilder {
             dirpath: self.dirpath,
             compression_strategy: self.compression_strategy.into_inner(),
             file_hasher: self.file_hasher.unwrap_or(default_hasher),
+            error_handler: self.error_handler,
             strip_prefix: self.strip_prefix,
             known_extensions: self.known_extensions,
             default_content_type: self.default_content_type,

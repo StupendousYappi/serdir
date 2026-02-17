@@ -1,7 +1,10 @@
+use bytes::Bytes;
 use http::{header, HeaderMap, HeaderValue};
-use serdir::{SerdirError, ServedDir, ServedDirBuilder};
+use serdir::{Resource, SerdirError, ServedDir, ServedDirBuilder};
 use std::collections::HashMap;
 use std::io::Read;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::SystemTime;
 use tempfile::TempDir;
 
 struct TestContext {
@@ -39,6 +42,25 @@ fn hash_error(_: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
 
 fn default_hasher(file: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
     Ok(Some(rapidhash::v3::rapidhash_v3_file(file)?))
+}
+
+static ERROR_HANDLER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+fn counting_error_handler(err: SerdirError) -> Result<Resource, SerdirError> {
+    ERROR_HANDLER_CALLS.fetch_add(1, Ordering::SeqCst);
+    Err(err)
+}
+
+fn directory_listing_error_handler(err: SerdirError) -> Result<Resource, SerdirError> {
+    match err {
+        SerdirError::IsDirectory(path) => {
+            let body = format!("directory listing for {}", path.display());
+            let mut headers = HeaderMap::new();
+            headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
+            Resource::for_bytes(Bytes::from(body), SystemTime::UNIX_EPOCH, headers)
+        }
+        other => Err(other),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -297,6 +319,66 @@ async fn test_served_dir_append_index_html() {
     std::fs::create_dir(path.join("empty_subdir")).unwrap();
     let err = served_dir.get("empty_subdir", &hdrs).await.unwrap_err();
     assert!(matches!(err, SerdirError::NotFound(_)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_append_index_html_success_does_not_call_error_handler() {
+    let context = TestContext::new();
+    let path = context.tmp.path();
+    std::fs::create_dir(path.join("subdir")).unwrap();
+    std::fs::write(path.join("subdir").join("index.html"), b"index content").unwrap();
+
+    ERROR_HANDLER_CALLS.store(0, Ordering::SeqCst);
+
+    let served_dir = context
+        .builder
+        .append_index_html(true)
+        .error_handler(counting_error_handler)
+        .build();
+
+    let entity = served_dir.get("subdir", &HeaderMap::new()).await.unwrap();
+    assert_eq!(entity.read_bytes().unwrap(), "index content");
+    assert_eq!(entity.header(&header::CONTENT_TYPE).unwrap(), "text/html");
+    assert_eq!(ERROR_HANDLER_CALLS.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_error_handler_can_transform_is_directory_error() {
+    let context = TestContext::new();
+    std::fs::create_dir(context.tmp.path().join("subdir")).unwrap();
+
+    let served_dir = context
+        .builder
+        .error_handler(directory_listing_error_handler)
+        .build();
+    let entity = served_dir.get("subdir", &HeaderMap::new()).await.unwrap();
+
+    assert_eq!(entity.header(&header::CONTENT_TYPE).unwrap(), "text/html");
+    assert_eq!(
+        entity.read_bytes().unwrap(),
+        format!(
+            "directory listing for {}",
+            context.tmp.path().join("subdir").display()
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_error_handler_passthrough_preserves_error() {
+    let context = TestContext::new();
+    ERROR_HANDLER_CALLS.store(0, Ordering::SeqCst);
+
+    let served_dir = context
+        .builder
+        .error_handler(counting_error_handler)
+        .build();
+    let err = served_dir
+        .get("missing.txt", &HeaderMap::new())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, SerdirError::NotFound(_)));
+    assert_eq!(ERROR_HANDLER_CALLS.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
