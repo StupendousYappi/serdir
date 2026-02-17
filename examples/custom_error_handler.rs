@@ -7,55 +7,69 @@
 // except according to those terms.
 
 //! Serves a directory on `http://127.0.0.1:1337/` using `ServedDir::into_tower_service`
-//! with a custom directory handler for listing directory contents.
+//! and a custom `error_handler` for directory listings.
 
 mod common;
 
 use anyhow::{Context, Result};
-use bytes::Bytes;
 use common::Config;
-use http::HeaderValue;
+use http::header::HeaderValue;
 use hyper::server::conn;
 use hyper_util::rt::TokioIo;
 use hyper_util::service::TowerToHyperService;
-use serdir::{SerdirError, ServedDirBuilder};
+use serdir::{Resource, ResourceBuilder, SerdirError, ServedDirBuilder};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
+use std::time::SystemTime;
 use tokio::net::TcpListener;
 
-fn custom_directory_listing(path: &Path) -> Result<(Bytes, HeaderValue), SerdirError> {
+fn custom_error_handler(err: SerdirError) -> Result<Resource, SerdirError> {
+    let path = match err {
+        SerdirError::IsDirectory(path) => path,
+        other => return Err(other),
+    };
+
+    let listing = directory_listing(path.as_path())?;
+    Ok(
+        ResourceBuilder::for_bytes(listing.into_bytes(), SystemTime::UNIX_EPOCH)
+            .content_type(HeaderValue::from_static("text/html"))
+            .build(),
+    )
+}
+
+fn directory_listing(path: &Path) -> Result<String, SerdirError> {
     let mut listing = String::new();
     listing.push_str("<!DOCTYPE html>\n<title>directory listing</title>\n<ul>\n");
 
-    let mut entries = std::fs::read_dir(path)
+    let mut ents = std::fs::read_dir(path)
         .and_then(|iter| iter.collect::<Result<Vec<_>, _>>())
-        .map_err(SerdirError::IOError)?;
-    entries.sort_unstable_by_key(|entry| entry.file_name());
+        .map_err(serdir::SerdirError::from)?;
+    ents.sort_unstable_by_key(|a| a.file_name());
 
-    for entry in entries {
-        let file_name = entry.file_name();
-        let name = match file_name.to_str() {
+    for ent in ents {
+        let file_name = ent.file_name();
+        let p = match file_name.to_str() {
             None => continue,
             Some(".") => continue,
-            Some(name) => name,
+            Some(p) => p,
         };
 
         listing.push_str("<li><a href=\"");
-        listing.push_str(&htmlescape::encode_minimal(name));
-        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        listing.push_str(&htmlescape::encode_minimal(p));
+        let is_dir = ent.file_type().map(|t| t.is_dir()).unwrap_or(false);
         if is_dir {
             listing.push('/');
         }
         listing.push_str("\">");
-        listing.push_str(&htmlescape::encode_minimal(name));
+        listing.push_str(&htmlescape::encode_minimal(p));
         if is_dir {
             listing.push('/');
         }
-        listing.push_str("</a></li>\n");
+        listing.push_str("</a>\n");
     }
 
     listing.push_str("</ul>\n");
-    Ok((Bytes::from(listing), HeaderValue::from_static("text/html")))
+    Ok(listing)
 }
 
 #[tokio::main]
@@ -67,10 +81,10 @@ async fn run() -> Result<()> {
     let config = Config::from_env();
     let mut builder = ServedDirBuilder::new(config.directory.as_str())
         .context("failed to create ServedDir builder")?
-        .append_index_html(true)
+        .append_index_html(false)
         .compression(config.compression_strategy())
         .strip_prefix(config.strip_prefix.unwrap_or_default())
-        .directory_handler(custom_directory_listing);
+        .error_handler(custom_error_handler);
     if let Some(path) = config.not_found_path {
         builder = builder
             .not_found_path(path)

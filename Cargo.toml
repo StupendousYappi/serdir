@@ -96,7 +96,7 @@ name = "tower_service"
 required-features = ["tower", "runtime-compression"]
 
 [[example]]
-name = "custom_dir_handler"
+name = "custom_error_handler"
 required-features = ["tower", "runtime-compression"]
 
 [[example]]

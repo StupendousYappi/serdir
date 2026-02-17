@@ -20,7 +20,6 @@ use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tower::{Layer, Service};
 
@@ -30,9 +29,9 @@ type ResponseFuture =
     Pin<Box<dyn Future<Output = Result<http::Response<Body>, std::convert::Infallible>> + Send>>;
 
 #[derive(Clone)]
-struct DirectoryFallbackService;
+struct DynamicFallbackService;
 
-impl Service<http::Request<hyper::body::Incoming>> for DirectoryFallbackService {
+impl Service<http::Request<hyper::body::Incoming>> for DynamicFallbackService {
     type Response = http::Response<Body>;
     type Error = std::convert::Infallible;
     type Future = ResponseFuture;
@@ -42,29 +41,34 @@ impl Service<http::Request<hyper::body::Incoming>> for DirectoryFallbackService 
     }
 
     fn call(&mut self, req: http::Request<hyper::body::Incoming>) -> Self::Future {
-        Box::pin(async move {
-            let _ = req;
-            Ok(current_time_response())
-        })
+        Box::pin(async move { Ok(dynamic_fallback_response(&req)) })
     }
 }
 
-fn current_time_response() -> http::Response<Body> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is before UNIX_EPOCH");
-    let millis = now.subsec_millis();
-    let body = format!(
-        "<!DOCTYPE html><html><head><title>Current Time</title></head>\
-         <body><h1>Current Time</h1><p>{}.{:03}</p></body></html>",
-        now.as_secs(),
-        millis
-    );
+fn dynamic_fallback_response(req: &http::Request<hyper::body::Incoming>) -> http::Response<Body> {
+    let mut html = String::new();
+    html.push_str("<!DOCTYPE html>\n<title>fallback handler</title>\n");
+    html.push_str("<h1>Dynamic fallback response</h1>\n");
+    html.push_str("<p>URL: <code>");
+    html.push_str(&htmlescape::encode_minimal(&req.uri().to_string()));
+    html.push_str("</code></p>\n");
+    html.push_str("<h2>Headers</h2>\n<ul>\n");
+    for (name, value) in req.headers() {
+        html.push_str("<li><strong>");
+        html.push_str(&htmlescape::encode_minimal(name.as_str()));
+        html.push_str("</strong>: <code>");
+        html.push_str(&htmlescape::encode_minimal(&String::from_utf8_lossy(
+            value.as_bytes(),
+        )));
+        html.push_str("</code></li>\n");
+    }
+    html.push_str("</ul>\n");
 
-    let mut resp = http::Response::new(serdir::Body::from(body));
-    resp.headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
-    resp
+    http::Response::builder()
+        .status(http::StatusCode::OK)
+        .header(header::CONTENT_TYPE, HeaderValue::from_static("text/html"))
+        .body(Body::from(html))
+        .unwrap()
 }
 
 #[tokio::main]
@@ -88,7 +92,7 @@ async fn run() -> Result<()> {
     let served_dir = builder.build();
     let served_dir_display = served_dir.dir().display().to_string();
     let layer = served_dir.into_tower_layer();
-    let service = layer.layer(DirectoryFallbackService);
+    let service = layer.layer(DynamicFallbackService);
 
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 1337));
     let listener = TcpListener::bind(addr)

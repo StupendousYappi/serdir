@@ -6,7 +6,6 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::sync::LazyLock;
-use std::time::SystemTime;
 use std::{collections::HashMap, path::PathBuf};
 
 #[cfg(feature = "runtime-compression")]
@@ -21,7 +20,7 @@ use crate::integration::HyperService;
 use crate::integration::{TowerLayer, TowerService};
 
 use crate::etag::EtagCache;
-use crate::{Body, ContentGenerator, ETag, FileInfo, Resource, ResourceHasher, SerdirError};
+use crate::{Body, ETag, ErrorHandler, FileInfo, Resource, ResourceHasher, SerdirError};
 use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 
 /// Returns [`Resource`] values for file paths within a directory.
@@ -68,12 +67,12 @@ pub struct ServedDir {
     dirpath: PathBuf,
     compression_strategy: CompressionStrategyInner,
     file_hasher: ResourceHasher,
+    error_handler: Option<ErrorHandler>,
     strip_prefix: Option<String>,
     known_extensions: HashMap<String, HeaderValue>,
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
     append_index_html: bool,
-    directory_handler: Option<ContentGenerator>,
     not_found_path: Option<PathBuf>,
     etag_cache: EtagCache,
 }
@@ -91,7 +90,6 @@ impl Debug for ServedDir {
             .field("dirpath", &self.dirpath)
             .field("strip_prefix", &self.strip_prefix)
             .field("append_index_html", &self.append_index_html)
-            .field("directory_handler", &self.directory_handler.is_some())
             .field("not_found_path", &self.not_found_path)
             .field("default_content_type", &self.default_content_type)
             .field("compression_strategy", &strategy)
@@ -165,6 +163,16 @@ impl ServedDir {
     /// Brotli compression level can also be configured, allowing you to choose
     /// your own balance of compression speed and compressed size.
     pub async fn get(&self, path: &str, req_hdrs: &HeaderMap) -> Result<Resource, SerdirError> {
+        match self.resolve(path, req_hdrs).await {
+            Ok(entity) => Ok(entity),
+            Err(err) => match self.error_handler {
+                Some(error_handler) => error_handler(err),
+                None => Err(err),
+            },
+        }
+    }
+
+    async fn resolve(&self, path: &str, req_hdrs: &HeaderMap) -> Result<Resource, SerdirError> {
         let path = match self.strip_prefix.as_deref() {
             Some(prefix) if path == prefix => ".",
             Some(prefix) => path
@@ -181,27 +189,9 @@ impl ServedDir {
         let res = self.find_file(&full_path, preferred).await;
         let matched_file = match res {
             Ok(mf) => mf,
-            Err(SerdirError::IsDirectory(dir_path)) => {
-                let mut missing_index = false;
-                if self.append_index_html {
-                    let index_path = full_path.join("index.html");
-                    match self.find_file(&index_path, preferred).await {
-                        Ok(mf) => return self.create_entity(mf),
-                        Err(SerdirError::NotFound(_)) => {
-                            missing_index = true;
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
-
-                if self.directory_handler.is_some() {
-                    return self.create_generated_directory_entity(&dir_path);
-                }
-                if missing_index {
-                    return Err(SerdirError::NotFound(None));
-                }
-
-                return Err(SerdirError::IsDirectory(dir_path));
+            Err(SerdirError::IsDirectory(_)) if self.append_index_html => {
+                let index_path = full_path.join("index.html");
+                self.find_file(&index_path, preferred).await?
             }
             Err(SerdirError::NotFound(_)) if self.not_found_path.is_some() => {
                 let not_found_path = self.not_found_path.as_ref().unwrap();
@@ -220,7 +210,8 @@ impl ServedDir {
     /// A convenience wrapper method for [ServedDir::get], converting a HTTP request
     /// into a HTTP response by serving static files using this `ServedDir`.
     pub async fn get_response<B>(&self, req: &Request<B>) -> Result<Response<Body>, Infallible> {
-        match self.get(req.uri().path(), req.headers()).await {
+        let result = self.get(req.uri().path(), req.headers()).await;
+        match result {
             Ok(entity) => Ok(entity.serve_request(req, StatusCode::OK)),
             Err(SerdirError::NotFound(Some(entity))) => {
                 Ok(entity.serve_request(req, StatusCode::NOT_FOUND))
@@ -272,18 +263,6 @@ impl ServedDir {
             headers,
             etag,
         ))
-    }
-
-    fn create_generated_directory_entity(&self, dirpath: &Path) -> Result<Resource, SerdirError> {
-        let handler = self
-            .directory_handler
-            .expect("directory_handler must be set");
-        let (content, content_type) = handler(dirpath)?;
-
-        let mut headers = self.common_headers.clone();
-        headers.insert(http::header::CONTENT_TYPE, content_type);
-
-        Resource::for_bytes(content, SystemTime::now(), headers)
     }
 
     async fn find_file(
@@ -380,12 +359,12 @@ pub struct ServedDirBuilder {
     dirpath: PathBuf,
     compression_strategy: CompressionStrategy,
     file_hasher: Option<ResourceHasher>,
+    error_handler: Option<ErrorHandler>,
     strip_prefix: Option<String>,
     known_extensions: HashMap<String, HeaderValue>,
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
     append_index_html: bool,
-    directory_handler: Option<ContentGenerator>,
     not_found_path: Option<PathBuf>,
 }
 
@@ -413,12 +392,12 @@ impl ServedDirBuilder {
             dirpath,
             compression_strategy: CompressionStrategy::none(),
             file_hasher: None,
+            error_handler: None,
             strip_prefix: None,
             known_extensions: Self::default_extensions(),
             default_content_type: OCTET_STREAM.clone(),
             common_headers: HeaderMap::new(),
             append_index_html: false,
-            directory_handler: None,
             not_found_path: None,
         })
     }
@@ -459,16 +438,6 @@ impl ServedDirBuilder {
         self
     }
 
-    /// Sets a custom handler to generate dynamic responses for directory paths.
-    ///
-    /// When configured, `ServedDir` will call this handler for requests that
-    /// resolve to a directory path and are not resolved to an `index.html` file.
-    /// The handler receives the resolved full filesystem path to the directory.
-    pub fn directory_handler(mut self, handler: ContentGenerator) -> Self {
-        self.directory_handler = Some(handler);
-        self
-    }
-
     /// Sets the hash function used to compute ETag values for served files.
     ///
     /// The function receives the opened file handle and should return:
@@ -479,6 +448,12 @@ impl ServedDirBuilder {
     /// If not set, `ServedDir` defaults to hashing file contents with `rapidhash`.
     pub fn file_hasher(mut self, file_hasher: ResourceHasher) -> Self {
         self.file_hasher = Some(file_hasher);
+        self
+    }
+
+    /// Sets a function that can transform certain errors into servable resources.
+    pub fn error_handler(mut self, error_handler: ErrorHandler) -> Self {
+        self.error_handler = Some(error_handler);
         self
     }
 
@@ -620,12 +595,12 @@ impl ServedDirBuilder {
             dirpath: self.dirpath,
             compression_strategy: self.compression_strategy.into_inner(),
             file_hasher: self.file_hasher.unwrap_or(default_hasher),
+            error_handler: self.error_handler,
             strip_prefix: self.strip_prefix,
             known_extensions: self.known_extensions,
             default_content_type: self.default_content_type,
             common_headers: self.common_headers,
             append_index_html: self.append_index_html,
-            directory_handler: self.directory_handler,
             not_found_path: self.not_found_path,
             etag_cache: EtagCache::new(),
         }
