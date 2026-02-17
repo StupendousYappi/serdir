@@ -100,16 +100,15 @@ impl ResourceContent {
 ///
 /// ```
 /// # use http::{Request, StatusCode};
-/// # use http::header::{HeaderMap, CONTENT_TYPE};
-/// # use serdir::{Body, Resource};
+/// # use http::header::CONTENT_TYPE;
+/// # use serdir::{Body, ResourceBuilder};
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let tmp = tempfile::NamedTempFile::new()?;
 /// std::fs::write(tmp.path(), b"Hello, world!")?;
 ///
-/// let mut headers = HeaderMap::new();
-/// headers.insert(CONTENT_TYPE, "text/plain".parse()?);
-///
-/// let entity = Resource::for_file(tmp.path(), headers)?;
+/// let entity = ResourceBuilder::for_file(tmp.path())?
+///     .content_type(http::header::HeaderValue::from_static("text/plain"))
+///     .build();
 /// let request = Request::get("/").body(())?;
 /// let response: http::Response<Body> = entity.serve_request(&request, StatusCode::OK);
 ///
@@ -118,6 +117,80 @@ impl ResourceContent {
 /// # Ok(())
 /// # }
 /// ```
+pub struct ResourceBuilder {
+    len: u64,
+    mtime: SystemTime,
+    content: ResourceContent,
+    headers: HeaderMap,
+    etag: Option<ETag>,
+}
+
+impl ResourceBuilder {
+    /// Creates a new `ResourceBuilder` that serves the file at the given path.
+    pub fn for_file(path: impl AsRef<Path>) -> Result<Self, SerdirError> {
+        let path = path.as_ref();
+        let file = File::open(path)?;
+        let file_info = FileInfo::open_file(path, &file)?;
+
+        let mut reader = &file;
+        let etag: Option<ETag> = default_hasher(&mut reader)?.map(Into::into);
+
+        Ok(Self {
+            len: file_info.len(),
+            mtime: file_info.mtime(),
+            content: ResourceContent::for_file(Arc::new(file)),
+            headers: HeaderMap::new(),
+            etag,
+        })
+    }
+
+    /// Creates a new `ResourceBuilder` backed by in-memory bytes.
+    ///
+    /// The provided `mtime` is used for conditional request handling.
+    /// If ETag hashing fails unexpectedly, ETag is omitted.
+    pub fn for_bytes(bytes: impl Into<bytes::Bytes>, mtime: SystemTime) -> Self {
+        let bytes = bytes.into();
+        let mut reader = std::io::Cursor::new(bytes.clone());
+        let etag: Option<ETag> = default_hasher(&mut reader).ok().flatten().map(Into::into);
+
+        Self {
+            len: crate::as_u64(bytes.len()),
+            mtime,
+            content: ResourceContent::for_bytes(bytes),
+            headers: HeaderMap::new(),
+            etag,
+        }
+    }
+
+    /// Creates a new `ResourceBuilder` backed by UTF-8 string content.
+    pub fn for_str(value: &str, mtime: SystemTime) -> Self {
+        Self::for_bytes(value.as_bytes().to_vec(), mtime)
+    }
+
+    /// Adds or replaces one response header.
+    pub fn header(mut self, name: HeaderName, value: impl Into<HeaderValue>) -> Self {
+        self.headers.insert(name, value.into());
+        self
+    }
+
+    /// Convenience method for setting the `Content-Type` response header.
+    pub fn content_type(self, value: impl Into<HeaderValue>) -> Self {
+        self.header(http::header::CONTENT_TYPE, value)
+    }
+
+    /// Builds a `Resource`.
+    pub fn build(self) -> Resource {
+        Resource {
+            len: self.len,
+            mtime: self.mtime,
+            content: self.content,
+            headers: self.headers,
+            etag: self.etag,
+        }
+    }
+}
+
+/// A static HTTP resource with body content, headers, ETag and last-modified metadata.
 #[derive(Debug, Clone)]
 pub struct Resource {
     len: u64,
@@ -130,47 +203,6 @@ pub struct Resource {
 }
 
 impl Resource {
-    /// Creates a new Resource that serves the file at the given path.
-    ///
-    /// The `headers` value specifies HTTP response headers that should be included whenever serving
-    /// this file, such as the `Content-Type`, `Encoding` and `Vary` headers.
-    ///
-    /// This function performs blocking disk IO- calls to it from an async context should be wrapped in a
-    /// call to [`tokio::task::block_in_place`] to avoid blocking the tokio reactor thread. Attempts
-    /// to read file data via [`Resource::serve_request`] will also block, and should also be wrapped
-    /// in [`tokio::task::block_in_place`] if called from an async context.
-    pub fn for_file(path: impl AsRef<Path>, headers: HeaderMap) -> Result<Self, SerdirError> {
-        let path = path.as_ref();
-        let file = File::open(path)?;
-        let file_info = FileInfo::open_file(path, &file)?;
-
-        let mut reader = &file;
-        let etag: Option<ETag> = default_hasher(&mut reader)?.map(Into::into);
-
-        let entity = Resource::for_file_with_metadata(Arc::new(file), file_info, headers, etag);
-        Ok(entity)
-    }
-
-    /// Creates a new Resource backed by in-memory bytes.
-    ///
-    /// The caller must provide a last-modified time for conditional request handling.
-    pub fn for_bytes(
-        bytes: bytes::Bytes,
-        mtime: SystemTime,
-        headers: HeaderMap,
-    ) -> Result<Self, SerdirError> {
-        let mut reader = std::io::Cursor::new(bytes.clone());
-        let etag: Option<ETag> = default_hasher(&mut reader)?.map(Into::into);
-
-        Ok(Self {
-            len: crate::as_u64(bytes.len()),
-            mtime,
-            headers,
-            content: ResourceContent::for_bytes(bytes),
-            etag,
-        })
-    }
-
     /// Creates a new Resource, with presupplied metadata and a pre-opened file.
     ///
     /// The `headers` value specifies HTTP response headers that should be included whenever serving
@@ -279,18 +311,16 @@ impl Resource {
 
 #[cfg(test)]
 mod tests {
-    use super::Resource;
+    use super::ResourceBuilder;
     use bytes::Bytes;
     use futures_core::Stream;
     use futures_util::stream::TryStreamExt;
-    use http::header::{HeaderMap, HeaderValue};
+    use http::header::HeaderValue;
     use std::fs::File;
     use std::io::{Seek, SeekFrom, Write};
     use std::pin::Pin;
     use std::time::Duration;
     use std::time::SystemTime;
-
-    type E = Resource;
 
     async fn to_bytes(
         s: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
@@ -311,10 +341,10 @@ mod tests {
             let p = tmp.path().join("f");
             let mut f = File::create(&p).unwrap();
             f.write_all(b"asdf").unwrap();
-            let mut headers = HeaderMap::new();
-            let content_type = HeaderValue::from_static("text/plain");
-            headers.insert(http::header::CONTENT_TYPE, content_type);
-            let crf1 = E::for_file(&p, headers).unwrap();
+            let crf1 = ResourceBuilder::for_file(&p)
+                .unwrap()
+                .content_type(HeaderValue::from_static("text/plain"))
+                .build();
             assert_eq!(4, crf1.len());
             assert_eq!(
                 Some("text/plain"),
@@ -335,7 +365,7 @@ mod tests {
 
             // A Resource constructed from a modified file should have a different etag.
             f.write_all(b"jkl;").unwrap();
-            let crf2 = E::for_file(&p, HeaderMap::new()).unwrap();
+            let crf2 = ResourceBuilder::for_file(&p).unwrap().build();
             assert_eq!(8, crf2.len());
         })
         .await
@@ -350,7 +380,7 @@ mod tests {
             let mut f = File::create(&p).unwrap();
 
             f.write_all(b"first value").unwrap();
-            let crf1 = E::for_file(&p, HeaderMap::new()).unwrap();
+            let crf1 = ResourceBuilder::for_file(&p).unwrap().build();
             let etag1 = crf1.etag().expect("etag1 was None");
             assert_eq!(r#""928c5c44c1689e3f""#, etag1.to_str().unwrap());
 
@@ -358,7 +388,7 @@ mod tests {
             f.set_len(0).unwrap();
 
             f.write_all(b"another value").unwrap();
-            let crf2 = E::for_file(&p, HeaderMap::new()).unwrap();
+            let crf2 = ResourceBuilder::for_file(&p).unwrap().build();
             let etag2 = crf2.etag().expect("etag2 was None");
             assert_eq!(r#""d712812bea51c2cf""#, etag2.to_str().unwrap());
 
@@ -380,7 +410,7 @@ mod tests {
             let mut f = File::create(&p).unwrap();
             f.write_all(b"blahblah").unwrap();
 
-            let crf1 = E::for_file(&p, HeaderMap::new()).unwrap();
+            let crf1 = ResourceBuilder::for_file(&p).unwrap().build();
             let expected = f.metadata().unwrap().modified().ok();
             assert_eq!(expected, crf1.last_modified());
 
@@ -388,7 +418,7 @@ mod tests {
             let t = SystemTime::UNIX_EPOCH + fifty_hours;
             f.set_modified(t).unwrap();
 
-            let crf2 = E::for_file(&p, HeaderMap::new()).unwrap();
+            let crf2 = ResourceBuilder::for_file(&p).unwrap().build();
             assert_eq!(Some(t), crf2.last_modified());
 
             assert_eq!(
@@ -409,7 +439,7 @@ mod tests {
             let mut f = File::create(&p).unwrap();
             f.write_all(b"asdf").unwrap();
 
-            let crf = E::for_file(&p, HeaderMap::new()).unwrap();
+            let crf = ResourceBuilder::for_file(&p).unwrap().build();
             assert_eq!(4, crf.len());
             f.set_len(3).unwrap();
 
@@ -431,7 +461,7 @@ mod tests {
             let mut f = File::create(&p).unwrap();
             f.write_all(b"hello world").unwrap();
 
-            let entity = E::for_file(&p, HeaderMap::new()).unwrap();
+            let entity = ResourceBuilder::for_file(&p).unwrap().build();
             let req = http::Request::get("/").body(()).unwrap();
 
             let res: http::Response<crate::Body> = entity.serve_request(&req, http::StatusCode::OK);
@@ -446,11 +476,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn for_bytes_roundtrip() {
         tokio::spawn(async move {
-            let mut headers = HeaderMap::new();
-            let content_type = HeaderValue::from_static("text/plain");
-            headers.insert(http::header::CONTENT_TYPE, content_type);
             let mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(42);
-            let entity = E::for_bytes(Bytes::from_static(b"hello bytes"), mtime, headers).unwrap();
+            let entity = ResourceBuilder::for_bytes(Bytes::from_static(b"hello bytes"), mtime)
+                .content_type(HeaderValue::from_static("text/plain"))
+                .build();
             assert_eq!(entity.len(), 11);
             assert_eq!(entity.mtime(), mtime);
             assert_eq!(
@@ -461,6 +490,24 @@ mod tests {
             assert_eq!(
                 &to_bytes(entity.get_range(6..11)).await.unwrap().as_ref(),
                 b"bytes"
+            );
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn builder_content_type_sets_header() {
+        tokio::spawn(async move {
+            let entity = ResourceBuilder::for_str(
+                "content",
+                SystemTime::UNIX_EPOCH + Duration::from_secs(1),
+            )
+            .content_type(HeaderValue::from_static("text/plain"))
+            .build();
+            assert_eq!(
+                entity.header(&http::header::CONTENT_TYPE).unwrap(),
+                "text/plain"
             );
         })
         .await

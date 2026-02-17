@@ -225,7 +225,7 @@ mod serving;
 
 pub use crate::body::Body;
 pub use crate::etag::ETag;
-pub use crate::resource::Resource;
+pub use crate::resource::{Resource, ResourceBuilder};
 pub use crate::served_dir::{ServedDir, ServedDirBuilder};
 
 /// Function pointer type used to calculate ETag hash values from opened resources.

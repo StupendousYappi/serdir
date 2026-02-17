@@ -13,11 +13,11 @@ mod common;
 
 use anyhow::{Context, Result};
 use common::Config;
-use http::header::{self, HeaderMap, HeaderValue};
+use http::header::HeaderValue;
 use hyper::server::conn;
 use hyper_util::rt::TokioIo;
 use hyper_util::service::TowerToHyperService;
-use serdir::{Resource, SerdirError, ServedDirBuilder};
+use serdir::{Resource, ResourceBuilder, SerdirError, ServedDirBuilder};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::time::SystemTime;
@@ -30,9 +30,11 @@ fn custom_error_handler(err: SerdirError) -> Result<Resource, SerdirError> {
     };
 
     let listing = directory_listing(path.as_path())?;
-    let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
-    Resource::for_bytes(listing.into(), SystemTime::UNIX_EPOCH, headers)
+    Ok(
+        ResourceBuilder::for_bytes(listing.into_bytes(), SystemTime::UNIX_EPOCH)
+            .content_type(HeaderValue::from_static("text/html"))
+            .build(),
+    )
 }
 
 fn directory_listing(path: &Path) -> Result<String, SerdirError> {

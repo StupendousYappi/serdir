@@ -1,9 +1,9 @@
-use bytes::Bytes;
 use http::{header, HeaderMap, HeaderValue};
-use serdir::{Resource, SerdirError, ServedDir, ServedDirBuilder};
+use serdir::{Resource, ResourceBuilder, SerdirError, ServedDir, ServedDirBuilder};
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::SystemTime;
 use tempfile::TempDir;
 
@@ -45,6 +45,7 @@ fn default_hasher(file: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
 }
 
 static ERROR_HANDLER_CALLS: AtomicUsize = AtomicUsize::new(0);
+static ERROR_HANDLER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn counting_error_handler(err: SerdirError) -> Result<Resource, SerdirError> {
     ERROR_HANDLER_CALLS.fetch_add(1, Ordering::SeqCst);
@@ -55,9 +56,9 @@ fn directory_listing_error_handler(err: SerdirError) -> Result<Resource, SerdirE
     match err {
         SerdirError::IsDirectory(path) => {
             let body = format!("directory listing for {}", path.display());
-            let mut headers = HeaderMap::new();
-            headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
-            Resource::for_bytes(Bytes::from(body), SystemTime::UNIX_EPOCH, headers)
+            Ok(ResourceBuilder::for_str(&body, SystemTime::UNIX_EPOCH)
+                .content_type(HeaderValue::from_static("text/html"))
+                .build())
         }
         other => Err(other),
     }
@@ -323,6 +324,7 @@ async fn test_served_dir_append_index_html() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_append_index_html_success_does_not_call_error_handler() {
+    let _guard = ERROR_HANDLER_TEST_LOCK.lock().unwrap();
     let context = TestContext::new();
     let path = context.tmp.path();
     std::fs::create_dir(path.join("subdir")).unwrap();
@@ -365,6 +367,7 @@ async fn test_error_handler_can_transform_is_directory_error() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_error_handler_passthrough_preserves_error() {
+    let _guard = ERROR_HANDLER_TEST_LOCK.lock().unwrap();
     let context = TestContext::new();
     ERROR_HANDLER_CALLS.store(0, Ordering::SeqCst);
 
