@@ -64,6 +64,20 @@ impl Body {
             stream: BodyStream::Once { chunk: None },
         }
     }
+
+    #[inline]
+    pub(crate) fn new_multipart(
+        entity: crate::Resource,
+        part_headers: Vec<Vec<u8>>,
+        ranges: Vec<std::ops::Range<u64>>,
+        len: u64,
+    ) -> Self {
+        Self {
+            stream: BodyStream::Multipart {
+                s: crate::serving::MultipartStream::new(entity, part_headers, ranges, len),
+            },
+        }
+    }
 }
 
 impl From<&'static [u8]> for Body {

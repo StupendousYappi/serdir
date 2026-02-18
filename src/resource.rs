@@ -244,7 +244,7 @@ impl Resource {
     where
         D: From<crate::Body>,
     {
-        crate::serving::serve(self, req, status).map(Into::into)
+        crate::serving::serve(self, req.method(), req.headers(), status).map(Into::into)
     }
 
     /// Returns the length of the file in bytes.

@@ -76,54 +76,18 @@ fn parse_modified_hdrs(
 /// Handles conditional & subrange requests.
 /// The caller is expected to have already determined the correct entity and appended
 /// `Expires`, `Cache-Control`, and `Vary` headers if desired.
-pub(crate) fn serve<BI>(
-    entity: Resource,
-    req: &http::Request<BI>,
-    status_code: http::StatusCode,
-) -> http::Response<Body> {
-    match serve_inner(&entity, req.method(), req.headers(), status_code) {
-        ServeInner::Simple(res) => res,
-        ServeInner::Multipart {
-            res,
-            part_headers,
-            ranges,
-            len,
-        } => res
-            .body(crate::body::Body {
-                stream: crate::body::BodyStream::Multipart {
-                    s: MultipartStream::new(entity, part_headers, ranges, len),
-                },
-            })
-            .expect("multipart response should be valid"),
-    }
-}
-
-/// An instruction from `serve_inner` to `serve` on how to respond.
-enum ServeInner {
-    Simple(Response<Body>),
-    Multipart {
-        res: http::response::Builder,
-        part_headers: Vec<Vec<u8>>,
-        ranges: Vec<Range<u64>>,
-        len: u64,
-    },
-}
-
-/// Runs inner logic for `serve`.
-fn serve_inner(
-    ent: &Resource,
+pub(crate) fn serve(
+    ent: Resource,
     method: &http::Method,
     req_hdrs: &http::HeaderMap,
     status_code: StatusCode,
-) -> ServeInner {
+) -> Response<Body> {
     if method != Method::GET && method != Method::HEAD {
-        return ServeInner::Simple(
-            Response::builder()
-                .status(StatusCode::METHOD_NOT_ALLOWED)
-                .header(header::ALLOW, HeaderValue::from_static("get, head"))
-                .body(Body::from("This resource only supports GET and HEAD."))
-                .unwrap(),
-        );
+        return Response::builder()
+            .status(StatusCode::METHOD_NOT_ALLOWED)
+            .header(header::ALLOW, HeaderValue::from_static("get, head"))
+            .body(Body::from("This resource only supports GET and HEAD."))
+            .unwrap();
     }
 
     let last_modified = ent.last_modified();
@@ -132,12 +96,10 @@ fn serve_inner(
     let (precondition_failed, not_modified) =
         match parse_modified_hdrs(&etag, req_hdrs, last_modified) {
             Err(s) => {
-                return ServeInner::Simple(
-                    Response::builder()
-                        .status(StatusCode::BAD_REQUEST)
-                        .body(Body::from(s))
-                        .unwrap(),
-                )
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Body::from(s))
+                    .unwrap()
             }
             Ok(p) => p,
         };
@@ -192,12 +154,12 @@ fn serve_inner(
 
     if precondition_failed {
         res = res.status(StatusCode::PRECONDITION_FAILED);
-        return ServeInner::Simple(res.body(Body::from("Precondition failed")).unwrap());
+        return res.body(Body::from("Precondition failed")).unwrap();
     }
 
     if not_modified {
         res = res.status(StatusCode::NOT_MODIFIED);
-        return ServeInner::Simple(res.body(Body::empty()).unwrap());
+        return res.body(Body::empty()).unwrap();
     }
 
     let len = ent.len();
@@ -235,23 +197,18 @@ fn serve_inner(
                     match prepare_multipart(res, &ranges[..], len, each_part_hdrs) {
                         Ok(v) => v,
                         Err(MultipartLenOverflowError) => {
-                            return ServeInner::Simple(
-                                Response::builder()
-                                    .status(StatusCode::PAYLOAD_TOO_LARGE)
-                                    .body(Body::from("Multipart response too large"))
-                                    .unwrap(),
-                            );
+                            return Response::builder()
+                                .status(StatusCode::PAYLOAD_TOO_LARGE)
+                                .body(Body::from("Multipart response too large"))
+                                .unwrap();
                         }
                     };
                 if method == Method::HEAD {
-                    return ServeInner::Simple(res.body(Body::empty()).unwrap());
+                    return res.body(Body::empty()).unwrap();
                 }
-                return ServeInner::Multipart {
-                    res,
-                    part_headers,
-                    ranges,
-                    len,
-                };
+                return res
+                    .body(Body::new_multipart(ent, part_headers, ranges, len))
+                    .expect("multipart response should be valid");
             }
 
             (0..len, true)
@@ -262,7 +219,7 @@ fn serve_inner(
                 unsafe_fmt_ascii_val!(MAX_DECIMAL_U64_BYTES + "bytes */".len(), "bytes */{}", len),
             );
             res = res.status(StatusCode::RANGE_NOT_SATISFIABLE);
-            return ServeInner::Simple(res.body(Body::empty()).unwrap());
+            return res.body(Body::empty()).unwrap();
         }
     };
     let len = range.end - range.start;
@@ -282,7 +239,7 @@ fn serve_inner(
     if include_entity_headers {
         ent.add_headers(res.headers_mut());
     }
-    ServeInner::Simple(res)
+    res
 }
 
 struct MultipartLenOverflowError;
