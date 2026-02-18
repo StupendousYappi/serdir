@@ -21,7 +21,7 @@ use crate::integration::{TowerLayer, TowerService};
 
 use crate::etag::EtagCache;
 use crate::{Body, ETag, ErrorHandler, FileInfo, Resource, ResourceHasher, SerdirError};
-use http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
+use http::{header, HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode};
 
 /// Returns [`Resource`] values for file paths within a directory.
 ///
@@ -242,15 +242,19 @@ impl ServedDir {
             .get(&matched_file.extension)
             .cloned()
             .unwrap_or_else(|| self.default_content_type.clone());
-        let mut headers = self.common_headers.clone();
-        headers.insert(http::header::CONTENT_TYPE, content_type);
+        let mut headers: Vec<(HeaderName, HeaderValue)> = self
+            .common_headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        headers.push((http::header::CONTENT_TYPE, content_type));
 
         // Add `Content-Encoding` and `Vary` headers for the encoding to `hdrs`.
         if let Some(value) = matched_file.content_encoding.get_header_value() {
-            headers.insert(header::CONTENT_ENCODING, value);
+            headers.push((header::CONTENT_ENCODING, value));
         }
         if !self.compression_strategy.is_none() {
-            headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+            headers.push((header::VARY, HeaderValue::from_static("Accept-Encoding")));
         }
         let etag = self.calculate_etag(matched_file.file_info, matched_file.file.as_ref())?;
         Ok(Resource::for_file_with_metadata(

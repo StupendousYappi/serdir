@@ -121,7 +121,7 @@ pub struct ResourceBuilder {
     len: u64,
     mtime: SystemTime,
     content: ResourceContent,
-    headers: HeaderMap,
+    headers: Vec<(HeaderName, HeaderValue)>,
     etag: Option<ETag>,
 }
 
@@ -139,7 +139,7 @@ impl ResourceBuilder {
             len: file_info.len(),
             mtime: file_info.mtime(),
             content: ResourceContent::for_file(Arc::new(file)),
-            headers: HeaderMap::new(),
+            headers: Vec::new(),
             etag,
         })
     }
@@ -157,7 +157,7 @@ impl ResourceBuilder {
             len: crate::as_u64(bytes.len()),
             mtime,
             content: ResourceContent::for_bytes(bytes),
-            headers: HeaderMap::new(),
+            headers: Vec::with_capacity(2),
             etag,
         }
     }
@@ -167,9 +167,11 @@ impl ResourceBuilder {
         Self::for_bytes(value.as_bytes().to_vec(), mtime)
     }
 
-    /// Adds or replaces one response header.
+    /// Adds a response header.
+    ///
+    /// If called multiple times with the same header name, the last value provided will win.
     pub fn header(mut self, name: HeaderName, value: impl Into<HeaderValue>) -> Self {
-        self.headers.insert(name, value.into());
+        self.headers.push((name, value.into()));
         self
     }
 
@@ -197,7 +199,7 @@ pub struct Resource {
     mtime: SystemTime,
     content: ResourceContent,
     /// The HTTP response headers to include when serving this file
-    pub headers: HeaderMap,
+    pub headers: Vec<(HeaderName, HeaderValue)>,
     /// The ETag for the file, if any
     pub etag: Option<ETag>,
 }
@@ -218,7 +220,7 @@ impl Resource {
     pub(crate) fn for_file_with_metadata(
         file: Arc<std::fs::File>,
         file_info: FileInfo,
-        headers: HeaderMap,
+        headers: Vec<(HeaderName, HeaderValue)>,
         etag: Option<ETag>,
     ) -> Self {
         debug_assert!(file.metadata().unwrap().is_file());
@@ -233,8 +235,14 @@ impl Resource {
     }
 
     /// Returns the value of the response header with the given name, if it exists.
+    ///
+    /// If multiple values for the same header name were provided, the last one is returned.
     pub fn header(&self, name: &HeaderName) -> Option<&HeaderValue> {
-        self.headers.get(name)
+        self.headers
+            .iter()
+            .rev()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v)
     }
 
     /// Serves this entity as a response to the given request.
@@ -297,7 +305,9 @@ impl Resource {
     }
 
     pub(crate) fn add_headers(&self, h: &mut HeaderMap) {
-        h.extend(self.headers.iter().map(|(k, v)| (k.clone(), v.clone())));
+        for (name, value) in &self.headers {
+            h.insert(name.clone(), value.clone());
+        }
     }
 
     pub(crate) fn etag(&self) -> Option<HeaderValue> {
@@ -509,6 +519,29 @@ mod tests {
                 entity.header(&http::header::CONTENT_TYPE).unwrap(),
                 "text/plain"
             );
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multiple_headers() {
+        use http::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+        tokio::spawn(async move {
+            let mtime = SystemTime::UNIX_EPOCH;
+            let entity = ResourceBuilder::for_str("hello", mtime)
+                .header(CONTENT_TYPE, HeaderValue::from_static("text/plain"))
+                .header(CONTENT_TYPE, HeaderValue::from_static("text/html"))
+                .build();
+
+            // Resource::header should return the last one
+            assert_eq!(entity.header(&CONTENT_TYPE).unwrap(), "text/html");
+
+            // Resource::add_headers should result in only the last one in the HeaderMap
+            let mut h = HeaderMap::new();
+            entity.add_headers(&mut h);
+            assert_eq!(h.get(CONTENT_TYPE).unwrap(), "text/html");
+            assert_eq!(h.get_all(CONTENT_TYPE).iter().count(), 1);
         })
         .await
         .unwrap();
