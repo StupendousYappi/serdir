@@ -13,7 +13,7 @@ use crate::Resource;
 use bytes::Buf;
 use futures_util::stream::StreamExt as _;
 use http::header::{self, HeaderMap, HeaderValue};
-use http::{self, Method, Response, StatusCode};
+use http::{self, Method, Request, Response, StatusCode};
 use httpdate::{fmt_http_date, parse_http_date};
 use std::io::Write;
 use std::ops::Range;
@@ -76,12 +76,14 @@ fn parse_modified_hdrs(
 /// Handles conditional & subrange requests.
 /// The caller is expected to have already determined the correct entity and appended
 /// `Expires`, `Cache-Control`, and `Vary` headers if desired.
-pub(crate) fn serve(
-    ent: Resource,
-    method: &http::Method,
-    req_hdrs: &http::HeaderMap,
+pub(crate) fn serve<BI>(
+    resource: Resource,
+    req: &Request<BI>,
     status_code: StatusCode,
 ) -> Response<Body> {
+    let method = req.method();
+    let req_hdrs = req.headers();
+
     if method != Method::GET && method != Method::HEAD {
         return Response::builder()
             .status(StatusCode::METHOD_NOT_ALLOWED)
@@ -90,8 +92,8 @@ pub(crate) fn serve(
             .unwrap();
     }
 
-    let last_modified = ent.last_modified();
-    let etag = ent.etag();
+    let last_modified = resource.last_modified();
+    let etag = resource.etag();
 
     let (precondition_failed, not_modified) =
         match parse_modified_hdrs(&etag, req_hdrs, last_modified) {
@@ -162,7 +164,7 @@ pub(crate) fn serve(
         return res.body(Body::empty()).unwrap();
     }
 
-    let len = ent.len();
+    let len = resource.len();
     let (range, include_entity_headers) = match range::parse(range_hdr, len) {
         range::ResolvedRanges::None => (0..len, true),
         range::ResolvedRanges::Single(range) => {
@@ -190,7 +192,7 @@ pub(crate) fn serve(
             if matches!(est_len, Some(l) if l < len) {
                 let each_part_hdrs = include_entity_headers_on_range.then(|| {
                     let mut h = HeaderMap::new();
-                    ent.add_headers(&mut h);
+                    resource.add_headers(&mut h);
                     h
                 });
                 let (res, part_headers, len) =
@@ -207,7 +209,7 @@ pub(crate) fn serve(
                     return res.body(Body::empty()).unwrap();
                 }
                 return res
-                    .body(Body::new_multipart(ent, part_headers, ranges, len))
+                    .body(Body::new_multipart(resource, part_headers, ranges, len))
                     .expect("multipart response should be valid");
             }
 
@@ -231,13 +233,16 @@ pub(crate) fn serve(
         Method::HEAD => Body::empty(),
         _ => Body {
             stream: crate::body::BodyStream::ExactLen {
-                s: crate::body::ExactLenStream::new(range.end - range.start, ent.get_range(range)),
+                s: crate::body::ExactLenStream::new(
+                    range.end - range.start,
+                    resource.get_range(range),
+                ),
             },
         },
     };
     let mut res = res.body(body).unwrap();
     if include_entity_headers {
-        ent.add_headers(res.headers_mut());
+        resource.add_headers(res.headers_mut());
     }
     res
 }
