@@ -60,8 +60,25 @@ impl Body {
     /// Returns a 0-byte body.
     #[inline]
     pub fn empty() -> Self {
+        Self::new_once(None)
+    }
+
+    #[inline]
+    pub(crate) fn new_once(chunk: Option<Result<bytes::Bytes, crate::IOError>>) -> Self {
         Self {
-            stream: BodyStream::Once { chunk: None },
+            stream: BodyStream::Once { chunk },
+        }
+    }
+
+    #[inline]
+    pub(crate) fn new_exact_len(
+        len: u64,
+        stream: Pin<Box<dyn Stream<Item = Result<bytes::Bytes, crate::IOError>> + Send>>,
+    ) -> Self {
+        Self {
+            stream: BodyStream::ExactLen {
+                s: ExactLenStream::new(len, stream),
+            },
         }
     }
 
@@ -83,44 +100,28 @@ impl Body {
 impl From<&'static [u8]> for Body {
     #[inline]
     fn from(value: &'static [u8]) -> Self {
-        Self {
-            stream: BodyStream::Once {
-                chunk: Some(Ok(value.into())),
-            },
-        }
+        Self::new_once(Some(Ok(value.into())))
     }
 }
 
 impl From<&'static str> for Body {
     #[inline]
     fn from(value: &'static str) -> Self {
-        Self {
-            stream: BodyStream::Once {
-                chunk: Some(Ok(value.as_bytes().into())),
-            },
-        }
+        Self::new_once(Some(Ok(value.as_bytes().into())))
     }
 }
 
 impl From<Vec<u8>> for Body {
     #[inline]
     fn from(value: Vec<u8>) -> Self {
-        Self {
-            stream: BodyStream::Once {
-                chunk: Some(Ok(value.into())),
-            },
-        }
+        Self::new_once(Some(Ok(value.into())))
     }
 }
 
 impl From<String> for Body {
     #[inline]
     fn from(value: String) -> Self {
-        Self {
-            stream: BodyStream::Once {
-                chunk: Some(Ok(value.into_bytes().into())),
-            },
-        }
+        Self::new_once(Some(Ok(value.into_bytes().into())))
     }
 }
 

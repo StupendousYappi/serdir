@@ -231,14 +231,7 @@ pub(crate) fn serve<BI>(
     );
     let body = match *method {
         Method::HEAD => Body::empty(),
-        _ => Body {
-            stream: crate::body::BodyStream::ExactLen {
-                s: crate::body::ExactLenStream::new(
-                    range.end - range.start,
-                    resource.get_range(range),
-                ),
-            },
-        },
+        _ => Body::new_exact_len(range.end - range.start, resource.get_range(range)),
     };
     let mut res = res.body(body).unwrap();
     if include_entity_headers {
