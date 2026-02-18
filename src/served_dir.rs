@@ -240,9 +240,9 @@ impl ServedDir {
     pub async fn get_response<B>(&self, req: &Request<B>) -> Result<Response<Body>, Infallible> {
         let result = self.get(req.uri().path(), req.headers()).await;
         match result {
-            Ok(entity) => Ok(entity.serve_request(req, StatusCode::OK)),
+            Ok(entity) => Ok(entity.into_response(req, StatusCode::OK)),
             Err(SerdirError::NotFound(Some(entity))) => {
-                Ok(entity.serve_request(req, StatusCode::NOT_FOUND))
+                Ok(entity.into_response(req, StatusCode::NOT_FOUND))
             }
             Err(SerdirError::NotFound(None)) | Err(SerdirError::IsDirectory(_)) => {
                 Ok(Self::make_status_response(StatusCode::NOT_FOUND))

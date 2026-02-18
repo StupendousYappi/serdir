@@ -10,6 +10,7 @@ use std::{pin::Pin, task::Poll};
 
 use bytes::Buf;
 use futures_core::Stream;
+use log::trace;
 use sync_wrapper::SyncWrapper;
 
 pin_project_lite::pin_project! {
@@ -17,6 +18,8 @@ pin_project_lite::pin_project! {
     pub struct Body {
         #[pin]
         pub(crate) stream: BodyStream,
+
+        trace_log: Option<String>,
     }
 }
 
@@ -29,11 +32,19 @@ impl http_body::Body for Body {
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-        self.as_mut()
+        let result = self
+            .as_mut()
             .project()
             .stream
             .poll_next(cx)
-            .map(|p| p.map(|o| o.map(http_body::Frame::data)))
+            .map(|p| p.map(|o| o.map(http_body::Frame::data)));
+        let is_done = matches!(result, Poll::Ready(None) | Poll::Ready(Some(Err(_))));
+        if is_done {
+            if let Some(trace_log) = self.trace_log.take() {
+                trace!("{}", trace_log);
+            }
+        }
+        result
     }
 
     fn size_hint(&self) -> http_body::SizeHint {
@@ -67,6 +78,7 @@ impl Body {
     pub(crate) fn new_once(chunk: Option<Result<bytes::Bytes, crate::IOError>>) -> Self {
         Self {
             stream: BodyStream::Once { chunk },
+            trace_log: None,
         }
     }
 
@@ -79,6 +91,7 @@ impl Body {
             stream: BodyStream::ExactLen {
                 s: ExactLenStream::new(len, stream),
             },
+            trace_log: None,
         }
     }
 
@@ -93,6 +106,7 @@ impl Body {
             stream: BodyStream::Multipart {
                 s: crate::serving::MultipartStream::new(entity, part_headers, ranges, len),
             },
+            trace_log: None,
         }
     }
 }

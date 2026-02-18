@@ -253,7 +253,7 @@ impl Resource {
     /// Serves this entity as a response to the given request.
     ///
     /// Consumes the `Resource` and returns an HTTP response.
-    pub fn serve_request<B, D>(self, req: &Request<B>, status: StatusCode) -> Response<D>
+    pub fn into_response<B, D>(self, req: &Request<B>, status: StatusCode) -> Response<D>
     where
         D: From<crate::Body>,
     {
@@ -479,7 +479,7 @@ mod tests {
             let entity = ResourceBuilder::for_file(&p).unwrap().build();
             let req = http::Request::get("/").body(()).unwrap();
 
-            let res: http::Response<crate::Body> = entity.serve_request(&req, http::StatusCode::OK);
+            let res: http::Response<crate::Body> = entity.into_response(&req, http::StatusCode::OK);
             assert_eq!(res.status(), http::StatusCode::OK);
             let body = res.into_body().collect().await.unwrap().to_bytes();
             assert_eq!(body, "hello world");

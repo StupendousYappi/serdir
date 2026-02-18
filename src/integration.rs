@@ -82,16 +82,6 @@ impl<S> tower::Layer<S> for TowerLayer {
     }
 }
 
-/// Tower middleware produced by [`TowerLayer`].
-///
-/// Requires the `tower` feature.
-#[cfg(feature = "tower")]
-#[derive(Clone)]
-pub struct ServedDirMiddleware<S> {
-    served_dir: Arc<ServedDir>,
-    inner: S,
-}
-
 /// A Tower service that serves files from a [`ServedDir`].
 ///
 /// Requires the `tower` feature.
@@ -129,6 +119,16 @@ where
     }
 }
 
+/// Tower middleware produced by [`TowerLayer`].
+///
+/// Requires the `tower` feature.
+#[cfg(feature = "tower")]
+#[derive(Clone)]
+pub struct ServedDirMiddleware<S> {
+    served_dir: Arc<ServedDir>,
+    inner: S,
+}
+
 #[cfg(feature = "tower")]
 impl<S, ReqBody, ResBody> tower::Service<Request<ReqBody>> for ServedDirMiddleware<S>
 where
@@ -164,10 +164,10 @@ where
                 .await
             {
                 Ok(entity) => Ok(box_response(
-                    entity.serve_request(&serving_req, StatusCode::OK),
+                    entity.into_response(&serving_req, StatusCode::OK),
                 )),
                 Err(SerdirError::NotFound(Some(entity))) => Ok(box_response(
-                    entity.serve_request(&serving_req, StatusCode::NOT_FOUND),
+                    entity.into_response(&serving_req, StatusCode::NOT_FOUND),
                 )),
                 Err(SerdirError::NotFound(None))
                 | Err(SerdirError::IsDirectory(_))
