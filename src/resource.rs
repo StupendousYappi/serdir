@@ -72,51 +72,12 @@ impl ResourceContent {
     }
 }
 
-/// HTTP entity created from a [`std::fs::File`] which reads the file chunk-by-chunk within
-/// a [`tokio::task::block_in_place`] closure.
+/// A configurable builder for a [`Resource`].
 ///
-/// Expects to be served from a tokio threadpool.
+/// A `ResourceBuilder` allows you to configure both the resource content and
+/// its HTTP response headers.
 ///
-/// Most serdir users will not need to use `Resource` directly, and will
-/// instead use higher-level APIs like
-/// [`ServedDir::get_response`](crate::ServedDir::get_response). However,
-/// `Resource` is available for advanced use cases, like manually modifying
-/// the etag or response headers before serving.
-///
-/// A `Resource` references its file via an open [`File`] handle, not a [`Path`], so it will be
-/// resilient against attempts to delete or rename its file as long as it exists. Reading data
-/// from a `Resource` does not affects its file position, so it is [`Sync`] and can, if needed,
-/// be used to serve many requests at once (though this crate's own request handling code doesn't
-/// attempt that).
-///
-/// However, file metadata such as the length, last modified time and ETag are cached when the
-/// `Resource` is created, so if the underlying file is written to after the `Resource` is
-/// created, it's possible for it to return a corrupt response, with an ETag or last modified time
-/// that doesn't match the served contents. As such, while it is safe to replace existing static
-/// content with new files at runtime, users of this crate should do that by moving files or
-/// directories, and not by writing to existing static content files after the server has started.
-///
-/// # Example
-///
-/// ```
-/// # use http::{Request, StatusCode};
-/// # use http::header::CONTENT_TYPE;
-/// # use serdir::{Body, ResourceBuilder};
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let tmp = tempfile::NamedTempFile::new()?;
-/// std::fs::write(tmp.path(), b"Hello, world!")?;
-///
-/// let entity = ResourceBuilder::for_file(tmp.path())?
-///     .content_type(http::header::HeaderValue::from_static("text/plain"))
-///     .build();
-/// let request = Request::get("/").body(())?;
-/// let response: http::Response<Body> = entity.serve_request(&request, StatusCode::OK);
-///
-/// assert_eq!(response.status(), StatusCode::OK);
-/// assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), "text/plain");
-/// # Ok(())
-/// # }
-/// ```
+/// Can be backed by a [`File`] or [`Bytes`].
 pub struct ResourceBuilder {
     len: u64,
     mtime: SystemTime,
@@ -192,7 +153,51 @@ impl ResourceBuilder {
     }
 }
 
-/// A static HTTP resource with body content, headers, ETag and last-modified metadata.
+/// HTTP entity created from a [`File`] or [`Bytes`] which reads the content as
+/// a stream of chunks.
+///
+/// Expects to be served from a tokio threadpool.
+///
+/// Most serdir users will not need to use `Resource` directly, and will
+/// instead use higher-level APIs like
+/// [`ServedDir::get_response`](crate::ServedDir::get_response). However,
+/// `Resource` is available for advanced use cases, like manually modifying
+/// the etag or response headers before serving.
+///
+/// A `Resource` references its file via an open [`File`] handle, not a [`Path`], so it will be
+/// resilient against attempts to delete or rename its file as long as it exists. Reading data
+/// from a `Resource` does not affects its file position, so it is [`Sync`] and can, if needed,
+/// be used to serve many requests at once (though this crate's own request handling code doesn't
+/// attempt that).
+///
+/// However, file metadata such as the length, last modified time and ETag are cached when the
+/// `Resource` is created, so if the underlying file is written to after the `Resource` is
+/// created, it's possible for it to return a corrupt response, with an ETag or last modified time
+/// that doesn't match the served contents. As such, while it is safe to replace existing static
+/// content with new files at runtime, users of this crate should do that by moving files or
+/// directories, and not by writing to existing static content files after the server has started.
+///
+/// # Example
+///
+/// ```
+/// # use http::{Request, StatusCode};
+/// # use http::header::CONTENT_TYPE;
+/// # use serdir::{Body, ResourceBuilder};
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let tmp = tempfile::NamedTempFile::new()?;
+/// std::fs::write(tmp.path(), b"Hello, world!")?;
+///
+/// let entity = ResourceBuilder::for_file(tmp.path())?
+///     .content_type(http::header::HeaderValue::from_static("text/plain"))
+///     .build();
+/// let request = Request::get("/").body(())?;
+/// let response: http::Response<Body> = entity.serve_request(&request, StatusCode::OK);
+///
+/// assert_eq!(response.status(), StatusCode::OK);
+/// assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), "text/plain");
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct Resource {
     len: u64,
