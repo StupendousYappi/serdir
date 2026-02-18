@@ -23,7 +23,7 @@ use std::task::{Context as TaskContext, Poll};
 use tokio::net::TcpListener;
 use tower::{Layer, Service};
 
-use serdir::{Body, ServedDirBuilder};
+use serdir::{Body, ServedDir};
 
 type ResponseFuture =
     Pin<Box<dyn Future<Output = Result<http::Response<Body>, std::convert::Infallible>> + Send>>;
@@ -79,7 +79,7 @@ async fn main() -> Result<()> {
 async fn run() -> Result<()> {
     env_logger::init();
     let config = Config::from_env();
-    let mut builder = ServedDirBuilder::new(config.directory.as_str())
+    let mut builder = ServedDir::builder(config.directory.as_str())
         .context("failed to create ServedDir builder")?
         .append_index_html(true)
         .compression(config.compression_strategy())

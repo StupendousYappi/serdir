@@ -106,9 +106,37 @@ pub(crate) fn default_hasher(file: &mut dyn Read) -> Result<Option<u64>, std::io
 }
 
 impl ServedDir {
-    /// Returns a builder for `ServedDir`.
+    /// Returns a builder for `ServedDir` that will serve files from `path`.
+    ///
+    /// This function returns an [`SerdirError::ConfigError`] if `path` is not a
+    /// directory or a symlink to a directory.
+    ///
+    /// Updates to the directory content while it's being served are safe, as
+    /// long as content is changed by deleting and moving paths, rather than
+    /// writing to existing files. If a file is written to while a request is
+    /// reading it, in addition to the risk of the file content being corrupt,
+    /// the file's ETag and modification date metadata will not match the served
+    /// contents. The recommended way to update served content live is to pass a
+    /// symlink to the target directory to this function, and then update the
+    /// symlink to point to the new directory when needed.
     pub fn builder(path: impl Into<PathBuf>) -> Result<ServedDirBuilder, SerdirError> {
-        ServedDirBuilder::new(path.into())
+        let dirpath = path.into();
+        if !dirpath.is_dir() {
+            let msg = format!("path is not a directory: {}", dirpath.display());
+            return Err(SerdirError::config_error(msg));
+        }
+        Ok(ServedDirBuilder {
+            dirpath,
+            compression_strategy: CompressionStrategy::none(),
+            file_hasher: None,
+            error_handler: None,
+            strip_prefix: None,
+            known_extensions: ServedDirBuilder::default_extensions(),
+            default_content_type: OCTET_STREAM.clone(),
+            common_headers: HeaderMap::new(),
+            append_index_html: false,
+            not_found_path: None,
+        })
     }
 
     /// Returns the static file root directory used by this `ServedDir`
@@ -354,6 +382,8 @@ impl ServedDir {
 }
 
 /// A builder for [`ServedDir`].
+///
+/// Created via the [`ServedDir::builder`] constructor.
 #[derive(Debug)]
 pub struct ServedDirBuilder {
     dirpath: PathBuf,
@@ -369,39 +399,6 @@ pub struct ServedDirBuilder {
 }
 
 impl ServedDirBuilder {
-    /// Creates a builder for a `ServedDir` that will serve files from `dirpath`.
-    ///
-    /// This function returns an error if `dirpath` is not a directory or a
-    /// symlink to a directory.
-    ///
-    /// Updates to the directory content while it's being served are safe, as
-    /// long as content is changed by deleting and moving paths, rather than
-    /// writing to existing files. If a file is written to while a request is
-    /// reading it, in addition to the risk of the file content being corrupt,
-    /// the file's ETag and modification date metadata will not match the served
-    /// contents. The recommended way to update served content live is to pass a
-    /// symlink to the target directory to this function, and then update the
-    /// symlink to point to the new directory when needed.
-    pub fn new(dirpath: impl Into<PathBuf>) -> Result<Self, SerdirError> {
-        let dirpath = dirpath.into();
-        if !dirpath.is_dir() {
-            let msg = format!("path is not a directory: {}", dirpath.display());
-            return Err(SerdirError::config_error(msg));
-        }
-        Ok(Self {
-            dirpath,
-            compression_strategy: CompressionStrategy::none(),
-            file_hasher: None,
-            error_handler: None,
-            strip_prefix: None,
-            known_extensions: Self::default_extensions(),
-            default_content_type: OCTET_STREAM.clone(),
-            common_headers: HeaderMap::new(),
-            append_index_html: false,
-            not_found_path: None,
-        })
-    }
-
     /// Sets the compression strategy (i.e. static, cached or none)for the
     /// served directory.
     pub fn compression(mut self, strategy: impl Into<CompressionStrategy>) -> Self {
