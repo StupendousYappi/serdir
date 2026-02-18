@@ -191,7 +191,7 @@ impl ResourceBuilder {
 ///     .content_type(http::header::HeaderValue::from_static("text/plain"))
 ///     .build();
 /// let request = Request::get("/").body(())?;
-/// let response: http::Response<Body> = entity.serve_request(&request, StatusCode::OK);
+/// let response: http::Response<Body> = entity.into_response(&request, StatusCode::OK);
 ///
 /// assert_eq!(response.status(), StatusCode::OK);
 /// assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), "text/plain");
