@@ -23,6 +23,14 @@ pin_project_lite::pin_project! {
         // A function called once the body stream has been consumed.
         on_complete: Option<OnComplete>,
     }
+
+    impl PinnedDrop for Body {
+        fn drop(this: Pin<&mut Self>) {
+            if let Some(f) = this.project().on_complete.take() {
+                f();
+            }
+        }
+    }
 }
 
 impl http_body::Body for Body {
@@ -110,6 +118,15 @@ impl Body {
             },
             on_complete: None,
         }
+    }
+
+    #[inline]
+    pub(crate) fn on_complete(
+        mut self,
+        on_complete: impl FnOnce() + Send + Sync + 'static,
+    ) -> Self {
+        self.on_complete = Some(Box::new(on_complete));
+        self
     }
 }
 
@@ -271,7 +288,14 @@ const _: () = {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::SystemTime;
+
     use futures_util::StreamExt as _;
+    use http_body_util::BodyExt as _;
 
     use super::*;
 
@@ -316,5 +340,82 @@ mod tests {
         let err = err.downcast::<StreamTooLongError>().unwrap();
         assert_eq!(err, StreamTooLongError { extra: 2 });
         assert!(exact_len.next().await.is_none()); // fused.
+    }
+
+    #[tokio::test]
+    async fn on_complete_called_once_for_exact_len_body() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let on_complete_calls = Arc::clone(&calls);
+
+        let inner = futures_util::stream::iter(vec![Ok("he".into()), Ok("llo".into())]);
+        let mut body = Body::new_exact_len(5, Box::pin(inner)).on_complete(move || {
+            on_complete_calls.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(body.frame().await.is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(body.frame().await.is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(body.frame().await.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(body.frame().await.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn on_complete_called_once_for_multipart_body() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let on_complete_calls = Arc::clone(&calls);
+
+        let entity = crate::ResourceBuilder::for_bytes("abcdef", SystemTime::UNIX_EPOCH).build();
+        let part_headers = vec![b"part-one\r\n".to_vec(), b"part-two\r\n".to_vec()];
+        let ranges = vec![0..2, 3..6];
+        let len = 10 + 10 + 2 + 3 + 9;
+        let mut body =
+            Body::new_multipart(entity, part_headers, ranges, len).on_complete(move || {
+                on_complete_calls.fetch_add(1, Ordering::SeqCst);
+            });
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(body.frame().await.is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        while body.frame().await.is_some() {}
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(body.frame().await.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn on_complete_called_once_when_exact_len_body_dropped_before_consumed() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let on_complete_calls = Arc::clone(&calls);
+
+        let inner = futures_util::stream::iter(vec![Ok("hello".into())]);
+        let body = Body::new_exact_len(5, Box::pin(inner)).on_complete(move || {
+            on_complete_calls.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        drop(body);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn on_complete_called_once_when_multipart_body_dropped_before_consumed() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let on_complete_calls = Arc::clone(&calls);
+
+        let entity = crate::ResourceBuilder::for_bytes("abcdef", SystemTime::UNIX_EPOCH).build();
+        let part_headers = vec![b"part-one\r\n".to_vec(), b"part-two\r\n".to_vec()];
+        let ranges = vec![0..2, 3..6];
+        let len = 10 + 10 + 2 + 3 + 9;
+        let body = Body::new_multipart(entity, part_headers, ranges, len).on_complete(move || {
+            on_complete_calls.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        drop(body);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
