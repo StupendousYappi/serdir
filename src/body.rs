@@ -10,8 +10,9 @@ use std::{pin::Pin, task::Poll};
 
 use bytes::Buf;
 use futures_core::Stream;
-use log::trace;
 use sync_wrapper::SyncWrapper;
+
+type OnComplete = Box<dyn FnOnce() + Send + Sync + 'static>;
 
 pin_project_lite::pin_project! {
     /// A streaming [`http_body::Body`] implementation used by [`Resource`](crate::Resource)
@@ -19,7 +20,8 @@ pin_project_lite::pin_project! {
         #[pin]
         pub(crate) stream: BodyStream,
 
-        trace_log: Option<String>,
+        // A function called once the body stream has been consumed.
+        on_complete: Option<OnComplete>,
     }
 }
 
@@ -40,8 +42,8 @@ impl http_body::Body for Body {
             .map(|p| p.map(|o| o.map(http_body::Frame::data)));
         let is_done = matches!(result, Poll::Ready(None) | Poll::Ready(Some(Err(_))));
         if is_done {
-            if let Some(trace_log) = self.trace_log.take() {
-                trace!("{}", trace_log);
+            if let Some(f) = self.on_complete.take() {
+                f();
             }
         }
         result
@@ -78,7 +80,7 @@ impl Body {
     pub(crate) fn new_once(chunk: Option<Result<bytes::Bytes, crate::IOError>>) -> Self {
         Self {
             stream: BodyStream::Once { chunk },
-            trace_log: None,
+            on_complete: None,
         }
     }
 
@@ -91,7 +93,7 @@ impl Body {
             stream: BodyStream::ExactLen {
                 s: ExactLenStream::new(len, stream),
             },
-            trace_log: None,
+            on_complete: None,
         }
     }
 
@@ -106,7 +108,7 @@ impl Body {
             stream: BodyStream::Multipart {
                 s: crate::serving::MultipartStream::new(entity, part_headers, ranges, len),
             },
-            trace_log: None,
+            on_complete: None,
         }
     }
 }
