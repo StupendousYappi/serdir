@@ -114,7 +114,7 @@ impl Body {
     ) -> Self {
         Self {
             stream: BodyStream::Multipart {
-                s: crate::serving::MultipartStream::new(entity, part_headers, ranges, len),
+                s: MultipartStream::new(entity, part_headers, ranges, len),
             },
             on_complete: None,
         }
@@ -170,7 +170,7 @@ pin_project_lite::pin_project! {
         },
         Multipart {
             #[pin]
-            s: crate::serving::MultipartStream,
+            s: MultipartStream,
         },
     }
 }
@@ -275,6 +275,103 @@ impl futures_core::Stream for ExactLenStream {
                 Poll::Ready(None)
             }
             Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+pub(crate) struct MultipartStream {
+    /// The current part's body stream, set in "send body" state.
+    cur: Option<ExactLenStream>,
+
+    /// Current state:
+    ///
+    /// * `i << 1` for `i` in `[0, ranges.len())`: send part headers.
+    /// * `i << 1 | 1` for `i` in `[0, ranges.len())`: send body.
+    /// * `ranges.len() << 1`: send trailer
+    /// * `ranges.len() << 1 | 1`: end
+    state: usize,
+    part_headers: Vec<Vec<u8>>,
+    ranges: Vec<std::ops::Range<u64>>,
+    entity: crate::Resource,
+    remaining: u64,
+}
+
+impl MultipartStream {
+    pub(crate) fn new(
+        entity: crate::Resource,
+        part_headers: Vec<Vec<u8>>,
+        ranges: Vec<std::ops::Range<u64>>,
+        len: u64,
+    ) -> Self {
+        Self {
+            cur: None,
+            state: 0,
+            part_headers,
+            ranges,
+            entity,
+            remaining: len,
+        }
+    }
+
+    pub(crate) fn remaining(&self) -> u64 {
+        self.remaining
+    }
+}
+
+/// The trailer after all `multipart/byteranges` body parts.
+pub(crate) const PART_TRAILER: &[u8] = b"\r\n--B--\r\n";
+
+impl futures_core::Stream for MultipartStream {
+    type Item = Result<bytes::Bytes, crate::IOError>;
+
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        let this = Pin::into_inner(self);
+        loop {
+            if let Some(ref mut cur) = this.cur {
+                match Pin::new(cur).poll_next(cx) {
+                    Poll::Ready(Some(Ok(d))) => {
+                        this.remaining -= crate::as_u64(d.remaining());
+                        return Poll::Ready(Some(Ok(d)));
+                    }
+                    Poll::Ready(Some(Err(e))) => {
+                        // Fuse.
+                        this.remaining = 0;
+                        this.state = this.ranges.len() << 1 | 1;
+                        return Poll::Ready(Some(Err(e)));
+                    }
+                    Poll::Ready(None) => {
+                        this.cur = None;
+                        this.state += 1;
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+
+            let i = this.state >> 1;
+            let odd = (this.state & 1) == 1;
+            if i == this.ranges.len() && odd {
+                debug_assert_eq!(this.remaining, 0);
+                return Poll::Ready(None);
+            }
+            if i == this.ranges.len() {
+                this.state += 1;
+                this.remaining -= crate::as_u64(PART_TRAILER.len());
+                return Poll::Ready(Some(Ok(PART_TRAILER.into())));
+            } else if odd {
+                let r = &this.ranges[i];
+                this.cur = Some(ExactLenStream::new(
+                    r.end - r.start,
+                    this.entity.get_range(r.clone()),
+                ));
+            } else {
+                let v = std::mem::take(&mut this.part_headers[i]);
+                this.state += 1;
+                this.remaining -= crate::as_u64(v.len());
+                return Poll::Ready(Some(Ok(v.into())));
+            };
         }
     }
 }
