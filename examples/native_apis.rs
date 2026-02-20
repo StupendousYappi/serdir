@@ -15,7 +15,7 @@ use common::Config;
 use hyper::server::conn;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
-use serdir::ServedDirBuilder;
+use serdir::ServedDir;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
 
 async fn run() -> Result<()> {
     let config = Config::from_env();
-    let mut builder = ServedDirBuilder::new(config.directory.as_str())
+    let mut builder = ServedDir::builder(config.directory.as_str())
         .context("failed to create ServedDir builder")?
         .append_index_html(true)
         .compression(config.compression_strategy())

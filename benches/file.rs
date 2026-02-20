@@ -94,12 +94,20 @@ fn serve_last_byte_1mib(b: &mut criterion::Bencher) {
 
 fn criterion_benchmark(c: &mut Criterion) {
     let mut g = c.benchmark_group("serve_full_entity");
+    g.throughput(criterion::Throughput::Elements(1));
+    g.bench_function("1kib-rps", |b| serve_full_entity(b, &1));
+    g.bench_function("1mib-rps", |b| serve_full_entity(b, &1024));
+
     g.throughput(criterion::Throughput::Bytes(1024))
-        .bench_function("1kib", |b| serve_full_entity(b, &1));
+        .bench_function("1kib-bps", |b| serve_full_entity(b, &1));
     g.throughput(criterion::Throughput::Bytes(1024 * 1024))
-        .bench_function("1mib", |b| serve_full_entity(b, &1024));
+        .bench_function("1mib-bps", |b| serve_full_entity(b, &1024));
     g.finish();
-    c.bench_function("serve_last_byte_1mib", serve_last_byte_1mib);
+
+    let mut g = c.benchmark_group("serve_last_byte_1mib");
+    g.throughput(criterion::Throughput::Elements(1));
+    g.bench_function("rps", serve_last_byte_1mib);
+    g.finish();
 }
 
 criterion_group! {

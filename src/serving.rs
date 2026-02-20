@@ -6,19 +6,15 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use crate::body::Body;
+use crate::body::{Body, PART_TRAILER};
 use crate::etag;
 use crate::range;
 use crate::Resource;
-use bytes::Buf;
-use futures_util::stream::StreamExt as _;
 use http::header::{self, HeaderMap, HeaderValue};
-use http::{self, Method, Response, StatusCode};
+use http::{self, Method, Request, Response, StatusCode};
 use httpdate::{fmt_http_date, parse_http_date};
 use std::io::Write;
 use std::ops::Range;
-use std::pin::Pin;
-use std::task::Poll;
 use std::time::{Duration, SystemTime};
 
 const MAX_DECIMAL_U64_BYTES: usize = 20; // u64::max_value().to_string().len()
@@ -77,67 +73,31 @@ fn parse_modified_hdrs(
 /// The caller is expected to have already determined the correct entity and appended
 /// `Expires`, `Cache-Control`, and `Vary` headers if desired.
 pub(crate) fn serve<BI>(
-    entity: Resource,
-    req: &http::Request<BI>,
-    status_code: http::StatusCode,
-) -> http::Response<Body> {
-    match serve_inner(&entity, req.method(), req.headers(), status_code) {
-        ServeInner::Simple(res) => res,
-        ServeInner::Multipart {
-            res,
-            part_headers,
-            ranges,
-            len,
-        } => res
-            .body(crate::body::Body {
-                stream: crate::body::BodyStream::Multipart {
-                    s: MultipartStream::new(entity, part_headers, ranges, len),
-                },
-            })
-            .expect("multipart response should be valid"),
-    }
-}
-
-/// An instruction from `serve_inner` to `serve` on how to respond.
-enum ServeInner {
-    Simple(Response<Body>),
-    Multipart {
-        res: http::response::Builder,
-        part_headers: Vec<Vec<u8>>,
-        ranges: Vec<Range<u64>>,
-        len: u64,
-    },
-}
-
-/// Runs inner logic for `serve`.
-fn serve_inner(
-    ent: &Resource,
-    method: &http::Method,
-    req_hdrs: &http::HeaderMap,
+    resource: Resource,
+    req: &Request<BI>,
     status_code: StatusCode,
-) -> ServeInner {
+) -> Response<Body> {
+    let method = req.method();
+    let req_hdrs = req.headers();
+
     if method != Method::GET && method != Method::HEAD {
-        return ServeInner::Simple(
-            Response::builder()
-                .status(StatusCode::METHOD_NOT_ALLOWED)
-                .header(header::ALLOW, HeaderValue::from_static("get, head"))
-                .body(Body::from("This resource only supports GET and HEAD."))
-                .unwrap(),
-        );
+        return Response::builder()
+            .status(StatusCode::METHOD_NOT_ALLOWED)
+            .header(header::ALLOW, HeaderValue::from_static("get, head"))
+            .body(Body::from("This resource only supports GET and HEAD."))
+            .unwrap();
     }
 
-    let last_modified = ent.last_modified();
-    let etag = ent.etag();
+    let last_modified = resource.last_modified();
+    let etag = resource.etag();
 
     let (precondition_failed, not_modified) =
         match parse_modified_hdrs(&etag, req_hdrs, last_modified) {
             Err(s) => {
-                return ServeInner::Simple(
-                    Response::builder()
-                        .status(StatusCode::BAD_REQUEST)
-                        .body(Body::from(s))
-                        .unwrap(),
-                )
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Body::from(s))
+                    .unwrap()
             }
             Ok(p) => p,
         };
@@ -192,15 +152,15 @@ fn serve_inner(
 
     if precondition_failed {
         res = res.status(StatusCode::PRECONDITION_FAILED);
-        return ServeInner::Simple(res.body(Body::from("Precondition failed")).unwrap());
+        return res.body(Body::from("Precondition failed")).unwrap();
     }
 
     if not_modified {
         res = res.status(StatusCode::NOT_MODIFIED);
-        return ServeInner::Simple(res.body(Body::empty()).unwrap());
+        return res.body(Body::empty()).unwrap();
     }
 
-    let len = ent.len();
+    let len = resource.len();
     let (range, include_entity_headers) = match range::parse(range_hdr, len) {
         range::ResolvedRanges::None => (0..len, true),
         range::ResolvedRanges::Single(range) => {
@@ -228,30 +188,25 @@ fn serve_inner(
             if matches!(est_len, Some(l) if l < len) {
                 let each_part_hdrs = include_entity_headers_on_range.then(|| {
                     let mut h = HeaderMap::new();
-                    ent.add_headers(&mut h);
+                    resource.add_headers(&mut h);
                     h
                 });
                 let (res, part_headers, len) =
                     match prepare_multipart(res, &ranges[..], len, each_part_hdrs) {
                         Ok(v) => v,
                         Err(MultipartLenOverflowError) => {
-                            return ServeInner::Simple(
-                                Response::builder()
-                                    .status(StatusCode::PAYLOAD_TOO_LARGE)
-                                    .body(Body::from("Multipart response too large"))
-                                    .unwrap(),
-                            );
+                            return Response::builder()
+                                .status(StatusCode::PAYLOAD_TOO_LARGE)
+                                .body(Body::from("Multipart response too large"))
+                                .unwrap();
                         }
                     };
                 if method == Method::HEAD {
-                    return ServeInner::Simple(res.body(Body::empty()).unwrap());
+                    return res.body(Body::empty()).unwrap();
                 }
-                return ServeInner::Multipart {
-                    res,
-                    part_headers,
-                    ranges,
-                    len,
-                };
+                return res
+                    .body(Body::new_multipart(resource, part_headers, ranges, len))
+                    .expect("multipart response should be valid");
             }
 
             (0..len, true)
@@ -262,7 +217,7 @@ fn serve_inner(
                 unsafe_fmt_ascii_val!(MAX_DECIMAL_U64_BYTES + "bytes */".len(), "bytes */{}", len),
             );
             res = res.status(StatusCode::RANGE_NOT_SATISFIABLE);
-            return ServeInner::Simple(res.body(Body::empty()).unwrap());
+            return res.body(Body::empty()).unwrap();
         }
     };
     let len = range.end - range.start;
@@ -272,17 +227,13 @@ fn serve_inner(
     );
     let body = match *method {
         Method::HEAD => Body::empty(),
-        _ => Body {
-            stream: crate::body::BodyStream::ExactLen {
-                s: crate::body::ExactLenStream::new(range.end - range.start, ent.get_range(range)),
-            },
-        },
+        _ => Body::new_exact_len(range.end - range.start, resource.get_range(range)),
     };
     let mut res = res.body(body).unwrap();
     if include_entity_headers {
-        ent.add_headers(res.headers_mut());
+        resource.add_headers(res.headers_mut());
     }
-    ServeInner::Simple(res)
+    res
 }
 
 struct MultipartLenOverflowError;
@@ -350,101 +301,4 @@ fn prepare_multipart(
     res = res.status(StatusCode::PARTIAL_CONTENT);
 
     Ok((res, part_headers, body_len))
-}
-
-pub(crate) struct MultipartStream {
-    /// The current part's body stream, set in "send body" state.
-    cur: Option<crate::body::ExactLenStream>,
-
-    /// Current state:
-    ///
-    /// * `i << 1` for `i` in `[0, ranges.len())`: send part headers.
-    /// * `i << 1 | 1` for `i` in `[0, ranges.len())`: send body.
-    /// * `ranges.len() << 1`: send trailer
-    /// * `ranges.len() << 1 | 1`: end
-    state: usize,
-    part_headers: Vec<Vec<u8>>,
-    ranges: Vec<std::ops::Range<u64>>,
-    entity: Resource,
-    remaining: u64,
-}
-
-impl MultipartStream {
-    pub(crate) fn new(
-        entity: Resource,
-        part_headers: Vec<Vec<u8>>,
-        ranges: Vec<std::ops::Range<u64>>,
-        len: u64,
-    ) -> Self {
-        Self {
-            cur: None,
-            state: 0,
-            part_headers,
-            ranges,
-            entity,
-            remaining: len,
-        }
-    }
-
-    pub(crate) fn remaining(&self) -> u64 {
-        self.remaining
-    }
-}
-
-/// The trailer after all `multipart/byteranges` body parts.
-const PART_TRAILER: &[u8] = b"\r\n--B--\r\n";
-
-impl futures_core::Stream for MultipartStream {
-    type Item = Result<bytes::Bytes, crate::IOError>;
-
-    fn poll_next(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        let this = Pin::into_inner(self);
-        loop {
-            if let Some(ref mut cur) = this.cur {
-                match cur.poll_next_unpin(cx) {
-                    Poll::Ready(Some(Ok(d))) => {
-                        this.remaining -= crate::as_u64(d.remaining());
-                        return Poll::Ready(Some(Ok(d)));
-                    }
-                    Poll::Ready(Some(Err(e))) => {
-                        // Fuse.
-                        this.remaining = 0;
-                        this.state = this.ranges.len() << 1 | 1;
-                        return Poll::Ready(Some(Err(e)));
-                    }
-                    Poll::Ready(None) => {
-                        this.cur = None;
-                        this.state += 1;
-                    }
-                    Poll::Pending => return Poll::Pending,
-                }
-            }
-
-            let i = this.state >> 1;
-            let odd = (this.state & 1) == 1;
-            if i == this.ranges.len() && odd {
-                debug_assert_eq!(this.remaining, 0);
-                return Poll::Ready(None);
-            }
-            if i == this.ranges.len() {
-                this.state += 1;
-                this.remaining -= crate::as_u64(PART_TRAILER.len());
-                return Poll::Ready(Some(Ok(PART_TRAILER.into())));
-            } else if odd {
-                let r = &this.ranges[i];
-                this.cur = Some(crate::body::ExactLenStream::new(
-                    r.end - r.start,
-                    this.entity.get_range(r.clone()),
-                ));
-            } else {
-                let v = std::mem::take(&mut this.part_headers[i]);
-                this.state += 1;
-                this.remaining -= crate::as_u64(v.len());
-                return Poll::Ready(Some(Ok(v.into())));
-            };
-        }
-    }
 }

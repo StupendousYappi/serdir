@@ -12,11 +12,24 @@ use bytes::Buf;
 use futures_core::Stream;
 use sync_wrapper::SyncWrapper;
 
+type OnComplete = Box<dyn FnOnce() + Send + Sync + 'static>;
+
 pin_project_lite::pin_project! {
     /// A streaming [`http_body::Body`] implementation used by [`Resource`](crate::Resource)
     pub struct Body {
         #[pin]
         pub(crate) stream: BodyStream,
+
+        // A function called once the body stream has been consumed.
+        on_complete: Option<OnComplete>,
+    }
+
+    impl PinnedDrop for Body {
+        fn drop(this: Pin<&mut Self>) {
+            if let Some(f) = this.project().on_complete.take() {
+                f();
+            }
+        }
     }
 }
 
@@ -29,11 +42,19 @@ impl http_body::Body for Body {
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-        self.as_mut()
+        let result = self
+            .as_mut()
             .project()
             .stream
             .poll_next(cx)
-            .map(|p| p.map(|o| o.map(http_body::Frame::data)))
+            .map(|p| p.map(|o| o.map(http_body::Frame::data)));
+        let is_done = matches!(result, Poll::Ready(None) | Poll::Ready(Some(Err(_))));
+        if is_done {
+            if let Some(f) = self.on_complete.take() {
+                f();
+            }
+        }
+        result
     }
 
     fn size_hint(&self) -> http_body::SizeHint {
@@ -60,53 +81,81 @@ impl Body {
     /// Returns a 0-byte body.
     #[inline]
     pub fn empty() -> Self {
+        Self::new_once(None)
+    }
+
+    #[inline]
+    pub(crate) fn new_once(chunk: Option<Result<bytes::Bytes, crate::IOError>>) -> Self {
         Self {
-            stream: BodyStream::Once { chunk: None },
+            stream: BodyStream::Once { chunk },
+            on_complete: None,
         }
+    }
+
+    #[inline]
+    pub(crate) fn new_exact_len(
+        len: u64,
+        stream: Pin<Box<dyn Stream<Item = Result<bytes::Bytes, crate::IOError>> + Send>>,
+    ) -> Self {
+        Self {
+            stream: BodyStream::ExactLen {
+                s: ExactLenStream::new(len, stream),
+            },
+            on_complete: None,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn new_multipart(
+        entity: crate::Resource,
+        part_headers: Vec<Vec<u8>>,
+        ranges: Vec<std::ops::Range<u64>>,
+        len: u64,
+    ) -> Self {
+        Self {
+            stream: BodyStream::Multipart {
+                s: MultipartStream::new(entity, part_headers, ranges, len),
+            },
+            on_complete: None,
+        }
+    }
+
+    #[allow(dead_code)]
+    #[inline]
+    pub(crate) fn on_complete(
+        mut self,
+        on_complete: impl FnOnce() + Send + Sync + 'static,
+    ) -> Self {
+        self.on_complete = Some(Box::new(on_complete));
+        self
     }
 }
 
 impl From<&'static [u8]> for Body {
     #[inline]
     fn from(value: &'static [u8]) -> Self {
-        Self {
-            stream: BodyStream::Once {
-                chunk: Some(Ok(value.into())),
-            },
-        }
+        Self::new_once(Some(Ok(value.into())))
     }
 }
 
 impl From<&'static str> for Body {
     #[inline]
     fn from(value: &'static str) -> Self {
-        Self {
-            stream: BodyStream::Once {
-                chunk: Some(Ok(value.as_bytes().into())),
-            },
-        }
+        Self::new_once(Some(Ok(value.as_bytes().into())))
     }
 }
 
 impl From<Vec<u8>> for Body {
     #[inline]
     fn from(value: Vec<u8>) -> Self {
-        Self {
-            stream: BodyStream::Once {
-                chunk: Some(Ok(value.into())),
-            },
-        }
+        Self::new_once(Some(Ok(value.into())))
     }
 }
 
 impl From<String> for Body {
     #[inline]
     fn from(value: String) -> Self {
-        Self {
-            stream: BodyStream::Once {
-                chunk: Some(Ok(value.into_bytes().into())),
-            },
-        }
+        Self::new_once(Some(Ok(value.into_bytes().into())))
     }
 }
 
@@ -122,7 +171,7 @@ pin_project_lite::pin_project! {
         },
         Multipart {
             #[pin]
-            s: crate::serving::MultipartStream,
+            s: MultipartStream,
         },
     }
 }
@@ -231,6 +280,103 @@ impl futures_core::Stream for ExactLenStream {
     }
 }
 
+pub(crate) struct MultipartStream {
+    /// The current part's body stream, set in "send body" state.
+    cur: Option<ExactLenStream>,
+
+    /// Current state:
+    ///
+    /// * `i << 1` for `i` in `[0, ranges.len())`: send part headers.
+    /// * `i << 1 | 1` for `i` in `[0, ranges.len())`: send body.
+    /// * `ranges.len() << 1`: send trailer
+    /// * `ranges.len() << 1 | 1`: end
+    state: usize,
+    part_headers: Vec<Vec<u8>>,
+    ranges: Vec<std::ops::Range<u64>>,
+    entity: crate::Resource,
+    remaining: u64,
+}
+
+impl MultipartStream {
+    pub(crate) fn new(
+        entity: crate::Resource,
+        part_headers: Vec<Vec<u8>>,
+        ranges: Vec<std::ops::Range<u64>>,
+        len: u64,
+    ) -> Self {
+        Self {
+            cur: None,
+            state: 0,
+            part_headers,
+            ranges,
+            entity,
+            remaining: len,
+        }
+    }
+
+    pub(crate) fn remaining(&self) -> u64 {
+        self.remaining
+    }
+}
+
+/// The trailer after all `multipart/byteranges` body parts.
+pub(crate) const PART_TRAILER: &[u8] = b"\r\n--B--\r\n";
+
+impl futures_core::Stream for MultipartStream {
+    type Item = Result<bytes::Bytes, crate::IOError>;
+
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        let this = Pin::into_inner(self);
+        loop {
+            if let Some(ref mut cur) = this.cur {
+                match Pin::new(cur).poll_next(cx) {
+                    Poll::Ready(Some(Ok(d))) => {
+                        this.remaining -= crate::as_u64(d.remaining());
+                        return Poll::Ready(Some(Ok(d)));
+                    }
+                    Poll::Ready(Some(Err(e))) => {
+                        // Fuse.
+                        this.remaining = 0;
+                        this.state = this.ranges.len() << 1 | 1;
+                        return Poll::Ready(Some(Err(e)));
+                    }
+                    Poll::Ready(None) => {
+                        this.cur = None;
+                        this.state += 1;
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+
+            let i = this.state >> 1;
+            let odd = (this.state & 1) == 1;
+            if i == this.ranges.len() && odd {
+                debug_assert_eq!(this.remaining, 0);
+                return Poll::Ready(None);
+            }
+            if i == this.ranges.len() {
+                this.state += 1;
+                this.remaining -= crate::as_u64(PART_TRAILER.len());
+                return Poll::Ready(Some(Ok(PART_TRAILER.into())));
+            } else if odd {
+                let r = &this.ranges[i];
+                this.cur = Some(ExactLenStream::new(
+                    r.end - r.start,
+                    this.entity.get_range(r.clone()),
+                ));
+            } else {
+                let v = std::mem::take(&mut this.part_headers[i]);
+                this.state += 1;
+                this.remaining -= crate::as_u64(v.len());
+                return Poll::Ready(Some(Ok(v.into())));
+            };
+        }
+    }
+}
+
 const _: () = {
     fn _assert() {
         fn assert_bounds<T: Sync + Send>() {}
@@ -240,7 +386,14 @@ const _: () = {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::SystemTime;
+
     use futures_util::StreamExt as _;
+    use http_body_util::BodyExt as _;
 
     use super::*;
 
@@ -285,5 +438,82 @@ mod tests {
         let err = err.downcast::<StreamTooLongError>().unwrap();
         assert_eq!(err, StreamTooLongError { extra: 2 });
         assert!(exact_len.next().await.is_none()); // fused.
+    }
+
+    #[tokio::test]
+    async fn on_complete_called_once_for_exact_len_body() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let on_complete_calls = Arc::clone(&calls);
+
+        let inner = futures_util::stream::iter(vec![Ok("he".into()), Ok("llo".into())]);
+        let mut body = Body::new_exact_len(5, Box::pin(inner)).on_complete(move || {
+            on_complete_calls.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(body.frame().await.is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(body.frame().await.is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(body.frame().await.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(body.frame().await.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn on_complete_called_once_for_multipart_body() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let on_complete_calls = Arc::clone(&calls);
+
+        let entity = crate::ResourceBuilder::for_bytes("abcdef", SystemTime::UNIX_EPOCH).build();
+        let part_headers = vec![b"part-one\r\n".to_vec(), b"part-two\r\n".to_vec()];
+        let ranges = vec![0..2, 3..6];
+        let len = 10 + 10 + 2 + 3 + 9;
+        let mut body =
+            Body::new_multipart(entity, part_headers, ranges, len).on_complete(move || {
+                on_complete_calls.fetch_add(1, Ordering::SeqCst);
+            });
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(body.frame().await.is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        while body.frame().await.is_some() {}
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(body.frame().await.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn on_complete_called_once_when_exact_len_body_dropped_before_consumed() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let on_complete_calls = Arc::clone(&calls);
+
+        let inner = futures_util::stream::iter(vec![Ok("hello".into())]);
+        let body = Body::new_exact_len(5, Box::pin(inner)).on_complete(move || {
+            on_complete_calls.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        drop(body);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn on_complete_called_once_when_multipart_body_dropped_before_consumed() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let on_complete_calls = Arc::clone(&calls);
+
+        let entity = crate::ResourceBuilder::for_bytes("abcdef", SystemTime::UNIX_EPOCH).build();
+        let part_headers = vec![b"part-one\r\n".to_vec(), b"part-two\r\n".to_vec()];
+        let ranges = vec![0..2, 3..6];
+        let len = 10 + 10 + 2 + 3 + 9;
+        let body = Body::new_multipart(entity, part_headers, ranges, len).on_complete(move || {
+            on_complete_calls.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        drop(body);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

@@ -72,8 +72,89 @@ impl ResourceContent {
     }
 }
 
-/// HTTP entity created from a [`std::fs::File`] which reads the file chunk-by-chunk within
-/// a [`tokio::task::block_in_place`] closure.
+/// A configurable builder for a [`Resource`].
+///
+/// A `ResourceBuilder` allows you to configure both the resource content and
+/// its HTTP response headers.
+///
+/// Can be backed by a [`File`] or [`Bytes`].
+pub struct ResourceBuilder {
+    len: u64,
+    mtime: SystemTime,
+    content: ResourceContent,
+    headers: Vec<(HeaderName, HeaderValue)>,
+    etag: Option<ETag>,
+}
+
+impl ResourceBuilder {
+    /// Creates a new `ResourceBuilder` that serves the file at the given path.
+    pub fn for_file(path: impl AsRef<Path>) -> Result<Self, SerdirError> {
+        let path = path.as_ref();
+        let file = File::open(path)?;
+        let file_info = FileInfo::open_file(path, &file)?;
+
+        let mut reader = &file;
+        let etag: Option<ETag> = default_hasher(&mut reader)?.map(Into::into);
+
+        Ok(Self {
+            len: file_info.len(),
+            mtime: file_info.mtime(),
+            content: ResourceContent::for_file(Arc::new(file)),
+            headers: Vec::new(),
+            etag,
+        })
+    }
+
+    /// Creates a new `ResourceBuilder` backed by in-memory bytes.
+    ///
+    /// The provided `mtime` is used for conditional request handling.
+    /// If ETag hashing fails unexpectedly, ETag is omitted.
+    pub fn for_bytes(bytes: impl Into<bytes::Bytes>, mtime: SystemTime) -> Self {
+        let bytes = bytes.into();
+        let mut reader = std::io::Cursor::new(bytes.clone());
+        let etag: Option<ETag> = default_hasher(&mut reader).ok().flatten().map(Into::into);
+
+        Self {
+            len: crate::as_u64(bytes.len()),
+            mtime,
+            content: ResourceContent::for_bytes(bytes),
+            headers: Vec::with_capacity(2),
+            etag,
+        }
+    }
+
+    /// Creates a new `ResourceBuilder` backed by UTF-8 string content.
+    pub fn for_str(value: &str, mtime: SystemTime) -> Self {
+        Self::for_bytes(value.as_bytes().to_vec(), mtime)
+    }
+
+    /// Adds a response header.
+    ///
+    /// If called multiple times with the same header name, the last value provided will win.
+    pub fn header(mut self, name: HeaderName, value: impl Into<HeaderValue>) -> Self {
+        self.headers.push((name, value.into()));
+        self
+    }
+
+    /// Convenience method for setting the `Content-Type` response header.
+    pub fn content_type(self, value: impl Into<HeaderValue>) -> Self {
+        self.header(http::header::CONTENT_TYPE, value)
+    }
+
+    /// Builds a `Resource`.
+    pub fn build(self) -> Resource {
+        Resource {
+            len: self.len,
+            mtime: self.mtime,
+            content: self.content,
+            headers: self.headers,
+            etag: self.etag,
+        }
+    }
+}
+
+/// HTTP entity created from a [`File`] or [`Bytes`] which reads the content as
+/// a stream of chunks.
 ///
 /// Expects to be served from a tokio threadpool.
 ///
@@ -110,94 +191,20 @@ impl ResourceContent {
 ///     .content_type(http::header::HeaderValue::from_static("text/plain"))
 ///     .build();
 /// let request = Request::get("/").body(())?;
-/// let response: http::Response<Body> = entity.serve_request(&request, StatusCode::OK);
+/// let response: http::Response<Body> = entity.into_response(&request, StatusCode::OK);
 ///
 /// assert_eq!(response.status(), StatusCode::OK);
 /// assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), "text/plain");
 /// # Ok(())
 /// # }
 /// ```
-pub struct ResourceBuilder {
-    len: u64,
-    mtime: SystemTime,
-    content: ResourceContent,
-    headers: HeaderMap,
-    etag: Option<ETag>,
-}
-
-impl ResourceBuilder {
-    /// Creates a new `ResourceBuilder` that serves the file at the given path.
-    pub fn for_file(path: impl AsRef<Path>) -> Result<Self, SerdirError> {
-        let path = path.as_ref();
-        let file = File::open(path)?;
-        let file_info = FileInfo::open_file(path, &file)?;
-
-        let mut reader = &file;
-        let etag: Option<ETag> = default_hasher(&mut reader)?.map(Into::into);
-
-        Ok(Self {
-            len: file_info.len(),
-            mtime: file_info.mtime(),
-            content: ResourceContent::for_file(Arc::new(file)),
-            headers: HeaderMap::new(),
-            etag,
-        })
-    }
-
-    /// Creates a new `ResourceBuilder` backed by in-memory bytes.
-    ///
-    /// The provided `mtime` is used for conditional request handling.
-    /// If ETag hashing fails unexpectedly, ETag is omitted.
-    pub fn for_bytes(bytes: impl Into<bytes::Bytes>, mtime: SystemTime) -> Self {
-        let bytes = bytes.into();
-        let mut reader = std::io::Cursor::new(bytes.clone());
-        let etag: Option<ETag> = default_hasher(&mut reader).ok().flatten().map(Into::into);
-
-        Self {
-            len: crate::as_u64(bytes.len()),
-            mtime,
-            content: ResourceContent::for_bytes(bytes),
-            headers: HeaderMap::new(),
-            etag,
-        }
-    }
-
-    /// Creates a new `ResourceBuilder` backed by UTF-8 string content.
-    pub fn for_str(value: &str, mtime: SystemTime) -> Self {
-        Self::for_bytes(value.as_bytes().to_vec(), mtime)
-    }
-
-    /// Adds or replaces one response header.
-    pub fn header(mut self, name: HeaderName, value: impl Into<HeaderValue>) -> Self {
-        self.headers.insert(name, value.into());
-        self
-    }
-
-    /// Convenience method for setting the `Content-Type` response header.
-    pub fn content_type(self, value: impl Into<HeaderValue>) -> Self {
-        self.header(http::header::CONTENT_TYPE, value)
-    }
-
-    /// Builds a `Resource`.
-    pub fn build(self) -> Resource {
-        Resource {
-            len: self.len,
-            mtime: self.mtime,
-            content: self.content,
-            headers: self.headers,
-            etag: self.etag,
-        }
-    }
-}
-
-/// A static HTTP resource with body content, headers, ETag and last-modified metadata.
 #[derive(Debug, Clone)]
 pub struct Resource {
     len: u64,
     mtime: SystemTime,
     content: ResourceContent,
     /// The HTTP response headers to include when serving this file
-    pub headers: HeaderMap,
+    pub headers: Vec<(HeaderName, HeaderValue)>,
     /// The ETag for the file, if any
     pub etag: Option<ETag>,
 }
@@ -218,7 +225,7 @@ impl Resource {
     pub(crate) fn for_file_with_metadata(
         file: Arc<std::fs::File>,
         file_info: FileInfo,
-        headers: HeaderMap,
+        headers: Vec<(HeaderName, HeaderValue)>,
         etag: Option<ETag>,
     ) -> Self {
         debug_assert!(file.metadata().unwrap().is_file());
@@ -233,14 +240,20 @@ impl Resource {
     }
 
     /// Returns the value of the response header with the given name, if it exists.
+    ///
+    /// If multiple values for the same header name were provided, the last one is returned.
     pub fn header(&self, name: &HeaderName) -> Option<&HeaderValue> {
-        self.headers.get(name)
+        self.headers
+            .iter()
+            .rev()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v)
     }
 
     /// Serves this entity as a response to the given request.
     ///
     /// Consumes the `Resource` and returns an HTTP response.
-    pub fn serve_request<B, D>(self, req: &Request<B>, status: StatusCode) -> Response<D>
+    pub fn into_response<B, D>(self, req: &Request<B>, status: StatusCode) -> Response<D>
     where
         D: From<crate::Body>,
     {
@@ -297,7 +310,9 @@ impl Resource {
     }
 
     pub(crate) fn add_headers(&self, h: &mut HeaderMap) {
-        h.extend(self.headers.iter().map(|(k, v)| (k.clone(), v.clone())));
+        for (name, value) in &self.headers {
+            h.insert(name.clone(), value.clone());
+        }
     }
 
     pub(crate) fn etag(&self) -> Option<HeaderValue> {
@@ -464,7 +479,7 @@ mod tests {
             let entity = ResourceBuilder::for_file(&p).unwrap().build();
             let req = http::Request::get("/").body(()).unwrap();
 
-            let res: http::Response<crate::Body> = entity.serve_request(&req, http::StatusCode::OK);
+            let res: http::Response<crate::Body> = entity.into_response(&req, http::StatusCode::OK);
             assert_eq!(res.status(), http::StatusCode::OK);
             let body = res.into_body().collect().await.unwrap().to_bytes();
             assert_eq!(body, "hello world");
@@ -509,6 +524,29 @@ mod tests {
                 entity.header(&http::header::CONTENT_TYPE).unwrap(),
                 "text/plain"
             );
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multiple_headers() {
+        use http::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+        tokio::spawn(async move {
+            let mtime = SystemTime::UNIX_EPOCH;
+            let entity = ResourceBuilder::for_str("hello", mtime)
+                .header(CONTENT_TYPE, HeaderValue::from_static("text/plain"))
+                .header(CONTENT_TYPE, HeaderValue::from_static("text/html"))
+                .build();
+
+            // Resource::header should return the last one
+            assert_eq!(entity.header(&CONTENT_TYPE).unwrap(), "text/html");
+
+            // Resource::add_headers should result in only the last one in the HeaderMap
+            let mut h = HeaderMap::new();
+            entity.add_headers(&mut h);
+            assert_eq!(h.get(CONTENT_TYPE).unwrap(), "text/html");
+            assert_eq!(h.get_all(CONTENT_TYPE).iter().count(), 1);
         })
         .await
         .unwrap();

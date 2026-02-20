@@ -17,7 +17,7 @@ use http::header::HeaderValue;
 use hyper::server::conn;
 use hyper_util::rt::TokioIo;
 use hyper_util::service::TowerToHyperService;
-use serdir::{Resource, ResourceBuilder, SerdirError, ServedDirBuilder};
+use serdir::{Resource, ResourceBuilder, SerdirError, ServedDir};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::time::SystemTime;
@@ -79,7 +79,7 @@ async fn main() -> Result<()> {
 
 async fn run() -> Result<()> {
     let config = Config::from_env();
-    let mut builder = ServedDirBuilder::new(config.directory.as_str())
+    let mut builder = ServedDir::builder(config.directory.as_str())
         .context("failed to create ServedDir builder")?
         .append_index_html(false)
         .compression(config.compression_strategy())
