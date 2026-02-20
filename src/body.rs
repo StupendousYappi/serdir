@@ -10,7 +10,7 @@ use std::{pin::Pin, task::Poll};
 
 use bytes::Buf;
 use futures_core::Stream;
-use log::{info, trace};
+use log::trace;
 use sync_wrapper::SyncWrapper;
 
 type OnComplete = Box<dyn FnOnce() + Send + Sync + 'static>;
@@ -136,7 +136,7 @@ impl Body {
         );
         self.on_complete = Some(Box::new(move || {
             let duration = start_time.elapsed();
-            info!("{} time_us={}", prefix, duration.as_micros());
+            trace!("{} time_us={}", prefix, duration.as_micros());
         }));
         self
     }
