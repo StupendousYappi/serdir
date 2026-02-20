@@ -50,9 +50,9 @@ where
 
     fn call(&self, req: Request<B>) -> Self::Future {
         let served_dir = self.0.clone();
-        let serving_req = req.without_body();
+        let req = req.without_body();
 
-        Box::pin(async move { served_dir.get_response(&serving_req).await })
+        Box::pin(async move { served_dir.get_response(&req).await })
     }
 }
 
