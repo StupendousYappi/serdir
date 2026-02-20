@@ -120,6 +120,7 @@ impl Body {
         }
     }
 
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn on_complete(
         mut self,
