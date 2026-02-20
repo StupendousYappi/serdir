@@ -10,7 +10,6 @@ use std::{pin::Pin, task::Poll};
 
 use bytes::Buf;
 use futures_core::Stream;
-use http::Request;
 use log::trace;
 use sync_wrapper::SyncWrapper;
 

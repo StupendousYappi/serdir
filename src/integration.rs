@@ -157,16 +157,32 @@ where
         let clone = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, clone);
 
+        let start_time = std::time::Instant::now();
+
         Box::pin(async move {
             match served_dir.get(req.uri().path(), req.headers()).await {
-                Ok(entity) => Ok(box_response(
-                    // drop the request body, not needed
-                    entity.into_response(&req.without_body(), StatusCode::OK),
-                )),
-                Err(SerdirError::NotFound(Some(entity))) => Ok(box_response(
-                    // drop the request body, not needed
-                    entity.into_response(&req.without_body(), StatusCode::NOT_FOUND),
-                )),
+                Ok(entity) => {
+                    let status = StatusCode::OK;
+                    let serving_req = req.without_body();
+                    Ok(add_trace_logging(
+                        // drop the request body, not needed
+                        entity.into_response(&serving_req, status),
+                        &serving_req,
+                        status,
+                        start_time,
+                    ))
+                }
+                Err(SerdirError::NotFound(Some(entity))) => {
+                    let status = StatusCode::NOT_FOUND;
+                    let serving_req = req.without_body();
+                    Ok(add_trace_logging(
+                        // drop the request body, not needed
+                        entity.into_response(&serving_req, status),
+                        &serving_req,
+                        status,
+                        start_time,
+                    ))
+                }
                 Err(SerdirError::NotFound(None))
                 | Err(SerdirError::IsDirectory(_))
                 | Err(SerdirError::InvalidPath(_)) => {
@@ -176,11 +192,12 @@ where
                 Err(_) => {
                     let status = StatusCode::INTERNAL_SERVER_ERROR;
                     let reason = status.canonical_reason().unwrap();
+                    let serving_req = req.without_body();
                     let resp = Response::builder()
                         .status(status)
                         .body(Body::from(reason))
                         .expect("internal server error response should be valid");
-                    Ok(resp.map(|body| body.map_err(Into::into).boxed_unsync()))
+                    Ok(add_trace_logging(resp, &serving_req, status, start_time))
                 }
             }
         })
@@ -188,11 +205,17 @@ where
 }
 
 #[cfg(feature = "tower")]
-fn box_response(response: Response<Body>) -> Response<UnsyncBoxBody<bytes::Bytes, BoxError>> {
+fn add_trace_logging<T>(
+    response: Response<Body>,
+    req: &Request<T>,
+    status: StatusCode,
+    start_time: std::time::Instant,
+) -> Response<UnsyncBoxBody<bytes::Bytes, BoxError>> {
     use http_body_util::BodyExt;
 
     response.map(|body| {
-        body.map_err(|err| -> BoxError { Box::new(err) })
+        body.enable_trace_log(req, status, start_time)
+            .map_err(|err| -> BoxError { Box::new(err) })
             .boxed_unsync()
     })
 }
