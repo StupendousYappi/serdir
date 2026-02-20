@@ -6,6 +6,7 @@ use futures_core::future::BoxFuture;
 #[cfg(feature = "tower")]
 use http::StatusCode;
 use http::{Request, Response};
+#[cfg(feature = "tower")]
 use http_body_util::combinators::UnsyncBoxBody;
 use std::convert::Infallible;
 use std::sync::Arc;
