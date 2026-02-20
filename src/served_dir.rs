@@ -196,7 +196,7 @@ impl ServedDir {
         match self.resolve(path, req_hdrs).await {
             Ok(entity) => Ok(entity),
             Err(err) => {
-                error!("File resolution error, {} url_path={}", err, path);
+                error!("File resolution error, {err} url_path={path}");
                 match self.error_handler {
                     Some(error_handler) => error_handler(err),
                     None => Err(err),
