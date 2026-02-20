@@ -6,6 +6,7 @@ use futures_core::future::BoxFuture;
 #[cfg(feature = "tower")]
 use http::StatusCode;
 use http::{Request, Response};
+use http_body_util::combinators::UnsyncBoxBody;
 use std::convert::Infallible;
 use std::sync::Arc;
 
@@ -137,7 +138,7 @@ where
     ResBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
     ResBody::Error: Into<BoxError> + 'static,
 {
-    type Response = Response<http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, BoxError>>;
+    type Response = Response<UnsyncBoxBody<bytes::Bytes, BoxError>>;
     type Error = S::Error;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
@@ -187,9 +188,7 @@ where
 }
 
 #[cfg(feature = "tower")]
-fn box_response(
-    response: Response<Body>,
-) -> Response<http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, BoxError>> {
+fn box_response(response: Response<Body>) -> Response<UnsyncBoxBody<bytes::Bytes, BoxError>> {
     use http_body_util::BodyExt;
 
     response.map(|body| {
