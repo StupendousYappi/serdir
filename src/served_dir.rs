@@ -6,6 +6,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::sync::LazyLock;
+use std::time::Instant;
 use std::{collections::HashMap, path::PathBuf};
 
 #[cfg(feature = "runtime-compression")]
@@ -238,22 +239,18 @@ impl ServedDir {
     /// A convenience wrapper method for [ServedDir::get], converting a HTTP request
     /// into a HTTP response by serving static files using this `ServedDir`.
     pub async fn get_response<B>(&self, req: &Request<B>) -> Result<Response<Body>, Infallible> {
+        let start_time = Instant::now();
         let result = self.get(req.uri().path(), req.headers()).await;
-        match result {
-            Ok(entity) => Ok(entity.into_response(req, StatusCode::OK)),
-            Err(SerdirError::NotFound(Some(entity))) => {
-                Ok(entity.into_response(req, StatusCode::NOT_FOUND))
+        let resp = match result {
+            Ok(resource) => resource.into_response(req, StatusCode::OK),
+            Err(SerdirError::NotFound(Some(resource))) => {
+                resource.into_response(req, StatusCode::NOT_FOUND)
             }
-            Err(SerdirError::NotFound(None)) | Err(SerdirError::IsDirectory(_)) => {
-                Ok(Self::make_status_response(StatusCode::NOT_FOUND))
-            }
-            Err(SerdirError::InvalidPath(_)) => {
-                Ok(Self::make_status_response(StatusCode::BAD_REQUEST))
-            }
-            Err(_) => Ok(Self::make_status_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-            )),
-        }
+            Err(err) => Self::make_status_response(err.status_code()),
+        };
+        let status = resp.status();
+        let resp = resp.map(|body| body.enable_trace_log(req, status, start_time));
+        Ok(resp)
     }
 
     fn make_status_response(status: StatusCode) -> Response<Body> {

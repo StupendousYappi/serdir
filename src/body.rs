@@ -10,6 +10,8 @@ use std::{pin::Pin, task::Poll};
 
 use bytes::Buf;
 use futures_core::Stream;
+use http::Request;
+use log::trace;
 use sync_wrapper::SyncWrapper;
 
 type OnComplete = Box<dyn FnOnce() + Send + Sync + 'static>;
@@ -118,6 +120,25 @@ impl Body {
             },
             on_complete: None,
         }
+    }
+
+    #[inline]
+    pub(crate) fn enable_trace_log<T>(
+        mut self,
+        req: &http::Request<T>,
+        status: http::StatusCode,
+        start_time: std::time::Instant,
+    ) -> Self {
+        let prefix = format!(
+            "Completed request method={} path={} status={} ",
+            req.method(),
+            req.uri(),
+            status
+        );
+        self.on_complete = Some(Box::new(move || {
+            trace!("{} duration={:?}", prefix, start_time.elapsed());
+        }));
+        self
     }
 
     #[allow(dead_code)]

@@ -131,6 +131,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use http::StatusCode;
+
 /// Returns a HeaderValue for the given formatted data.
 /// Caller must make two guarantees:
 ///    * The data fits within `max_len` (or the write will panic).
@@ -210,6 +212,15 @@ impl SerdirError {
         let err = SerdirError::IOError(err);
         log::error!("{err}");
         err
+    }
+
+    /// Returns the HTTP status code most appropriate for this error.
+    pub fn status_code(&self) -> StatusCode {
+        match self {
+            SerdirError::NotFound(_) | SerdirError::IsDirectory(_) => StatusCode::NOT_FOUND,
+            SerdirError::InvalidPath(_) => StatusCode::BAD_REQUEST,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        }
     }
 }
 
