@@ -159,7 +159,7 @@ async fn test_served_dir_strip_prefix() {
 
     // Should fail without the prefix
     let err = served_dir.get("/real.txt", &hdrs).await.unwrap_err();
-    assert!(matches!(err, SerdirError::NotFound(_)));
+    assert!(matches!(err, SerdirError::InvalidPath(msg) if msg.contains("required prefix")));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -172,7 +172,7 @@ async fn test_served_dir_default_prefix_rejects_relative_paths() {
         .get("real.txt", &HeaderMap::new())
         .await
         .unwrap_err();
-    assert!(matches!(err, SerdirError::NotFound(_)));
+    assert!(matches!(err, SerdirError::InvalidPath(msg) if msg.contains("required prefix")));
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -205,9 +205,11 @@ impl ServedDir {
     async fn resolve(&self, path: &str, req_hdrs: &HeaderMap) -> Result<Resource, SerdirError> {
         let path = match self.strip_prefix.as_deref() {
             Some(prefix) if path == prefix => ".",
-            Some(prefix) => path
-                .strip_prefix(prefix)
-                .ok_or(SerdirError::not_found(None))?,
+            Some(prefix) => path.strip_prefix(prefix).ok_or_else(|| {
+                SerdirError::invalid_path(format!(
+                    "path does not start with required prefix '{prefix}'"
+                ))
+            })?,
             None => path,
         };
 
