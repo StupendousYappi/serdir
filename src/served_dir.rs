@@ -48,12 +48,13 @@ use log::error;
 ///
 /// ## Path cleanup and validation
 ///
-/// The [ServedDir::get] and [ServedDir:get_response] first cleanup the input
+/// The [ServedDir::get] and [ServedDir:get_response] first clean up the input
 /// path by stripping the configured `strip_prefix` value from the start of the
 /// path. If a `strip_prefix` value is defined but the input path doesn't start
-/// with it, those methods return `SerdirError::InvalidPath`. Then, they strip
-/// a single leading slash from the path if present- this means that paths `foo`
-/// and `/foo` are equivalent.
+/// with it, those methods return `SerdirError::InvalidPath`. By default,
+/// [`ServedDirBuilder`] sets `strip_prefix` to `"/"`, so request paths are
+/// expected to be absolute-style URL paths. To disable this and accept paths as
+/// provided, use [`ServedDirBuilder::strip_prefix`] with an empty string.
 ///
 /// The cleaned path value is then validated for safety- those methods will return
 /// `SerdirError::InvalidPath` if the cleaned path:
@@ -132,7 +133,7 @@ impl ServedDir {
             compression_strategy: CompressionStrategy::none(),
             file_hasher: None,
             error_handler: None,
-            strip_prefix: None,
+            strip_prefix: Some("/".to_string()),
             known_extensions: ServedDirBuilder::default_extensions(),
             default_content_type: OCTET_STREAM.clone(),
             common_headers: HeaderMap::new(),
@@ -208,12 +209,13 @@ impl ServedDir {
     async fn resolve(&self, path: &str, req_hdrs: &HeaderMap) -> Result<Resource, SerdirError> {
         let path = match self.strip_prefix.as_deref() {
             Some(prefix) if path == prefix => ".",
-            Some(prefix) => path
-                .strip_prefix(prefix)
-                .ok_or(SerdirError::not_found(None))?,
+            Some(prefix) => path.strip_prefix(prefix).ok_or_else(|| {
+                SerdirError::invalid_path(format!(
+                    "path does not start with required prefix '{prefix}'"
+                ))
+            })?,
             None => path,
         };
-        let path = path.strip_prefix('/').unwrap_or(path);
 
         let full_path = self.validate_path(path)?;
 
@@ -481,6 +483,12 @@ impl ServedDirBuilder {
 
     /// Sets a prefix to strip from the request path.
     ///
+    /// Defaults to `"/"`, which makes [`ServedDir::get`] and
+    /// [`ServedDir::get_response`] expect leading-slash request paths.
+    ///
+    /// To disable prefix stripping and accept input paths as-is, pass an empty
+    /// string.
+    ///
     /// If this value is defined, [`ServedDir::get`] and
     /// [`ServedDir::get_response`] will return a [`SerdirError::InvalidPath`]
     /// error for any path that doesn't begin with the given prefix.
@@ -593,6 +601,10 @@ impl ServedDirBuilder {
     /// The path must be relative to the directory being served.
     ///
     /// The extension of the file will be used to determine the content type of all 404 responses.
+    ///
+    /// If both `not_found_path` and `error_handler` are configured, the `not_found_path`
+    /// will be used first to handle unmatched paths, and the `error_handler` will be used
+    /// for all other errors (or if the `not_found_path` itself is not found).
     pub fn not_found_path(mut self, path: impl Into<PathBuf>) -> Result<Self, SerdirError> {
         let path = path.into();
         if path.is_absolute() || path.has_root() {
