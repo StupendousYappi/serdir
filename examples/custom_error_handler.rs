@@ -23,7 +23,7 @@ use std::path::Path;
 use std::time::SystemTime;
 use tokio::net::TcpListener;
 
-fn custom_error_handler(err: SerdirError) -> Result<Resource, SerdirError> {
+fn custom_error_handler(err: SerdirError, _request_path: &str) -> Result<Resource, SerdirError> {
     let path = match err {
         SerdirError::IsDirectory(path) => path,
         other => return Err(other),
@@ -83,7 +83,7 @@ async fn run() -> Result<()> {
         .context("failed to create ServedDir builder")?
         .append_index_html(false)
         .compression(config.compression_strategy())
-        .strip_prefix(config.strip_prefix.unwrap_or_default())
+        .strip_prefix(config.strip_prefix.as_str())
         .error_handler(custom_error_handler);
     if let Some(path) = config.not_found_path {
         builder = builder

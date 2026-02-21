@@ -48,12 +48,13 @@ use log::error;
 ///
 /// ## Path cleanup and validation
 ///
-/// The [ServedDir::get] and [ServedDir:get_response] first cleanup the input
+/// The [ServedDir::get] and [ServedDir:get_response] first clean up the input
 /// path by stripping the configured `strip_prefix` value from the start of the
 /// path. If a `strip_prefix` value is defined but the input path doesn't start
-/// with it, those methods return `SerdirError::InvalidPath`. Then, they strip
-/// a single leading slash from the path if present- this means that paths `foo`
-/// and `/foo` are equivalent.
+/// with it, those methods return `SerdirError::InvalidPath`. By default,
+/// [`ServedDirBuilder`] sets `strip_prefix` to `"/"`, so request paths are
+/// expected to be absolute-style URL paths. To disable this and accept paths as
+/// provided, use [`ServedDirBuilder::strip_prefix`] with an empty string.
 ///
 /// The cleaned path value is then validated for safety- those methods will return
 /// `SerdirError::InvalidPath` if the cleaned path:
@@ -69,7 +70,7 @@ pub struct ServedDir {
     dirpath: PathBuf,
     compression_strategy: CompressionStrategyInner,
     file_hasher: ResourceHasher,
-    error_handler: Option<ErrorHandler>,
+    error_handler: Option<Box<ErrorHandler>>,
     strip_prefix: Option<String>,
     known_extensions: HashMap<String, HeaderValue>,
     default_content_type: HeaderValue,
@@ -132,7 +133,7 @@ impl ServedDir {
             compression_strategy: CompressionStrategy::none(),
             file_hasher: None,
             error_handler: None,
-            strip_prefix: None,
+            strip_prefix: Some("/".to_string()),
             known_extensions: ServedDirBuilder::default_extensions(),
             default_content_type: OCTET_STREAM.clone(),
             common_headers: HeaderMap::new(),
@@ -197,8 +198,8 @@ impl ServedDir {
             Ok(entity) => Ok(entity),
             Err(err) => {
                 error!("File resolution error, {err} url_path={path}");
-                match self.error_handler {
-                    Some(error_handler) => error_handler(err),
+                match &self.error_handler {
+                    Some(error_handler) => error_handler(err, path),
                     None => Err(err),
                 }
             }
@@ -208,12 +209,13 @@ impl ServedDir {
     async fn resolve(&self, path: &str, req_hdrs: &HeaderMap) -> Result<Resource, SerdirError> {
         let path = match self.strip_prefix.as_deref() {
             Some(prefix) if path == prefix => ".",
-            Some(prefix) => path
-                .strip_prefix(prefix)
-                .ok_or(SerdirError::not_found(None))?,
+            Some(prefix) => path.strip_prefix(prefix).ok_or_else(|| {
+                SerdirError::invalid_path(format!(
+                    "path does not start with required prefix '{prefix}'"
+                ))
+            })?,
             None => path,
         };
-        let path = path.strip_prefix('/').unwrap_or(path);
 
         let full_path = self.validate_path(path)?;
 
@@ -385,18 +387,39 @@ impl ServedDir {
 /// A builder for [`ServedDir`].
 ///
 /// Created via the [`ServedDir::builder`] constructor.
-#[derive(Debug)]
 pub struct ServedDirBuilder {
     dirpath: PathBuf,
     compression_strategy: CompressionStrategy,
     file_hasher: Option<ResourceHasher>,
-    error_handler: Option<ErrorHandler>,
+    error_handler: Option<Box<ErrorHandler>>,
     strip_prefix: Option<String>,
     known_extensions: HashMap<String, HeaderValue>,
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
     append_index_html: bool,
     not_found_path: Option<PathBuf>,
+}
+
+impl Debug for ServedDirBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let strategy = match self.compression_strategy {
+            CompressionStrategy::Static(_) => "static",
+            CompressionStrategy::None => "none",
+            #[cfg(feature = "runtime-compression")]
+            CompressionStrategy::Cached(_) => "cached",
+        };
+
+        f.debug_struct("ServedDirBuilder")
+            .field("dirpath", &self.dirpath)
+            .field("strip_prefix", &self.strip_prefix)
+            .field("append_index_html", &self.append_index_html)
+            .field("not_found_path", &self.not_found_path)
+            .field("default_content_type", &self.default_content_type)
+            .field("compression_strategy", &strategy)
+            .field("has_file_hasher", &self.file_hasher.is_some())
+            .field("has_error_handler", &self.error_handler.is_some())
+            .finish()
+    }
 }
 
 impl ServedDirBuilder {
@@ -450,12 +473,21 @@ impl ServedDirBuilder {
     }
 
     /// Sets a function that can transform certain errors into servable resources.
-    pub fn error_handler(mut self, error_handler: ErrorHandler) -> Self {
-        self.error_handler = Some(error_handler);
+    pub fn error_handler<F>(mut self, error_handler: F) -> Self
+    where
+        F: Fn(SerdirError, &str) -> Result<Resource, SerdirError> + Send + Sync + 'static,
+    {
+        self.error_handler = Some(Box::new(error_handler));
         self
     }
 
     /// Sets a prefix to strip from the request path.
+    ///
+    /// Defaults to `"/"`, which makes [`ServedDir::get`] and
+    /// [`ServedDir::get_response`] expect leading-slash request paths.
+    ///
+    /// To disable prefix stripping and accept input paths as-is, pass an empty
+    /// string.
     ///
     /// If this value is defined, [`ServedDir::get`] and
     /// [`ServedDir::get_response`] will return a [`SerdirError::InvalidPath`]
@@ -569,6 +601,10 @@ impl ServedDirBuilder {
     /// The path must be relative to the directory being served.
     ///
     /// The extension of the file will be used to determine the content type of all 404 responses.
+    ///
+    /// If both `not_found_path` and `error_handler` are configured, the `not_found_path`
+    /// will be used first to handle unmatched paths, and the `error_handler` will be used
+    /// for all other errors (or if the `not_found_path` itself is not found).
     pub fn not_found_path(mut self, path: impl Into<PathBuf>) -> Result<Self, SerdirError> {
         let path = path.into();
         if path.is_absolute() || path.has_root() {

@@ -39,8 +39,8 @@ pub struct Config {
     pub directory: String,
 
     /// URL path prefix to strip before serving files
-    #[argh(option)]
-    pub strip_prefix: Option<String>,
+    #[argh(option, default = "\"/\".to_string()")]
+    pub strip_prefix: String,
 
     /// compression strategy: cached, static, or none
     #[argh(option, default = "CompressionMode::None")]
