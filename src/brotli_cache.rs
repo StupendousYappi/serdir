@@ -11,6 +11,7 @@ use std::{
 
 use brotli::enc::backward_references::BrotliEncoderMode;
 use brotli::enc::BrotliEncoderParams;
+use log::{debug, warn};
 use sieve_cache::ShardedSieveCache;
 use std::io::Write;
 
@@ -124,6 +125,10 @@ impl BrotliCache {
         })? {
             Ok(v) => v,
             Err(e) if e.kind() == ErrorKind::StorageFull => {
+                warn!(
+                    "Disk full while compressing {}; purging Brotli cache",
+                    path.display()
+                );
                 self.prune_cache();
                 return Self::wrap_orig(path, extension);
             }
@@ -134,6 +139,12 @@ impl BrotliCache {
         };
 
         let brotli_metadata = brotli_file.metadata()?;
+        debug!(
+            "Successfully compressed file: path={}, original_size={}, compressed_size={}",
+            path.display(),
+            file_info.len(),
+            brotli_metadata.len()
+        );
 
         // The cached brotli tempfile literally doesn't have a filename, so we can't
         // calculate a path hash for it. Instead, we reverse the bytes of the original
