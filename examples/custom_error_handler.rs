@@ -23,7 +23,7 @@ use std::path::Path;
 use std::time::SystemTime;
 use tokio::net::TcpListener;
 
-fn custom_error_handler(err: SerdirError) -> Result<Resource, SerdirError> {
+fn custom_error_handler(err: SerdirError, _request_path: &str) -> Result<Resource, SerdirError> {
     let path = match err {
         SerdirError::IsDirectory(path) => path,
         other => return Err(other),

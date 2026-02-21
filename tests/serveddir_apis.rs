@@ -46,13 +46,15 @@ fn default_hasher(file: &mut dyn Read) -> Result<Option<u64>, std::io::Error> {
 
 static ERROR_HANDLER_CALLS: AtomicUsize = AtomicUsize::new(0);
 static ERROR_HANDLER_TEST_LOCK: Mutex<()> = Mutex::new(());
+static LAST_ERROR_HANDLER_PATH: Mutex<Option<String>> = Mutex::new(None);
 
-fn counting_error_handler(err: SerdirError) -> Result<Resource, SerdirError> {
+fn counting_error_handler(err: SerdirError, path: &str) -> Result<Resource, SerdirError> {
     ERROR_HANDLER_CALLS.fetch_add(1, Ordering::SeqCst);
+    *LAST_ERROR_HANDLER_PATH.lock().unwrap() = Some(path.to_string());
     Err(err)
 }
 
-fn directory_listing_error_handler(err: SerdirError) -> Result<Resource, SerdirError> {
+fn directory_listing_error_handler(err: SerdirError, _path: &str) -> Result<Resource, SerdirError> {
     match err {
         SerdirError::IsDirectory(path) => {
             let body = format!("directory listing for {}", path.display());
@@ -331,6 +333,7 @@ async fn test_append_index_html_success_does_not_call_error_handler() {
     std::fs::write(path.join("subdir").join("index.html"), b"index content").unwrap();
 
     ERROR_HANDLER_CALLS.store(0, Ordering::SeqCst);
+    *LAST_ERROR_HANDLER_PATH.lock().unwrap() = None;
 
     let served_dir = context
         .builder
@@ -370,6 +373,7 @@ async fn test_error_handler_passthrough_preserves_error() {
     let _guard = ERROR_HANDLER_TEST_LOCK.lock().unwrap();
     let context = TestContext::new();
     ERROR_HANDLER_CALLS.store(0, Ordering::SeqCst);
+    *LAST_ERROR_HANDLER_PATH.lock().unwrap() = None;
 
     let served_dir = context
         .builder
@@ -382,6 +386,85 @@ async fn test_error_handler_passthrough_preserves_error() {
 
     assert!(matches!(err, SerdirError::NotFound(_)));
     assert_eq!(ERROR_HANDLER_CALLS.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *LAST_ERROR_HANDLER_PATH.lock().unwrap(),
+        Some("missing.txt".to_string())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_error_handler_receives_original_path_on_not_found() {
+    let _guard = ERROR_HANDLER_TEST_LOCK.lock().unwrap();
+    let context = TestContext::new();
+    ERROR_HANDLER_CALLS.store(0, Ordering::SeqCst);
+    *LAST_ERROR_HANDLER_PATH.lock().unwrap() = None;
+
+    let served_dir = context
+        .builder
+        .error_handler(counting_error_handler)
+        .build();
+    let err = served_dir
+        .get("missing-original.txt", &HeaderMap::new())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, SerdirError::NotFound(_)));
+    assert_eq!(ERROR_HANDLER_CALLS.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *LAST_ERROR_HANDLER_PATH.lock().unwrap(),
+        Some("missing-original.txt".to_string())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_error_handler_receives_original_path_with_strip_prefix() {
+    let _guard = ERROR_HANDLER_TEST_LOCK.lock().unwrap();
+    let context = TestContext::new();
+    ERROR_HANDLER_CALLS.store(0, Ordering::SeqCst);
+    *LAST_ERROR_HANDLER_PATH.lock().unwrap() = None;
+
+    let served_dir = context
+        .builder
+        .strip_prefix("/static")
+        .error_handler(counting_error_handler)
+        .build();
+    let err = served_dir
+        .get("/static/missing-with-prefix.txt", &HeaderMap::new())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, SerdirError::NotFound(_)));
+    assert_eq!(ERROR_HANDLER_CALLS.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *LAST_ERROR_HANDLER_PATH.lock().unwrap(),
+        Some("/static/missing-with-prefix.txt".to_string())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_error_handler_receives_original_path_when_append_index_html_fails() {
+    let _guard = ERROR_HANDLER_TEST_LOCK.lock().unwrap();
+    let context = TestContext::new();
+    ERROR_HANDLER_CALLS.store(0, Ordering::SeqCst);
+    *LAST_ERROR_HANDLER_PATH.lock().unwrap() = None;
+
+    std::fs::create_dir(context.tmp.path().join("empty_subdir")).unwrap();
+    let served_dir = context
+        .builder
+        .append_index_html(true)
+        .error_handler(counting_error_handler)
+        .build();
+    let err = served_dir
+        .get("empty_subdir", &HeaderMap::new())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, SerdirError::NotFound(_)));
+    assert_eq!(ERROR_HANDLER_CALLS.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *LAST_ERROR_HANDLER_PATH.lock().unwrap(),
+        Some("empty_subdir".to_string())
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

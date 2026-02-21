@@ -69,7 +69,7 @@ pub struct ServedDir {
     dirpath: PathBuf,
     compression_strategy: CompressionStrategyInner,
     file_hasher: ResourceHasher,
-    error_handler: Option<ErrorHandler>,
+    error_handler: Option<Box<ErrorHandler>>,
     strip_prefix: Option<String>,
     known_extensions: HashMap<String, HeaderValue>,
     default_content_type: HeaderValue,
@@ -197,8 +197,8 @@ impl ServedDir {
             Ok(entity) => Ok(entity),
             Err(err) => {
                 error!("File resolution error, {err} url_path={path}");
-                match self.error_handler {
-                    Some(error_handler) => error_handler(err),
+                match &self.error_handler {
+                    Some(error_handler) => error_handler(err, path),
                     None => Err(err),
                 }
             }
@@ -385,18 +385,39 @@ impl ServedDir {
 /// A builder for [`ServedDir`].
 ///
 /// Created via the [`ServedDir::builder`] constructor.
-#[derive(Debug)]
 pub struct ServedDirBuilder {
     dirpath: PathBuf,
     compression_strategy: CompressionStrategy,
     file_hasher: Option<ResourceHasher>,
-    error_handler: Option<ErrorHandler>,
+    error_handler: Option<Box<ErrorHandler>>,
     strip_prefix: Option<String>,
     known_extensions: HashMap<String, HeaderValue>,
     default_content_type: HeaderValue,
     common_headers: HeaderMap,
     append_index_html: bool,
     not_found_path: Option<PathBuf>,
+}
+
+impl Debug for ServedDirBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let strategy = match self.compression_strategy {
+            CompressionStrategy::Static(_) => "static",
+            CompressionStrategy::None => "none",
+            #[cfg(feature = "runtime-compression")]
+            CompressionStrategy::Cached(_) => "cached",
+        };
+
+        f.debug_struct("ServedDirBuilder")
+            .field("dirpath", &self.dirpath)
+            .field("strip_prefix", &self.strip_prefix)
+            .field("append_index_html", &self.append_index_html)
+            .field("not_found_path", &self.not_found_path)
+            .field("default_content_type", &self.default_content_type)
+            .field("compression_strategy", &strategy)
+            .field("has_file_hasher", &self.file_hasher.is_some())
+            .field("has_error_handler", &self.error_handler.is_some())
+            .finish()
+    }
 }
 
 impl ServedDirBuilder {
@@ -450,8 +471,11 @@ impl ServedDirBuilder {
     }
 
     /// Sets a function that can transform certain errors into servable resources.
-    pub fn error_handler(mut self, error_handler: ErrorHandler) -> Self {
-        self.error_handler = Some(error_handler);
+    pub fn error_handler<F>(mut self, error_handler: F) -> Self
+    where
+        F: Fn(SerdirError, &str) -> Result<Resource, SerdirError> + Send + Sync + 'static,
+    {
+        self.error_handler = Some(Box::new(error_handler));
         self
     }
 
