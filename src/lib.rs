@@ -116,6 +116,13 @@
 //! }
 //! # }
 //! ```
+//!
+//! ## Logging
+//!
+//! This crate provides basic logs for debugging purposes via the `log` crate.
+//! Errors are logged at the `ERROR` level, and details of all served requests,
+//! including path, response status and duration, are logged at the `TRACE`
+//! level.
 
 #![deny(missing_docs, clippy::print_stderr, clippy::print_stdout)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
