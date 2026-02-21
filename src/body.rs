@@ -136,7 +136,7 @@ impl Body {
         );
         self.on_complete = Some(Box::new(move || {
             let duration = start_time.elapsed();
-            trace!("{} duration_micros={}", prefix, duration.as_micros());
+            trace!("{} time_us={}", prefix, duration.as_micros());
         }));
         self
     }

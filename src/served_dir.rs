@@ -23,6 +23,7 @@ use crate::integration::{TowerLayer, TowerService};
 use crate::etag::EtagCache;
 use crate::{Body, ETag, ErrorHandler, FileInfo, Resource, ResourceHasher, SerdirError};
 use http::{header, HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode};
+use log::error;
 
 /// Returns [`Resource`] values for file paths within a directory.
 ///
@@ -195,10 +196,13 @@ impl ServedDir {
     pub async fn get(&self, path: &str, req_hdrs: &HeaderMap) -> Result<Resource, SerdirError> {
         match self.resolve(path, req_hdrs).await {
             Ok(entity) => Ok(entity),
-            Err(err) => match &self.error_handler {
-                Some(error_handler) => error_handler(err, path),
-                None => Err(err),
-            },
+            Err(err) => {
+                error!("File resolution error, {err} url_path={path}");
+                match self.error_handler {
+                    Some(error_handler) => error_handler(err),
+                    None => Err(err),
+                }
+            }
         }
     }
 
