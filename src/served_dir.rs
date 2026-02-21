@@ -597,6 +597,10 @@ impl ServedDirBuilder {
     /// The path must be relative to the directory being served.
     ///
     /// The extension of the file will be used to determine the content type of all 404 responses.
+    ///
+    /// If both `not_found_path` and `error_handler` are configured, the `not_found_path`
+    /// will be used first to handle unmatched paths, and the `error_handler` will be used
+    /// for all other errors (or if the `not_found_path` itself is not found).
     pub fn not_found_path(mut self, path: impl Into<PathBuf>) -> Result<Self, SerdirError> {
         let path = path.into();
         if path.is_absolute() || path.has_root() {
