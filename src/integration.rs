@@ -6,6 +6,8 @@ use futures_core::future::BoxFuture;
 #[cfg(feature = "tower")]
 use http::StatusCode;
 use http::{Request, Response};
+#[cfg(feature = "tower")]
+use http_body_util::combinators::UnsyncBoxBody;
 use std::convert::Infallible;
 use std::sync::Arc;
 
@@ -48,9 +50,9 @@ where
 
     fn call(&self, req: Request<B>) -> Self::Future {
         let served_dir = self.0.clone();
-        let serving_req = req.without_body();
+        let req = req.without_body();
 
-        Box::pin(async move { served_dir.get_response(&serving_req).await })
+        Box::pin(async move { served_dir.get_response(&req).await })
     }
 }
 
@@ -137,7 +139,7 @@ where
     ResBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
     ResBody::Error: Into<BoxError> + 'static,
 {
-    type Response = Response<http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, BoxError>>;
+    type Response = Response<UnsyncBoxBody<bytes::Bytes, BoxError>>;
     type Error = S::Error;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
@@ -156,16 +158,30 @@ where
         let clone = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, clone);
 
+        let start_time = std::time::Instant::now();
+
         Box::pin(async move {
             match served_dir.get(req.uri().path(), req.headers()).await {
-                Ok(entity) => Ok(box_response(
-                    // drop the request body, not needed
-                    entity.into_response(&req.without_body(), StatusCode::OK),
-                )),
-                Err(SerdirError::NotFound(Some(entity))) => Ok(box_response(
-                    // drop the request body, not needed
-                    entity.into_response(&req.without_body(), StatusCode::NOT_FOUND),
-                )),
+                Ok(entity) => {
+                    let status = StatusCode::OK;
+                    let serving_req = req.without_body();
+                    Ok(add_trace_logging(
+                        &serving_req,
+                        // drop the request body, not needed
+                        entity.into_response(&serving_req, status),
+                        start_time,
+                    ))
+                }
+                Err(SerdirError::NotFound(Some(entity))) => {
+                    let status = StatusCode::NOT_FOUND;
+                    let serving_req = req.without_body();
+                    Ok(add_trace_logging(
+                        &serving_req,
+                        // drop the request body, not needed
+                        entity.into_response(&serving_req, status),
+                        start_time,
+                    ))
+                }
                 Err(SerdirError::NotFound(None))
                 | Err(SerdirError::IsDirectory(_))
                 | Err(SerdirError::InvalidPath(_)) => {
@@ -175,11 +191,12 @@ where
                 Err(_) => {
                     let status = StatusCode::INTERNAL_SERVER_ERROR;
                     let reason = status.canonical_reason().unwrap();
+                    let serving_req = req.without_body();
                     let resp = Response::builder()
                         .status(status)
                         .body(Body::from(reason))
                         .expect("internal server error response should be valid");
-                    Ok(resp.map(|body| body.map_err(Into::into).boxed_unsync()))
+                    Ok(add_trace_logging(&serving_req, resp, start_time))
                 }
             }
         })
@@ -187,13 +204,18 @@ where
 }
 
 #[cfg(feature = "tower")]
-fn box_response(
+fn add_trace_logging<T>(
+    req: &Request<T>,
     response: Response<Body>,
-) -> Response<http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, BoxError>> {
+    start_time: std::time::Instant,
+) -> Response<UnsyncBoxBody<bytes::Bytes, BoxError>> {
     use http_body_util::BodyExt;
 
+    let status = response.status();
+
     response.map(|body| {
-        body.map_err(|err| -> BoxError { Box::new(err) })
+        body.enable_trace_log(req, status, start_time)
+            .map_err(|err| -> BoxError { Box::new(err) })
             .boxed_unsync()
     })
 }

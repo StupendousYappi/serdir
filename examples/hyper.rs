@@ -20,6 +20,7 @@ use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::init();
     run().await
 }
 

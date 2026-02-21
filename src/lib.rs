@@ -131,6 +131,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use http::StatusCode;
+
 /// Returns a HeaderValue for the given formatted data.
 /// Caller must make two guarantees:
 ///    * The data fits within `max_len` (or the write will panic).
@@ -192,24 +194,27 @@ impl SerdirError {
     /// Constructor for CompressionError variant, logs a compression error.
     pub fn compression_error(msg: impl Into<String>, io_err: IOError) -> Self {
         let msg = msg.into();
-        let err = SerdirError::CompressionError(msg, io_err);
-        log::error!("{err}");
-        err
+        SerdirError::CompressionError(msg, io_err)
     }
 
     /// Constructor for InvalidPath variant, logs an invalid path error.
     pub fn invalid_path(msg: impl Into<String>) -> Self {
         let msg = msg.into();
-        let err = SerdirError::InvalidPath(msg);
-        log::error!("{err}");
-        err
+        SerdirError::InvalidPath(msg)
     }
 
-    /// Constructor for IOError variant, logs an I/O error.
+    /// Constructor for IOError variant.
     pub fn io_error(err: IOError) -> Self {
-        let err = SerdirError::IOError(err);
-        log::error!("{err}");
-        err
+        SerdirError::IOError(err)
+    }
+
+    /// Returns the HTTP status code most appropriate for this error.
+    pub fn status_code(&self) -> StatusCode {
+        match self {
+            SerdirError::NotFound(_) | SerdirError::IsDirectory(_) => StatusCode::NOT_FOUND,
+            SerdirError::InvalidPath(_) => StatusCode::BAD_REQUEST,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        }
     }
 }
 

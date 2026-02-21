@@ -73,11 +73,11 @@ fn dynamic_fallback_response(req: &http::Request<hyper::body::Incoming>) -> http
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::init();
     run().await
 }
 
 async fn run() -> Result<()> {
-    env_logger::init();
     let config = Config::from_env();
     let mut builder = ServedDir::builder(config.directory.as_str())
         .context("failed to create ServedDir builder")?

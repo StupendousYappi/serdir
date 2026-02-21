@@ -35,7 +35,7 @@ http = "1.4"
 http-body = "1.0"
 httpdate = "1.0"
 pin-project-lite = "0.2"
-rapidhash = "4.2"
+rapidhash = "4.4"
 sync_wrapper = "1.0"
 tokio = { version = "1.49", features = ["rt-multi-thread"] }
 brotli = { version = "7.0", optional = true }
