@@ -83,7 +83,7 @@ async fn run() -> Result<()> {
         .context("failed to create ServedDir builder")?
         .append_index_html(false)
         .compression(config.compression_strategy())
-        .strip_prefix(config.strip_prefix.unwrap_or_default())
+        .strip_prefix(config.strip_prefix.as_str())
         .error_handler(custom_error_handler);
     if let Some(path) = config.not_found_path {
         builder = builder
