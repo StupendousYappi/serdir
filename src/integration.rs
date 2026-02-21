@@ -8,7 +8,6 @@ use http::StatusCode;
 use http::{Request, Response};
 #[cfg(feature = "tower")]
 use http_body_util::combinators::UnsyncBoxBody;
-#[cfg(feature = "tower")]
 use std::convert::Infallible;
 use std::sync::Arc;
 
