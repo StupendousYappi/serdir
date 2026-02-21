@@ -32,6 +32,9 @@
 //!
 //! # Examples
 //!
+//! As seen below, the main entry point for this crate is [`ServedDir`], which is created
+//! via a [`ServedDirBuilder`].
+//!
 //! Serve files via Hyper:
 //!
 //! ```no_run
