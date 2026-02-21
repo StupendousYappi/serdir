@@ -473,6 +473,10 @@ impl ServedDirBuilder {
     }
 
     /// Sets a function that can transform certain errors into servable resources.
+    ///
+    /// If both `not_found_path` and `error_handler` are configured, the `not_found_path`
+    /// will be used first to handle unmatched paths, and the `error_handler` will be used
+    /// for all other errors (or if the `not_found_path` itself is not found).
     pub fn error_handler<F>(mut self, error_handler: F) -> Self
     where
         F: Fn(SerdirError, &str) -> Result<Resource, SerdirError> + Send + Sync + 'static,
