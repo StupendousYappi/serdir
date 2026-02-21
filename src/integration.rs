@@ -166,10 +166,9 @@ where
                     let status = StatusCode::OK;
                     let serving_req = req.without_body();
                     Ok(add_trace_logging(
+                        &serving_req,
                         // drop the request body, not needed
                         entity.into_response(&serving_req, status),
-                        &serving_req,
-                        status,
                         start_time,
                     ))
                 }
@@ -177,10 +176,9 @@ where
                     let status = StatusCode::NOT_FOUND;
                     let serving_req = req.without_body();
                     Ok(add_trace_logging(
+                        &serving_req,
                         // drop the request body, not needed
                         entity.into_response(&serving_req, status),
-                        &serving_req,
-                        status,
                         start_time,
                     ))
                 }
@@ -198,7 +196,7 @@ where
                         .status(status)
                         .body(Body::from(reason))
                         .expect("internal server error response should be valid");
-                    Ok(add_trace_logging(resp, &serving_req, status, start_time))
+                    Ok(add_trace_logging(&serving_req, resp, start_time))
                 }
             }
         })
@@ -207,12 +205,13 @@ where
 
 #[cfg(feature = "tower")]
 fn add_trace_logging<T>(
-    response: Response<Body>,
     req: &Request<T>,
-    status: StatusCode,
+    response: Response<Body>,
     start_time: std::time::Instant,
 ) -> Response<UnsyncBoxBody<bytes::Bytes, BoxError>> {
     use http_body_util::BodyExt;
+
+    let status = response.status();
 
     response.map(|body| {
         body.enable_trace_log(req, status, start_time)
