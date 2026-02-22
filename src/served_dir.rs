@@ -22,7 +22,8 @@ use crate::integration::{TowerLayer, TowerService};
 
 use crate::etag::EtagCache;
 use crate::{
-    Body, ETag, ErrorHandler, FileInfo, Resource, ResourceCache, ResourceHasher, SerdirError,
+    resource_cache::CacheSettings, Body, ETag, ErrorHandler, FileInfo, Resource, ResourceCache,
+    ResourceHasher, SerdirError,
 };
 use http::{header, HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode};
 use log::error;
@@ -441,21 +442,10 @@ impl Debug for ServedDirBuilder {
 }
 
 impl ServedDirBuilder {
-    /// Sets a resource cache for the served directory.
-    ///
-    /// The resource cache will cache file contents and headers in memory within the
-    /// limits specified by `max_total_weight` and `max_item_weight`.
-    pub fn cache_resources(
-        mut self,
-        max_total_weight: u64,
-        max_item_weight: u64,
-        capacity: usize,
-    ) -> Self {
-        self.resource_cache = Some(ResourceCache::new(
-            max_total_weight,
-            max_item_weight,
-            capacity,
-        ));
+    /// Configures the `ServedDir` to cache resource contents in memory with the
+    /// provided cache settings.
+    pub fn cache_resources(mut self, settings: CacheSettings) -> Self {
+        self.resource_cache = Some(settings.into());
         self
     }
 

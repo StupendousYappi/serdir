@@ -286,6 +286,7 @@ mod serving;
 pub use crate::body::Body;
 pub use crate::etag::ETag;
 pub use crate::resource::{Resource, ResourceBuilder};
+pub use crate::resource_cache::CacheSettings;
 pub(crate) use crate::resource_cache::ResourceCache;
 pub use crate::served_dir::{ServedDir, ServedDirBuilder};
 

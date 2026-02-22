@@ -8,6 +8,7 @@
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use hyper_util::rt::TokioIo;
+use serdir::resource_cache::CacheSettings;
 use serdir::ServedDir;
 use std::fs::File;
 use std::io::Write;
@@ -41,9 +42,10 @@ impl BenchServer {
         let thread = std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let _guard = rt.enter();
+            let cache_settings = CacheSettings::new(5_000_000).max_item_weight(2_000_000);
             let service = ServedDir::builder(&path)
                 .unwrap()
-                .cache_resources(5_000_000, 2_000_000, 16)
+                .cache_resources(cache_settings)
                 .build()
                 .into_hyper_service();
             rt.block_on(async {

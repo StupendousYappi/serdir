@@ -1,5 +1,5 @@
 use http::{header, HeaderMap, HeaderValue};
-use serdir::{Resource, ResourceBuilder, SerdirError, ServedDir, ServedDirBuilder};
+use serdir::{CacheSettings, Resource, ResourceBuilder, SerdirError, ServedDir, ServedDirBuilder};
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -736,7 +736,8 @@ async fn test_served_dir_resource_cache() {
     let context = TestContext::new();
     context.write_file("data.txt", "original content");
 
-    let served_dir = context.builder.cache_resources(1024, 1024, 10).build();
+    let cache_settings = CacheSettings::new(1024).max_item_weight(1024);
+    let served_dir = context.builder.cache_resources(cache_settings).build();
     let hdrs = HeaderMap::new();
 
     // First fetch, should load from disk and cache
