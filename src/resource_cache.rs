@@ -9,6 +9,12 @@ pub(crate) struct CacheKey {
     encodings: CompressionSupport,
 }
 
+impl CacheKey {
+    pub(crate) fn new(path: String, encodings: CompressionSupport) -> Self {
+        Self { path, encodings }
+    }
+}
+
 /// A cache of `Resource`s mapped by path.
 ///
 /// It tracks the total size (weight) of the resources it contains and evicts
@@ -34,10 +40,7 @@ impl ResourceCache {
 
     /// Gets a cloned `Resource` from the cache if it exists.
     pub(crate) fn get(&self, path: &str, encodings: CompressionSupport) -> Option<Resource> {
-        let key = CacheKey {
-            path: path.to_string(),
-            encodings,
-        };
+        let key = CacheKey::new(path.to_string(), encodings);
         self.cache.get(&key)
     }
 
@@ -61,9 +64,9 @@ impl ResourceCache {
             }
         };
 
-        let key = CacheKey { path, encodings };
+        let key = CacheKey::new(path, encodings);
 
-        let mut to_evict = false;
+        let mut shrink = false;
 
         self.cache.with_key_lock(&key, |cache| {
             let old_weight = cache.get(&key).map(|r| r.len()).unwrap_or(0);
@@ -77,19 +80,23 @@ impl ResourceCache {
             }
 
             if self.current_weight.load(Ordering::Relaxed) > self.max_total_weight {
-                to_evict = true;
+                shrink = true;
             }
         });
 
-        if to_evict {
-            let target_weight = (self.max_total_weight as f64 * 0.75) as u64;
-            while self.current_weight.load(Ordering::Relaxed) > target_weight {
-                if let Some(evicted) = self.cache.evict() {
-                    self.current_weight
-                        .fetch_sub(evicted.len(), Ordering::Relaxed);
-                } else {
-                    break;
-                }
+        if shrink {
+            self.shrink();
+        }
+    }
+
+    fn shrink(&self) {
+        let target_weight = (self.max_total_weight as f64 * 0.75) as u64;
+        while self.current_weight.load(Ordering::Relaxed) > target_weight {
+            if let Some(evicted) = self.cache.evict() {
+                self.current_weight
+                    .fetch_sub(evicted.len(), Ordering::Relaxed);
+            } else {
+                break;
             }
         }
     }
