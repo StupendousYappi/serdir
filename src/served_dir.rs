@@ -21,7 +21,9 @@ use crate::integration::HyperService;
 use crate::integration::{TowerLayer, TowerService};
 
 use crate::etag::EtagCache;
-use crate::{Body, ETag, ErrorHandler, FileInfo, Resource, ResourceHasher, SerdirError};
+use crate::{
+    Body, ETag, ErrorHandler, FileInfo, Resource, ResourceCache, ResourceHasher, SerdirError,
+};
 use http::{header, HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode};
 use log::error;
 
@@ -78,6 +80,7 @@ pub struct ServedDir {
     append_index_html: bool,
     not_found_path: Option<PathBuf>,
     etag_cache: EtagCache,
+    resource_cache: Option<ResourceCache>,
 }
 
 impl Debug for ServedDir {
@@ -139,6 +142,7 @@ impl ServedDir {
             common_headers: HeaderMap::new(),
             append_index_html: false,
             not_found_path: None,
+            resource_cache: None,
         })
     }
 
@@ -207,6 +211,7 @@ impl ServedDir {
     }
 
     async fn resolve(&self, path: &str, req_hdrs: &HeaderMap) -> Result<Resource, SerdirError> {
+        let original_path = path;
         let path = match self.strip_prefix.as_deref() {
             Some(prefix) if path == prefix => ".",
             Some(prefix) => path.strip_prefix(prefix).ok_or_else(|| {
@@ -220,6 +225,12 @@ impl ServedDir {
         let full_path = self.validate_path(path)?;
 
         let preferred = CompressionSupport::detect(req_hdrs);
+
+        if let Some(cache) = &self.resource_cache {
+            if let Some(resource) = cache.get(original_path, preferred) {
+                return Ok(resource);
+            }
+        }
 
         let res = self.find_file(&full_path, preferred).await;
         let matched_file = match res {
@@ -237,7 +248,13 @@ impl ServedDir {
             Err(e) => return Err(e),
         };
 
-        self.create_entity(matched_file)
+        let resource = self.create_entity(matched_file)?;
+
+        if let Some(cache) = &self.resource_cache {
+            cache.insert(original_path.to_string(), preferred, resource.clone());
+        }
+
+        Ok(resource)
     }
 
     /// Returns an HTTP response for a request path and headers.
@@ -398,6 +415,7 @@ pub struct ServedDirBuilder {
     common_headers: HeaderMap,
     append_index_html: bool,
     not_found_path: Option<PathBuf>,
+    resource_cache: Option<ResourceCache>,
 }
 
 impl Debug for ServedDirBuilder {
@@ -423,6 +441,24 @@ impl Debug for ServedDirBuilder {
 }
 
 impl ServedDirBuilder {
+    /// Sets a resource cache for the served directory.
+    ///
+    /// The resource cache will cache file contents and headers in memory within the
+    /// limits specified by `max_total_weight` and `max_item_weight`.
+    pub fn cache_resources(
+        mut self,
+        max_total_weight: u64,
+        max_item_weight: u64,
+        capacity: usize,
+    ) -> Self {
+        self.resource_cache = Some(ResourceCache::new(
+            max_total_weight,
+            max_item_weight,
+            capacity,
+        ));
+        self
+    }
+
     /// Sets the compression strategy (i.e. static, cached or none)for the
     /// served directory.
     pub fn compression(mut self, strategy: impl Into<CompressionStrategy>) -> Self {
@@ -641,6 +677,7 @@ impl ServedDirBuilder {
             append_index_html: self.append_index_html,
             not_found_path: self.not_found_path,
             etag_cache: EtagCache::new(),
+            resource_cache: self.resource_cache,
         }
     }
 

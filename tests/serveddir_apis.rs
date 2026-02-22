@@ -730,3 +730,28 @@ async fn test_served_dir_custom_extensions() {
         "application/octet-stream"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_served_dir_resource_cache() {
+    let context = TestContext::new();
+    context.write_file("data.txt", "original content");
+
+    let served_dir = context.builder.cache_resources(1024, 1024, 10).build();
+    let hdrs = HeaderMap::new();
+
+    // First fetch, should load from disk and cache
+    let e1 = served_dir.get("/data.txt", &hdrs).await.unwrap();
+    assert_eq!(e1.read_bytes().unwrap(), "original content");
+
+    // Modify the file on disk
+    std::fs::write(context.tmp.path().join("data.txt"), "new content").unwrap();
+
+    // Second fetch, should hit the cache and return the original content
+    let e2 = served_dir.get("/data.txt", &hdrs).await.unwrap();
+    assert_eq!(e2.read_bytes().unwrap(), "original content");
+
+    // Verify the file was actually modified using a new builder without cache
+    let no_cache_dir = ServedDir::builder(context.tmp.path()).unwrap().build();
+    let e3 = no_cache_dir.get("/data.txt", &hdrs).await.unwrap();
+    assert_eq!(e3.read_bytes().unwrap(), "new content");
+}
