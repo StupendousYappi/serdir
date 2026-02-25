@@ -111,6 +111,10 @@ required-features = ["hyper"]
 name = "samply_profile"
 required-features = ["hyper"]
 
+[[example]]
+name = "hyper_uds"
+required-features = ["hyper"]
+
 [[bench]]
 name = "hashing"
 harness = false
