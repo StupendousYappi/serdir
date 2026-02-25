@@ -445,7 +445,7 @@ impl ServedDirBuilder {
     /// Configures the `ServedDir` to cache resource contents in memory with the
     /// provided cache settings.
     pub fn cache_resources(mut self, settings: CacheSettings) -> Self {
-        self.resource_cache = Some(settings.into());
+        self.resource_cache = Some(settings.into_resource_cache());
         self
     }
 

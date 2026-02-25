@@ -42,7 +42,9 @@ impl BenchServer {
         let thread = std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let _guard = rt.enter();
-            let cache_settings = CacheSettings::new(5_000_000).max_item_weight(2_000_000);
+            let cache_settings = CacheSettings::new()
+                .max_total_weight(5_000_000)
+                .max_item_weight(2_000_000);
             let service = ServedDir::builder(&path)
                 .unwrap()
                 .cache_resources(cache_settings)

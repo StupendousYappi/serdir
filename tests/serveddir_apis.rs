@@ -736,7 +736,9 @@ async fn test_served_dir_resource_cache() {
     let context = TestContext::new();
     context.write_file("data.txt", "original content");
 
-    let cache_settings = CacheSettings::new(1024).max_item_weight(1024);
+    let cache_settings = CacheSettings::new()
+        .max_total_weight(1024)
+        .max_item_weight(1024);
     let served_dir = context.builder.cache_resources(cache_settings).build();
     let hdrs = HeaderMap::new();
 

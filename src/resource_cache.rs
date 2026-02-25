@@ -2,6 +2,7 @@ use crate::{compression::CompressionSupport, Resource};
 use sieve_cache::{Weigh, WeightedShardedSieveCache};
 use std::time::{Duration, Instant};
 
+const DEFAULT_MAX_TOTAL_WEIGHT: u64 = 8_000_000;
 const DEFAULT_EXPIRATION_TIME: Duration = Duration::from_secs(120);
 const FIXED_CAPACITY: usize = 128;
 
@@ -42,20 +43,30 @@ impl Weigh for CacheKey {
 /// Settings for caching resource contents.
 pub struct CacheSettings {
     max_total_weight: u64,
-    max_item_weight: u64,
+    max_item_weight: Option<u64>,
     expire_after: Duration,
 }
 
 impl CacheSettings {
-    ///  Creates a new [`CacheSettings`] with the given maximum total weight and capacity.
+    /// Creates a new [`CacheSettings`] with default values.
     ///
     /// The default maximum item weight is 25% of the maximum total weight.
-    pub fn new(max_total_weight: u64) -> Self {
+    pub fn new() -> Self {
         Self {
-            max_total_weight,
-            max_item_weight: max_total_weight / 4,
+            max_total_weight: DEFAULT_MAX_TOTAL_WEIGHT,
+            max_item_weight: None,
             expire_after: DEFAULT_EXPIRATION_TIME,
         }
+    }
+
+    /// Sets the maximum total weight of all items that can be stored in the cache.
+    ///
+    /// If the value is less than 16 bytes, it will be set to 16 bytes.
+    ///
+    /// The default is 8MB.
+    pub fn max_total_weight(mut self, weight: u64) -> Self {
+        self.max_total_weight = weight.max(16);
+        self
     }
 
     /// Sets the maximum weight of a single item that can be stored in the cache.
@@ -64,7 +75,7 @@ impl CacheSettings {
     ///
     /// The default is 25% of `max_total_weight`.
     pub fn max_item_weight(mut self, weight: u64) -> Self {
-        self.max_item_weight = weight;
+        self.max_item_weight = Some(weight);
         self
     }
 
@@ -75,19 +86,22 @@ impl CacheSettings {
         self.expire_after = duration;
         self
     }
+
+    /// Converts these settings into a [`ResourceCache`].
+    pub(crate) fn into_resource_cache(self) -> ResourceCache {
+        let cache = WeightedShardedSieveCache::new(FIXED_CAPACITY, self.max_total_weight as usize)
+            .expect("max_total_weight validation in CacheSettings::new makes this safe");
+        ResourceCache {
+            cache,
+            max_item_weight: self.max_item_weight.unwrap_or(self.max_total_weight / 4),
+            expire_after: self.expire_after,
+        }
+    }
 }
 
-impl From<CacheSettings> for ResourceCache {
-    fn from(settings: CacheSettings) -> Self {
-        Self {
-            cache: WeightedShardedSieveCache::new(
-                FIXED_CAPACITY,
-                settings.max_total_weight as usize,
-            )
-            .expect("weight cannot be zero"),
-            max_item_weight: settings.max_item_weight,
-            expire_after: settings.expire_after,
-        }
+impl Default for CacheSettings {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -154,7 +168,10 @@ mod tests {
 
     #[test]
     fn test_resource_cache() {
-        let cache = ResourceCache::from(CacheSettings::new(1000).max_item_weight(500));
+        let cache = CacheSettings::new()
+            .max_total_weight(1000)
+            .max_item_weight(500)
+            .into_resource_cache();
         let mtime = SystemTime::now();
         let support = CompressionSupport::default();
 
@@ -203,11 +220,11 @@ mod tests {
 
     #[test]
     fn test_resource_cache_expiration() {
-        let cache = ResourceCache::from(
-            CacheSettings::new(1000)
-                .expiration_time(Duration::from_millis(10))
-                .max_item_weight(500),
-        );
+        let cache = CacheSettings::new()
+            .max_total_weight(1000)
+            .expiration_time(Duration::from_millis(10))
+            .max_item_weight(500)
+            .into_resource_cache();
         let mtime = SystemTime::now();
         let support = CompressionSupport::default();
 
@@ -226,7 +243,9 @@ mod tests {
     #[test]
     fn test_resource_cache_default_max_item_current_weight() {
         // max_total_weight = 100, default max_item_weight = 25
-        let cache = ResourceCache::from(CacheSettings::new(100));
+        let cache = CacheSettings::new()
+            .max_total_weight(100)
+            .into_resource_cache();
         let mtime = SystemTime::now();
         let support = CompressionSupport::default();
 
@@ -239,5 +258,22 @@ mod tests {
         let res_ok = ResourceBuilder::for_bytes(vec![0; 25], mtime).build();
         cache.insert("ok".to_string(), support, res_ok);
         assert!(cache.get("ok", support).is_some());
+    }
+
+    #[test]
+    fn test_cache_settings_max_total_weight() {
+        // Test that setting a valid weight works
+        let settings = CacheSettings::new().max_total_weight(100);
+        assert_eq!(settings.max_total_weight, 100);
+
+        let settings = settings.max_total_weight(200);
+        assert_eq!(settings.max_total_weight, 200);
+
+        // Test that the minimum weight floor of 16 is enforced
+        let settings = CacheSettings::new().max_total_weight(15);
+        assert_eq!(settings.max_total_weight, 16);
+
+        let settings = CacheSettings::new().max_total_weight(0);
+        assert_eq!(settings.max_total_weight, 16);
     }
 }
