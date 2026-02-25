@@ -108,10 +108,6 @@ name = "native_apis"
 required-features = ["hyper"]
 
 [[example]]
-name = "samply_profile"
-required-features = ["hyper"]
-
-[[example]]
 name = "hyper_uds"
 required-features = ["hyper"]
 
