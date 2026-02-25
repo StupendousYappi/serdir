@@ -8,24 +8,35 @@
 
 //! Serves a directory on the unix domain socket `/tmp/serdir-uds.sock` using `ServedDir::into_hyper_service`.
 
+#[cfg(unix)]
 mod common;
 
+#[cfg(unix)]
 use anyhow::{Context, Result};
+#[cfg(unix)]
 use common::Config;
+#[cfg(unix)]
 use hyper::server::conn;
+#[cfg(unix)]
 use hyper_util::rt::TokioIo;
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::path::Path;
+#[cfg(unix)]
 use tokio::net::UnixListener;
 
+#[cfg(unix)]
 const SOCKET_PATH: &str = "/tmp/serdir-uds.sock";
 
+#[cfg(unix)]
 #[tokio::main(worker_threads = 1)]
 async fn main() -> Result<()> {
     env_logger::init();
     run().await
 }
 
+#[cfg(unix)]
 async fn run() -> Result<()> {
     let config = Config::from_env();
     let served_dir = config.into_builder()?.build();
@@ -54,4 +65,9 @@ async fn run() -> Result<()> {
             Ok::<(), anyhow::Error>(())
         });
     }
+}
+
+#[cfg(not(unix))]
+fn main() {
+    println!("The hyper_uds example is only supported on Unix platforms.");
 }
