@@ -125,7 +125,7 @@ impl ResourceCache {
         let resource = match resource.with_bytes_storage() {
             Ok(r) => r,
             Err(e) => {
-                log::warn!("Failed to convert resource to bytes storage: {}", e);
+                log::warn!("Failed to convert resource to bytes storage: {e}");
                 return;
             }
         };
