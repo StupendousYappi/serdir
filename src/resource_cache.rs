@@ -2,7 +2,7 @@ use crate::{compression::CompressionSupport, Resource};
 use sieve_cache::{Weigh, WeightedShardedSieveCache};
 use std::time::{Duration, Instant};
 
-const DEFAULT_EXPIRATION_TIME: Duration = Duration::from_mins(2);
+const DEFAULT_EXPIRATION_TIME: Duration = Duration::from_secs(120);
 const FIXED_CAPACITY: usize = 128;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
