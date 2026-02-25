@@ -1359,9 +1359,8 @@ dependencies = [
 
 [[package]]
 name = "sieve-cache"
-version = "1.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "879e304c6ec8e95de2bc5425b546df072ee5812d0b2b8497b73f0b68b31ddbbb"
+version = "1.1.7"
+source = "git+https://github.com/jedisct1/rust-sieve-cache?rev=d3a9983690f95183ce48d84287ba3df60a29cd2c#d3a9983690f95183ce48d84287ba3df60a29cd2c"
 
 [[package]]
 name = "simd-adler32"

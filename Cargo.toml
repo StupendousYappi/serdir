@@ -26,7 +26,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 bytes = "1.11"
-sieve-cache = "1.1.6"
+sieve-cache = { git = "https://github.com/jedisct1/rust-sieve-cache", rev = "d3a9983690f95183ce48d84287ba3df60a29cd2c" }
 futures-core = { version = "0.3", default-features = false, features = [
     "alloc",
 ] }

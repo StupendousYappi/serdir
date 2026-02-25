@@ -1,13 +1,10 @@
 use crate::{compression::CompressionSupport, Resource};
-use sieve_cache::ShardedSieveCache;
-use std::{
-    sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, Instant},
-};
+use sieve_cache::{Weigh, WeightedShardedSieveCache};
+use std::time::{Duration, Instant};
 // use std::sync::Arc;
 
-const DEFAULT_EXPIRATION_TIME: Duration = Duration::from_mins(1);
-const DEFAULT_CAPACITY: usize = 64;
+const DEFAULT_EXPIRATION_TIME: Duration = Duration::from_mins(2);
+const FIXED_CAPACITY: usize = 128;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct CacheKey {
@@ -27,9 +24,19 @@ struct CacheValue {
     insert_time: Instant,
 }
 
-impl CacheValue {
-    fn len(&self) -> u64 {
-        self.resource.len()
+impl Weigh for CacheValue {
+    fn weigh(&self) -> usize {
+        let stack_size: usize = size_of::<CacheValue>();
+        let heap_size = self.resource.len() as usize;
+        stack_size + heap_size
+    }
+}
+
+impl Weigh for CacheKey {
+    fn weigh(&self) -> usize {
+        let stack_size: usize = size_of::<CacheKey>();
+        let heap_size = self.path.len();
+        stack_size + heap_size
     }
 }
 
@@ -38,7 +45,6 @@ pub struct CacheSettings {
     max_total_weight: u64,
     max_item_weight: u64,
     expire_after: Duration,
-    capacity: usize,
 }
 
 impl CacheSettings {
@@ -50,7 +56,6 @@ impl CacheSettings {
             max_total_weight,
             max_item_weight: max_total_weight / 4,
             expire_after: DEFAULT_EXPIRATION_TIME,
-            capacity: DEFAULT_CAPACITY,
         }
     }
 
@@ -66,15 +71,9 @@ impl CacheSettings {
 
     /// Sets the expiration time for cached resources.
     ///
-    /// The default is 1 minute.
+    /// The default is 2 minutes.
     pub fn expiration_time(mut self, duration: Duration) -> Self {
         self.expire_after = duration;
-        self
-    }
-
-    /// Sets the maximum number of items the underlying cache is optimized for.
-    pub fn capacity(mut self, capacity: usize) -> Self {
-        self.capacity = capacity;
         self
     }
 }
@@ -82,10 +81,12 @@ impl CacheSettings {
 impl From<CacheSettings> for ResourceCache {
     fn from(settings: CacheSettings) -> Self {
         Self {
-            cache: ShardedSieveCache::new(settings.capacity).expect("capacity cannot be zero"),
-            max_total_weight: settings.max_total_weight,
+            cache: WeightedShardedSieveCache::new(
+                FIXED_CAPACITY,
+                settings.max_total_weight as usize,
+            )
+            .expect("weight cannot be zero"),
             max_item_weight: settings.max_item_weight,
-            current_weight: AtomicU64::new(0),
             expire_after: settings.expire_after,
         }
     }
@@ -96,31 +97,20 @@ impl From<CacheSettings> for ResourceCache {
 /// It tracks the total size (weight) of the resources it contains and evicts
 /// items using a sieve algorithm when the total weight exceeds a maximum threshold.
 pub(crate) struct ResourceCache {
-    cache: ShardedSieveCache<CacheKey, CacheValue>,
-    max_total_weight: u64,
+    cache: WeightedShardedSieveCache<CacheKey, CacheValue>,
     max_item_weight: u64,
-    current_weight: AtomicU64,
     expire_after: Duration,
 }
 
 impl ResourceCache {
-    /// Gets a cloned `Resource` from the cache if it exists and is not expired.
     pub(crate) fn get(&self, path: &str, encodings: CompressionSupport) -> Option<Resource> {
         let key = CacheKey::new(path.to_string(), encodings);
         if let Some(value) = self.cache.get(&key) {
             if value.insert_time.elapsed() > self.expire_after {
-                self.cache.with_key_lock(&key, |shard| {
-                    // we fetch again to ensure that the entry wasn't removed by another thread
-                    // between the first get and acquiring the lock.
-                    if let Some(v) = shard.get(&key) {
-                        if v.insert_time.elapsed() > self.expire_after {
-                            if let Some(removed) = shard.remove(&key) {
-                                self.current_weight
-                                    .fetch_sub(removed.len(), Ordering::Relaxed);
-                            }
-                        }
-                    }
-                });
+                // Take the opportunity to cleanup all expired entries, not just this one.
+                let now = Instant::now();
+                self.cache
+                    .retain(|_, v| now.duration_since(v.insert_time) < self.expire_after);
                 return None;
             }
             return Some(value.resource);
@@ -128,13 +118,6 @@ impl ResourceCache {
         None
     }
 
-    /// Inserts a `Resource` into the cache.
-    ///
-    /// The resource will be internally converted to bytes storage using
-    /// `Resource::with_bytes_storage()`. If the resource is heavier than
-    /// `max_item_weight`, it is silently skipped. If the cache exceeds
-    /// `max_total_weight` after insertion, it will evict entries until it drops
-    /// below 75% of the max total weight.
     pub(crate) fn insert(&self, path: String, encodings: CompressionSupport, resource: Resource) {
         if resource.len() > self.max_item_weight {
             return;
@@ -150,44 +133,17 @@ impl ResourceCache {
 
         let key = CacheKey::new(path, encodings);
 
-        let mut shrink = false;
-
-        let weight = resource.len();
         let value = CacheValue {
             resource,
             insert_time: Instant::now(),
         };
 
-        self.cache.with_key_lock(&key, |cache| {
-            let old_weight = cache.get(&key).map(|v| v.len()).unwrap_or(0);
-
-            let is_new = cache.insert(key.clone(), value);
-
-            self.current_weight.fetch_add(weight, Ordering::Relaxed);
-            if !is_new {
-                self.current_weight.fetch_sub(old_weight, Ordering::Relaxed);
-            }
-
-            if self.current_weight.load(Ordering::Relaxed) > self.max_total_weight {
-                shrink = true;
-            }
-        });
-
-        if shrink {
-            self.shrink();
-        }
+        self.cache.insert(key, value);
     }
 
-    fn shrink(&self) {
-        let target_weight = (self.max_total_weight as f64 * 0.75) as u64;
-        while self.current_weight.load(Ordering::Relaxed) > target_weight {
-            if let Some(evicted) = self.cache.evict() {
-                self.current_weight
-                    .fetch_sub(evicted.len(), Ordering::Relaxed);
-            } else {
-                break;
-            }
-        }
+    #[cfg(test)]
+    pub(crate) fn current_weight(&self) -> usize {
+        self.cache.current_weight()
     }
 }
 
@@ -199,42 +155,41 @@ mod tests {
 
     #[test]
     fn test_resource_cache() {
-        let cache = ResourceCache::from(CacheSettings::new(100).capacity(10).max_item_weight(50));
+        let cache = ResourceCache::from(CacheSettings::new(1000).max_item_weight(500));
         let mtime = SystemTime::now();
         let support = CompressionSupport::default();
 
         // Should be skipped (too large)
-        let large_res = ResourceBuilder::for_bytes(vec![0; 60], mtime).build();
+        let large_res = ResourceBuilder::for_bytes(vec![0; 600], mtime).build();
         cache.insert("large".to_string(), support, large_res);
         assert!(cache.get("large", support).is_none());
-        assert_eq!(cache.current_weight.load(Ordering::Relaxed), 0);
+        assert_eq!(cache.current_weight(), 0);
 
         // Insert first item
         let res1 = ResourceBuilder::for_bytes(vec![0; 40], mtime).build();
         cache.insert("res1".to_string(), support, res1);
         assert!(cache.get("res1", support).is_some());
-        assert_eq!(cache.current_weight.load(Ordering::Relaxed), 40);
+        assert!(cache.current_weight() > 40);
+        let w1 = cache.current_weight();
 
         // Insert second item
         let res2 = ResourceBuilder::for_bytes(vec![0; 40], mtime).build();
         cache.insert("res2".to_string(), support, res2);
         assert!(cache.get("res2", support).is_some());
-        assert_eq!(cache.current_weight.load(Ordering::Relaxed), 80);
+        assert!(cache.current_weight() > w1);
+        let w2 = cache.current_weight();
 
         // Replace second item
         let res2_new = ResourceBuilder::for_bytes(vec![0; 30], mtime).build();
         cache.insert("res2".to_string(), support, res2_new);
-        assert_eq!(cache.current_weight.load(Ordering::Relaxed), 70);
+        assert!(cache.current_weight() < w2);
 
         // Insert third item, triggering eviction
-        // Target weight becomes 75. Cache weight before insert: 70.
-        // Insert 40 -> 110. Will evict res1 (40), leaving 70, which is <= 75.
-        // Note: sieve cache eviction order might be non-deterministic if not all items were accessed.
-        let res3 = ResourceBuilder::for_bytes(vec![0; 40], mtime).build();
+        let res3 = ResourceBuilder::for_bytes(vec![0; 400], mtime).build();
         cache.insert("res3".to_string(), support, res3);
 
-        let w = cache.current_weight.load(Ordering::Relaxed);
-        assert!(w <= 75, "Weight {} should be <= 75 after eviction", w);
+        let w = cache.current_weight();
+        assert!(w <= 1000, "Weight {} should be <= 1000 after eviction", w);
 
         // Test with different compression support
         let br_support = CompressionSupport::new(true, false, false);
@@ -250,10 +205,9 @@ mod tests {
     #[test]
     fn test_resource_cache_expiration() {
         let cache = ResourceCache::from(
-            CacheSettings::new(100)
-                .capacity(10)
+            CacheSettings::new(1000)
                 .expiration_time(Duration::from_millis(10))
-                .max_item_weight(50),
+                .max_item_weight(500),
         );
         let mtime = SystemTime::now();
         let support = CompressionSupport::default();
@@ -262,18 +216,18 @@ mod tests {
         cache.insert("res".to_string(), support, res);
 
         assert!(cache.get("res", support).is_some());
-        assert_eq!(cache.current_weight.load(Ordering::Relaxed), 10);
+        assert!(cache.current_weight() > 0);
 
         std::thread::sleep(Duration::from_millis(20));
 
         assert!(cache.get("res", support).is_none());
-        assert_eq!(cache.current_weight.load(Ordering::Relaxed), 0);
+        assert_eq!(cache.current_weight(), 0);
     }
 
     #[test]
-    fn test_resource_cache_default_max_item_weight() {
+    fn test_resource_cache_default_max_item_current_weight() {
         // max_total_weight = 100, default max_item_weight = 25
-        let cache = ResourceCache::from(CacheSettings::new(100).capacity(10));
+        let cache = ResourceCache::from(CacheSettings::new(100));
         let mtime = SystemTime::now();
         let support = CompressionSupport::default();
 
