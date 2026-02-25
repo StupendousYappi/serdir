@@ -8,7 +8,7 @@
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use hyper_util::rt::TokioIo;
-use once_cell::sync::Lazy;
+use serdir::resource_cache::CacheSettings;
 use serdir::ServedDir;
 use std::fs::File;
 use std::io::Write;
@@ -16,59 +16,95 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
+use tokio::sync::oneshot;
 
-static SERVED_DIR: Lazy<TempDir> = Lazy::new(|| tempfile::tempdir().unwrap());
-
-/// Returns the hostport of a newly created, never-destructed server.
-fn new_server() -> String {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let _guard = rt.enter();
-        let service = ServedDir::builder(SERVED_DIR.path())
-            .unwrap()
-            .build()
-            .into_hyper_service();
-        rt.block_on(async {
-            let addr = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0));
-            let listener = TcpListener::bind(addr).await.unwrap();
-            tx.send(listener.local_addr().unwrap()).unwrap();
-            loop {
-                let (tcp, _) = listener.accept().await.unwrap();
-                let io = TokioIo::new(tcp);
-                let service = service.clone();
-                tokio::task::spawn(async move {
-                    hyper::server::conn::http1::Builder::new()
-                        .serve_connection(io, service)
-                        .await
-                        .unwrap();
-                });
-            }
-        });
-    });
-    let addr = rx.recv().unwrap();
-    format!("http://{}:{}", addr.ip(), addr.port())
+struct BenchServer {
+    addr: SocketAddr,
+    _temp_dir: TempDir,
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
-static SERVER: Lazy<String> = Lazy::new(new_server);
-static SERVER_PATH: Lazy<String> = Lazy::new(|| format!("{}/f", &*SERVER));
+impl BenchServer {
+    fn new(kib: usize) -> Self {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let tmppath = temp_dir.path().join("f");
+        let mut tmpfile = File::create(tmppath).unwrap();
+        for _ in 0..kib {
+            tmpfile.write_all(&[0; 1024]).unwrap();
+        }
+        tmpfile.flush().unwrap();
 
-/// Sets up the server to serve a `kib`-KiB file at `/f`.
-fn setup(kib: usize) {
-    let tmppath = SERVED_DIR.path().join("f");
-    let mut tmpfile = File::create(tmppath).unwrap();
-    for _ in 0..kib {
-        tmpfile.write_all(&[0; 1024]).unwrap();
+        let (addr_tx, addr_rx) = std::sync::mpsc::channel();
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+        let path = temp_dir.path().to_owned();
+
+        let thread = std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let _guard = rt.enter();
+            let cache_settings = CacheSettings::new()
+                .max_total_weight(5_000_000)
+                .max_item_weight(2_000_000);
+            let service = ServedDir::builder(&path)
+                .unwrap()
+                .cache_resources(cache_settings)
+                .build()
+                .into_hyper_service();
+            rt.block_on(async {
+                let addr = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0));
+                let listener = TcpListener::bind(addr).await.unwrap();
+                addr_tx.send(listener.local_addr().unwrap()).unwrap();
+
+                loop {
+                    tokio::select! {
+                        conn = listener.accept() => {
+                            let (tcp, _) = conn.unwrap();
+                            let io = TokioIo::new(tcp);
+                            let service = service.clone();
+                            tokio::task::spawn(async move {
+                                let _ = hyper::server::conn::http1::Builder::new()
+                                    .serve_connection(io, service)
+                                    .await;
+                            });
+                        }
+                        _ = &mut shutdown_rx => break,
+                    }
+                }
+            });
+        });
+
+        let addr = addr_rx.recv().unwrap();
+        Self {
+            addr,
+            _temp_dir: temp_dir,
+            shutdown_tx: Some(shutdown_tx),
+            thread: Some(thread),
+        }
     }
-    tmpfile.flush().unwrap();
+
+    fn url(&self) -> String {
+        format!("http://{}:{}/f", self.addr.ip(), self.addr.port())
+    }
+}
+
+impl Drop for BenchServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 fn serve_full_entity(b: &mut criterion::Bencher, kib: &usize) {
-    setup(*kib);
+    let server = BenchServer::new(*kib);
     let client = reqwest::Client::new();
     let rt = tokio::runtime::Runtime::new().unwrap();
+    let url = server.url();
     b.to_async(&rt).iter(|| async {
-        let resp = client.get(&*SERVER_PATH).send().await.unwrap();
+        let resp = client.get(&url).send().await.unwrap();
         assert_eq!(reqwest::StatusCode::OK, resp.status());
         let b = resp.bytes().await.unwrap();
         assert_eq!(1024 * *kib, b.len());
@@ -76,12 +112,13 @@ fn serve_full_entity(b: &mut criterion::Bencher, kib: &usize) {
 }
 
 fn serve_last_byte_1mib(b: &mut criterion::Bencher) {
-    setup(1024);
+    let server = BenchServer::new(1024);
     let client = reqwest::Client::new();
     let rt = tokio::runtime::Runtime::new().unwrap();
+    let url = server.url();
     b.to_async(&rt).iter(|| async {
         let resp = client
-            .get(&*SERVER_PATH)
+            .get(&url)
             .header("Range", "bytes=-1")
             .send()
             .await
