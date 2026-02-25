@@ -287,6 +287,29 @@ impl Resource {
         }
     }
 
+    /// Consumes the resource and returns a new one that uses in-memory (bytes) storage.
+    ///
+    /// If the resource is already using bytes storage, it returns itself unchanged.
+    /// If it uses file storage, it reads the file contents into memory and returns a new
+    /// bytes-backed resource with identical metadata.
+    ///
+    /// For file-backed resources, this method performs blocking disk IO.
+    pub(crate) fn with_bytes_storage(self) -> Result<Self, std::io::Error> {
+        match self.content {
+            ResourceContent::Bytes(_) => Ok(self),
+            ResourceContent::File(_) => {
+                let bytes = self.read_bytes()?;
+                Ok(Resource {
+                    len: self.len,
+                    mtime: self.mtime,
+                    content: ResourceContent::for_bytes(bytes),
+                    headers: self.headers,
+                    etag: self.etag,
+                })
+            }
+        }
+    }
+
     // Reads the bytes of the given range from this entity.
     pub(crate) fn get_range(
         &self,
@@ -547,6 +570,56 @@ mod tests {
             entity.add_headers(&mut h);
             assert_eq!(h.get(CONTENT_TYPE).unwrap(), "text/html");
             assert_eq!(h.get_all(CONTENT_TYPE).iter().count(), 1);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn with_bytes_storage() {
+        tokio::spawn(async move {
+            let tmp = tempfile::tempdir().unwrap();
+            let p = tmp.path().join("f");
+            let mut f = File::create(&p).unwrap();
+            f.write_all(b"disk content").unwrap();
+
+            let mtime = f.metadata().unwrap().modified().unwrap();
+            let res = ResourceBuilder::for_file(&p)
+                .unwrap()
+                .content_type(HeaderValue::from_static("text/plain"))
+                .header(
+                    http::header::CONTENT_LANGUAGE,
+                    HeaderValue::from_static("en"),
+                )
+                .build();
+
+            let etag = res.etag.clone();
+            assert!(matches!(res.content, super::ResourceContent::File(_)));
+
+            // Convert to bytes storage
+            let res = res.with_bytes_storage().unwrap();
+
+            assert!(matches!(res.content, super::ResourceContent::Bytes(_)));
+            assert_eq!(res.len(), 12);
+            assert_eq!(res.mtime(), mtime);
+            assert_eq!(res.etag, etag);
+            assert_eq!(
+                res.header(&http::header::CONTENT_TYPE).unwrap(),
+                "text/plain"
+            );
+            assert_eq!(res.header(&http::header::CONTENT_LANGUAGE).unwrap(), "en");
+            assert_eq!(
+                res.read_bytes().unwrap(),
+                Bytes::from_static(b"disk content")
+            );
+
+            // Pathological case: already bytes storage
+            let res2 = res.clone().with_bytes_storage().unwrap();
+            assert!(matches!(res2.content, super::ResourceContent::Bytes(_)));
+            assert_eq!(
+                res2.read_bytes().unwrap(),
+                Bytes::from_static(b"disk content")
+            );
         })
         .await
         .unwrap();

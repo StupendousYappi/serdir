@@ -267,6 +267,8 @@ impl From<IOError> for SerdirError {
 
 mod body;
 
+/// Cache implementation for loaded resources.
+pub mod resource_cache;
 mod served_dir;
 
 #[cfg(any(feature = "tower", feature = "hyper"))]
@@ -284,6 +286,8 @@ mod serving;
 pub use crate::body::Body;
 pub use crate::etag::ETag;
 pub use crate::resource::{Resource, ResourceBuilder};
+pub use crate::resource_cache::CacheSettings;
+pub(crate) use crate::resource_cache::ResourceCache;
 pub use crate::served_dir::{ServedDir, ServedDirBuilder};
 
 /// Function pointer type used to calculate ETag hash values from opened resources.

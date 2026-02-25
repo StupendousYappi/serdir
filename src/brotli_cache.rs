@@ -12,13 +12,25 @@ use std::{
 use brotli::enc::backward_references::BrotliEncoderMode;
 use brotli::enc::BrotliEncoderParams;
 use log::{debug, warn};
-use sieve_cache::ShardedSieveCache;
+use sieve_cache::{Weigh, WeightedShardedSieveCache};
 use std::io::Write;
 
 use crate::compression::{ContentEncoding, MatchedFile};
 use crate::SerdirError;
 
 type CacheKey = crate::FileInfo;
+
+impl Weigh for crate::FileInfo {
+    fn weigh(&self) -> usize {
+        0
+    }
+}
+
+impl Weigh for MatchedFile {
+    fn weigh(&self) -> usize {
+        self.file_info.len() as usize
+    }
+}
 
 const BUF_SIZE: usize = 8192;
 
@@ -33,7 +45,7 @@ static DEFAULT_TEXT_TYPES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 /// original file if it's not.
 pub(crate) struct BrotliCache {
     tempdir: PathBuf,
-    cache: ShardedSieveCache<CacheKey, MatchedFile>,
+    cache: WeightedShardedSieveCache<CacheKey, MatchedFile>,
     params: BrotliEncoderParams,
     supported_extensions: HashSet<&'static str>,
     max_file_size: u64,
@@ -42,8 +54,11 @@ pub(crate) struct BrotliCache {
 impl From<crate::compression::CachedCompression> for BrotliCache {
     fn from(value: crate::compression::CachedCompression) -> Self {
         let tempdir = env::temp_dir();
-        let cache = ShardedSieveCache::new(value.cache_size as usize)
-            .expect("brotli cache capacity cannot be zero");
+        let cache = WeightedShardedSieveCache::new(
+            value.capacity as usize,
+            value.max_total_weight as usize,
+        )
+        .expect("brotli cache capacity and max total weight cannot be zero");
         let params = BrotliEncoderParams {
             quality: i32::from(value.compression_level),
             ..Default::default()
@@ -266,7 +281,8 @@ mod tests {
             cache.params.quality,
             i32::from(crate::compression::BrotliLevel::L5)
         );
-        assert_eq!(cache.cache.capacity(), 128);
+        assert_eq!(cache.cache.capacity(), 1024);
+        assert_eq!(cache.max_file_size, 10 * 1024 * 1024);
     }
 
     #[test]
@@ -275,7 +291,7 @@ mod tests {
         extensions.insert("html");
 
         let settings = crate::compression::CachedCompression::new()
-            .max_size(64)
+            .capacity(64)
             .compression_level(crate::compression::BrotliLevel::L5)
             .supported_extensions(Some(extensions.clone()));
 
@@ -290,7 +306,7 @@ mod tests {
     fn test_brotli_cache_build() {
         let cache = BrotliCache::from(
             crate::compression::CachedCompression::new()
-                .max_size(16)
+                .capacity(16)
                 .compression_level(crate::compression::BrotliLevel::L1),
         );
 
@@ -476,7 +492,7 @@ mod tests {
         use std::io::Write;
 
         let dir = tempfile::tempdir().unwrap();
-        let cache = BrotliCache::from(crate::compression::CachedCompression::new().max_size(16));
+        let cache = BrotliCache::from(crate::compression::CachedCompression::new().capacity(16));
 
         for (name, size) in [
             ("a.txt", 64usize),
