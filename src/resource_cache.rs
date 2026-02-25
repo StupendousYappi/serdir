@@ -1,7 +1,6 @@
 use crate::{compression::CompressionSupport, Resource};
 use sieve_cache::{Weigh, WeightedShardedSieveCache};
 use std::time::{Duration, Instant};
-// use std::sync::Arc;
 
 const DEFAULT_EXPIRATION_TIME: Duration = Duration::from_mins(2);
 const FIXED_CAPACITY: usize = 128;

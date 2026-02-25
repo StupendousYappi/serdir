@@ -101,11 +101,13 @@ impl StaticCompression {
 }
 
 #[cfg(feature = "runtime-compression")]
-const DEFAULT_CACHE_SIZE: u16 = 128;
+const DEFAULT_CAPACITY: u16 = 1024;
 #[cfg(feature = "runtime-compression")]
 const DEFAULT_COMPRESSION_LEVEL: BrotliLevel = BrotliLevel::L5;
 #[cfg(feature = "runtime-compression")]
-const DEFAULT_MAX_FILE_SIZE: u64 = 1024 * 1024;
+const DEFAULT_MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+#[cfg(feature = "runtime-compression")]
+const DEFAULT_MAX_TOTAL_WEIGHT: u64 = 200 * 1024 * 1024;
 
 /// Brotli compression level (0-11).
 ///
@@ -187,10 +189,11 @@ impl TryFrom<u32> for BrotliLevel {
 #[cfg(feature = "runtime-compression")]
 #[derive(Debug, Clone)]
 pub struct CachedCompression {
-    pub(crate) cache_size: u16,
+    pub(crate) capacity: u16,
     pub(crate) compression_level: BrotliLevel,
     pub(crate) supported_extensions: Option<HashSet<&'static str>>,
     pub(crate) max_file_size: u64,
+    pub(crate) max_total_weight: u64,
 }
 
 #[cfg(feature = "runtime-compression")]
@@ -200,21 +203,17 @@ impl CachedCompression {
         Self::default()
     }
 
-    /// Sets the maximum number of items in the cache.
+    /// Sets the maximum number of files that can be cached.
     ///
-    /// Must be at least 4 and a power of 2.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the value is invalid.
-    pub fn max_size(mut self, size: u16) -> Self {
-        assert!(size >= 4, "cache_size must be at least 4");
-        assert!(size.is_power_of_two(), "cache_size must be a power of two");
-        self.cache_size = size;
+    /// The default is 1024.
+    pub fn capacity(mut self, size: u16) -> Self {
+        self.capacity = size;
         self
     }
 
     /// Sets the Brotli compression level (0-11).
+    ///
+    /// The default is 5.
     pub fn compression_level(mut self, level: BrotliLevel) -> Self {
         self.compression_level = level;
         self
@@ -232,8 +231,18 @@ impl CachedCompression {
     ///
     /// Files larger than this value will skip compression and be served
     /// in their original form.
+    ///
+    /// The default is 10mb.
     pub fn max_file_size(mut self, size: u64) -> Self {
         self.max_file_size = size;
+        self
+    }
+
+    /// Sets the maximum total disk space (in bytes) that compressed tempfiles may consume.
+    ///
+    /// The default is 200 megabytes.
+    pub fn max_total_weight(mut self, size: u64) -> Self {
+        self.max_total_weight = size;
         self
     }
 }
@@ -242,10 +251,11 @@ impl CachedCompression {
 impl Default for CachedCompression {
     fn default() -> Self {
         Self {
-            cache_size: DEFAULT_CACHE_SIZE,
+            capacity: DEFAULT_CAPACITY,
             compression_level: DEFAULT_COMPRESSION_LEVEL,
             supported_extensions: None,
             max_file_size: DEFAULT_MAX_FILE_SIZE,
+            max_total_weight: DEFAULT_MAX_TOTAL_WEIGHT,
         }
     }
 }
@@ -795,7 +805,7 @@ mod tests {
     #[cfg(feature = "runtime-compression")]
     fn test_cached_compression_into_strategy() {
         let strategy: CompressionStrategy = CachedCompression::new()
-            .max_size(16)
+            .capacity(16)
             .compression_level(BrotliLevel::L5)
             .into();
         let inner = strategy.into_inner();
@@ -836,9 +846,9 @@ mod tests {
         assert!(matches!(strategy, CompressionStrategy::Cached(_)));
 
         if let CompressionStrategy::Cached(cached) = strategy {
-            assert_eq!(cached.cache_size, 128);
+            assert_eq!(cached.capacity, 1024);
             assert_eq!(cached.compression_level, BrotliLevel::L5);
-            assert_eq!(cached.max_file_size, 1024 * 1024);
+            assert_eq!(cached.max_file_size, 10 * 1024 * 1024);
             assert!(cached.supported_extensions.is_none());
         }
     }
