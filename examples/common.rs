@@ -6,7 +6,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use argh::FromArgs;
 
 #[derive(Clone, Copy, Debug)]
@@ -49,6 +49,10 @@ pub struct Config {
     /// path (relative to served directory) to use as 404 body
     #[argh(option)]
     pub not_found_path: Option<String>,
+
+    /// whether to enable resource caching
+    #[argh(switch)]
+    pub cache: bool,
 }
 
 impl Config {
@@ -74,6 +78,48 @@ impl Config {
             }
         }
     }
+
+    pub fn cache_settings(&self) -> Option<serdir::CacheSettings> {
+        if self.cache {
+            Some(serdir::CacheSettings::default())
+        } else {
+            None
+        }
+    }
+
+    pub fn into_builder(&self) -> Result<serdir::ServedDirBuilder> {
+        let mut builder = serdir::ServedDir::builder(&self.directory)
+            .context("failed to create ServedDir builder")?
+            .append_index_html(true)
+            .compression(self.compression_strategy())
+            .strip_prefix(&self.strip_prefix);
+        if let Some(path) = &self.not_found_path {
+            builder = builder
+                .not_found_path(path)
+                .context("failed to set --not-found-path")?;
+        }
+        if let Some(settings) = self.cache_settings() {
+            builder = builder.cache_resources(settings);
+        }
+        Ok(builder)
+    }
+}
+
+#[allow(dead_code)]
+pub async fn bind_listener(dir: &std::path::Path) -> Result<tokio::net::TcpListener> {
+    let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 1337));
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .context(format!("failed to bind {addr}"))?;
+
+    log::info!(
+        "Serving {} on http://{}",
+        dir.display(),
+        listener
+            .local_addr()
+            .context("failed to get listener address")?
+    );
+    Ok(listener)
 }
 
 #[allow(dead_code)]

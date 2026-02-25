@@ -17,11 +17,9 @@ use http::header::HeaderValue;
 use hyper::server::conn;
 use hyper_util::rt::TokioIo;
 use hyper_util::service::TowerToHyperService;
-use serdir::{Resource, ResourceBuilder, SerdirError, ServedDir};
-use std::net::{Ipv4Addr, SocketAddr};
+use serdir::{Resource, ResourceBuilder, SerdirError};
 use std::path::Path;
 use std::time::SystemTime;
-use tokio::net::TcpListener;
 
 fn custom_error_handler(err: SerdirError, _request_path: &str) -> Result<Resource, SerdirError> {
     let path = match err {
@@ -79,30 +77,12 @@ async fn main() -> Result<()> {
 
 async fn run() -> Result<()> {
     let config = Config::from_env();
-    let mut builder = ServedDir::builder(config.directory.as_str())
-        .context("failed to create ServedDir builder")?
+    let served_dir = config
+        .into_builder()?
         .append_index_html(false)
-        .compression(config.compression_strategy())
-        .strip_prefix(config.strip_prefix.as_str())
-        .error_handler(custom_error_handler);
-    if let Some(path) = config.not_found_path {
-        builder = builder
-            .not_found_path(path)
-            .context("failed to set --not-found-path")?;
-    }
-    let served_dir = builder.build();
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 1337));
-    let listener = TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("failed to bind {addr}"))?;
-
-    println!(
-        "Serving {} on http://{}",
-        served_dir.dir().display(),
-        listener
-            .local_addr()
-            .context("failed to get listener address")?
-    );
+        .error_handler(custom_error_handler)
+        .build();
+    let listener = common::bind_listener(served_dir.dir()).await?;
     let service = served_dir.into_tower_service();
 
     loop {

@@ -16,14 +16,11 @@ use http::header::{self, HeaderValue};
 use hyper::server::conn;
 use hyper_util::rt::TokioIo;
 use hyper_util::service::TowerToHyperService;
+use serdir::Body;
 use std::future::Future;
-use std::net::{Ipv4Addr, SocketAddr};
 use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll};
-use tokio::net::TcpListener;
 use tower::{Layer, Service};
-
-use serdir::{Body, ServedDir};
 
 type ResponseFuture =
     Pin<Box<dyn Future<Output = Result<http::Response<Body>, std::convert::Infallible>> + Send>>;
@@ -79,32 +76,10 @@ async fn main() -> Result<()> {
 
 async fn run() -> Result<()> {
     let config = Config::from_env();
-    let mut builder = ServedDir::builder(config.directory.as_str())
-        .context("failed to create ServedDir builder")?
-        .append_index_html(true)
-        .compression(config.compression_strategy())
-        .strip_prefix(config.strip_prefix.as_str());
-    if let Some(path) = config.not_found_path {
-        builder = builder
-            .not_found_path(path)
-            .context("failed to set --not-found-path")?;
-    }
-    let served_dir = builder.build();
-    let served_dir_display = served_dir.dir().display().to_string();
+    let served_dir = config.into_builder()?.build();
+    let listener = common::bind_listener(served_dir.dir()).await?;
     let layer = served_dir.into_tower_layer();
     let service = layer.layer(DynamicFallbackService);
-
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 1337));
-    let listener = TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("failed to bind {addr}"))?;
-    println!(
-        "Serving {} on http://{}",
-        served_dir_display,
-        listener
-            .local_addr()
-            .context("failed to get listener address")?
-    );
     loop {
         let (tcp, _) = listener.accept().await.context("accept failed")?;
         let service = service.clone();
