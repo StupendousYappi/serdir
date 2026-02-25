@@ -18,7 +18,7 @@ use serdir::ServedDir;
 use std::net::{Ipv4Addr, SocketAddr};
 use tokio::net::TcpListener;
 
-#[tokio::main]
+#[tokio::main(worker_threads = 4)]
 async fn main() -> Result<()> {
     env_logger::init();
     run().await

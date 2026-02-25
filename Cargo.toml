@@ -107,6 +107,10 @@ required-features = ["hyper"]
 name = "native_apis"
 required-features = ["hyper"]
 
+[[example]]
+name = "samply_profile"
+required-features = ["hyper"]
+
 [[bench]]
 name = "hashing"
 harness = false
