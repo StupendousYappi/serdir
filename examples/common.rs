@@ -105,6 +105,7 @@ impl Config {
     }
 }
 
+#[allow(dead_code)]
 pub async fn bind_listener(dir: &std::path::Path) -> Result<tokio::net::TcpListener> {
     let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 1337));
     let listener = tokio::net::TcpListener::bind(addr)
