@@ -114,3 +114,8 @@ required-features = ["hyper"]
 [[bench]]
 name = "hashing"
 harness = false
+
+[[bench]]
+name = "middleware"
+harness = false
+required-features = ["tower", "hyper"]
