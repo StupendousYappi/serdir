@@ -186,6 +186,20 @@ async fn test_served_dir_strip_prefix_empty_accepts_relative_paths() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_served_dir_get_accepts_trailing_curdir_segment() {
+    let context = TestContext::new();
+    context.write_file("index.html", "index content");
+    let served_dir = context.builder.build();
+
+    let entity = served_dir
+        .get("/index.html/.", &HeaderMap::new())
+        .await
+        .unwrap();
+    assert_eq!(entity.read_bytes().unwrap(), "index content");
+    assert_eq!(entity.header(&header::CONTENT_TYPE).unwrap(), "text/html");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_served_dir_content_types() {
     let context = TestContext::new();
     context.write_file("index.html", "html");
