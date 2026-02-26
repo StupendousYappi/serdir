@@ -348,11 +348,9 @@ impl ServedDir {
             ));
         }
 
-        let mut full_path = self.dirpath.clone();
         for component in Path::new(path).components() {
             match component {
-                std::path::Component::Normal(seg) => full_path.push(seg),
-                std::path::Component::CurDir => {}
+                std::path::Component::Normal(_) | std::path::Component::CurDir => {}
                 std::path::Component::ParentDir => {
                     return Err(SerdirError::invalid_path(
                         "path contains .. segment".to_string(),
@@ -368,7 +366,12 @@ impl ServedDir {
                 }
             }
         }
-        Ok(full_path)
+
+        if path.is_empty() || path == "." {
+            Ok(self.dirpath.clone())
+        } else {
+            Ok(self.dirpath.join(path))
+        }
     }
 
     /// Returns a Tower service that serves files from this `ServedDir`.
