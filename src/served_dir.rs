@@ -348,9 +348,11 @@ impl ServedDir {
             ));
         }
 
+        let mut normalized = PathBuf::new();
         for component in Path::new(path).components() {
             match component {
-                std::path::Component::Normal(_) | std::path::Component::CurDir => {}
+                std::path::Component::Normal(component) => normalized.push(component),
+                std::path::Component::CurDir => {}
                 std::path::Component::ParentDir => {
                     return Err(SerdirError::invalid_path(
                         "path contains .. segment".to_string(),
@@ -367,10 +369,10 @@ impl ServedDir {
             }
         }
 
-        if path.is_empty() || path == "." {
+        if normalized.as_os_str().is_empty() {
             Ok(self.dirpath.clone())
         } else {
-            Ok(self.dirpath.join(path))
+            Ok(self.dirpath.join(normalized))
         }
     }
 
