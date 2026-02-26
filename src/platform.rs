@@ -12,7 +12,7 @@ use std::path::Path;
 
 #[cfg(unix)]
 pub(crate) fn open_file(path: &Path) -> io::Result<std::fs::File> {
-    std::fs::File::open(path)
+    tokio::task::block_in_place(|| std::fs::File::open(path))
 }
 
 #[cfg(windows)]

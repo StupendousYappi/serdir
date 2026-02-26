@@ -26,7 +26,7 @@ struct BenchServer {
 }
 
 impl BenchServer {
-    fn new(kib: usize) -> Self {
+    fn new(kib: usize, use_cache: bool) -> Self {
         let temp_dir = tempfile::tempdir().unwrap();
         let tmppath = temp_dir.path().join("f");
         let mut tmpfile = File::create(tmppath).unwrap();
@@ -42,14 +42,14 @@ impl BenchServer {
         let thread = std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let _guard = rt.enter();
-            let cache_settings = CacheSettings::new()
-                .max_total_weight(5_000_000)
-                .max_item_weight(2_000_000);
-            let service = ServedDir::builder(&path)
-                .unwrap()
-                .cache_resources(cache_settings)
-                .build()
-                .into_hyper_service();
+            let mut builder = ServedDir::builder(&path).unwrap();
+            if use_cache {
+                let cache_settings = CacheSettings::new()
+                    .max_total_weight(5_000_000)
+                    .max_item_weight(2_000_000);
+                builder = builder.cache_resources(cache_settings);
+            }
+            let service = builder.build().into_hyper_service();
             rt.block_on(async {
                 let addr = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0));
                 let listener = TcpListener::bind(addr).await.unwrap();
@@ -98,8 +98,8 @@ impl Drop for BenchServer {
     }
 }
 
-fn serve_full_entity(b: &mut criterion::Bencher, kib: &usize) {
-    let server = BenchServer::new(*kib);
+fn serve_full_entity(b: &mut criterion::Bencher, kib: usize, use_cache: bool) {
+    let server = BenchServer::new(kib, use_cache);
     let client = reqwest::Client::new();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let url = server.url();
@@ -107,12 +107,12 @@ fn serve_full_entity(b: &mut criterion::Bencher, kib: &usize) {
         let resp = client.get(&url).send().await.unwrap();
         assert_eq!(reqwest::StatusCode::OK, resp.status());
         let b = resp.bytes().await.unwrap();
-        assert_eq!(1024 * *kib, b.len());
+        assert_eq!(1024 * kib, b.len());
     });
 }
 
-fn serve_last_byte_1mib(b: &mut criterion::Bencher) {
-    let server = BenchServer::new(1024);
+fn serve_last_byte_1mib(b: &mut criterion::Bencher, use_cache: bool) {
+    let server = BenchServer::new(1024, use_cache);
     let client = reqwest::Client::new();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let url = server.url();
@@ -130,17 +130,25 @@ fn serve_last_byte_1mib(b: &mut criterion::Bencher) {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let mut g = c.benchmark_group("serve_full_entity");
-    g.throughput(criterion::Throughput::Elements(1));
-    g.throughput(criterion::Throughput::Bytes(1024))
-        .bench_function("1kib-bps", |b| serve_full_entity(b, &1));
-    g.throughput(criterion::Throughput::Bytes(1024 * 1024))
-        .bench_function("1mib-bps", |b| serve_full_entity(b, &1024));
+    // Benchmark 1 KiB serving
+    let mut g = c.benchmark_group("serve_1kib");
+    g.throughput(criterion::Throughput::Bytes(1024));
+    g.bench_function("uncached", |b| serve_full_entity(b, 1, false));
+    g.bench_function("cached", |b| serve_full_entity(b, 1, true));
     g.finish();
 
+    // Benchmark 1 MiB serving
+    let mut g = c.benchmark_group("serve_1mib");
+    g.throughput(criterion::Throughput::Bytes(1024 * 1024));
+    g.bench_function("uncached", |b| serve_full_entity(b, 1024, false));
+    g.bench_function("cached", |b| serve_full_entity(b, 1024, true));
+    g.finish();
+
+    // Benchmark last-byte RPS
     let mut g = c.benchmark_group("serve_last_byte_1mib");
     g.throughput(criterion::Throughput::Elements(1));
-    g.bench_function("rps", serve_last_byte_1mib);
+    g.bench_function("uncached", |b| serve_last_byte_1mib(b, false));
+    g.bench_function("cached", |b| serve_last_byte_1mib(b, true));
     g.finish();
 }
 
