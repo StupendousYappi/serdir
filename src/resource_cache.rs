@@ -1,3 +1,4 @@
+use crate::metrics;
 use crate::{compression::CompressionSupport, Resource};
 use sieve_cache::{Weigh, WeightedShardedSieveCache};
 use std::time::{Duration, Instant};
@@ -124,10 +125,13 @@ impl ResourceCache {
                 let now = Instant::now();
                 self.cache
                     .retain(|_, v| now.duration_since(v.insert_time) < self.expire_after);
+                metrics::record_cache_access(false);
                 return None;
             }
+            metrics::record_cache_access(true);
             return Some(value.resource);
         }
+        metrics::record_cache_access(false);
         None
     }
 

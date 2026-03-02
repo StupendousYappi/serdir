@@ -16,6 +16,7 @@ use sieve_cache::{Weigh, WeightedShardedSieveCache};
 use std::io::Write;
 
 use crate::compression::{ContentEncoding, MatchedFile};
+use crate::metrics;
 use crate::SerdirError;
 
 type CacheKey = crate::FileInfo;
@@ -178,6 +179,8 @@ impl BrotliCache {
             // consistent for the modification times to potentially differ too.
             mtime: brotli_metadata.modified()?,
         };
+
+        metrics::record_brotli_compression(file_info.len(), brotli_file_info.len());
 
         let matched = MatchedFile {
             file: Arc::new(brotli_file),

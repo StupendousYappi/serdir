@@ -19,6 +19,7 @@ use crate::compression::{
 use crate::integration::HyperService;
 #[cfg(feature = "tower")]
 use crate::integration::{TowerLayer, TowerService};
+use crate::metrics;
 
 use crate::etag::EtagCache;
 use crate::{
@@ -265,6 +266,7 @@ impl ServedDir {
     pub async fn get_response<B>(&self, req: &Request<B>) -> Result<Response<Body>, Infallible> {
         let start_time = Instant::now();
         let result = self.get(req.uri().path(), req.headers()).await;
+
         let resp = match result {
             Ok(resource) => resource.into_response(req, StatusCode::OK),
             Err(SerdirError::NotFound(Some(resource))) => {
@@ -272,6 +274,9 @@ impl ServedDir {
             }
             Err(err) => Self::make_status_response(err.status_code()),
         };
+
+        metrics::record_request(&resp, start_time.elapsed());
+
         let status = resp.status();
         let resp = resp.map(|body| body.enable_trace_log(req, status, start_time));
         Ok(resp)

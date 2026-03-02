@@ -277,6 +277,7 @@ pub mod integration;
 
 pub mod compression;
 mod etag;
+pub(crate) mod metrics;
 mod platform;
 mod range;
 mod resource;
