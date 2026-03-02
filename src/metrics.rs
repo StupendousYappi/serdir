@@ -57,6 +57,7 @@ pub(crate) fn record_request<B>(resp: &Response<B>, duration: std::time::Duratio
     }
 }
 
+#[cfg(feature = "runtime-compression")]
 #[allow(unused_variables)]
 pub(crate) fn record_brotli_compression(before_size: u64, after_size: u64) {
     #[cfg(feature = "metrics")]
