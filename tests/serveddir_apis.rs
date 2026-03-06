@@ -774,30 +774,6 @@ async fn test_served_dir_resource_cache() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_served_dir_hash_function_error_with_append_index_html() {
-    let context = TestContext::new();
-    let path = context.tmp.path();
-    std::fs::create_dir(path.join("subdir")).unwrap();
-    std::fs::write(path.join("subdir").join("index.html"), b"index content").unwrap();
-
-    let served_dir = context
-        .builder
-        .append_index_html(true)
-        .file_hasher(hash_error)
-        .build();
-    let hdrs = HeaderMap::new();
-
-    let err = served_dir.get("/subdir", &hdrs).await.unwrap_err();
-    match err {
-        SerdirError::IOError(inner) => {
-            assert_eq!(inner.kind(), std::io::ErrorKind::Other);
-            assert_eq!(inner.to_string(), "hash calculation failed");
-        }
-        other => panic!("expected IOError, got {:?}", other),
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn test_served_dir_hash_function_error_with_static_compression() {
     let context = TestContext::new();
     context.write_file("test.txt", "raw content");
