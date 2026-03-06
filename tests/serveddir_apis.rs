@@ -772,3 +772,53 @@ async fn test_served_dir_resource_cache() {
     let e3 = no_cache_dir.get("/data.txt", &hdrs).await.unwrap();
     assert_eq!(e3.read_bytes().unwrap(), "new content");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_served_dir_hash_function_error_with_static_compression() {
+    let context = TestContext::new();
+    context.write_file("test.txt", "raw content");
+    context.write_file("test.txt.gz", "fake gzip content");
+
+    let served_dir = context
+        .builder
+        .static_compression(false, true, false)
+        .file_hasher(hash_error)
+        .build();
+    let mut hdrs = HeaderMap::new();
+    hdrs.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
+
+    let err = served_dir.get("/test.txt", &hdrs).await.unwrap_err();
+    match err {
+        SerdirError::IOError(inner) => {
+            assert_eq!(inner.kind(), std::io::ErrorKind::Other);
+            assert_eq!(inner.to_string(), "hash calculation failed");
+        }
+        other => panic!("expected IOError, got {:?}", other),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_served_dir_hash_function_error_with_resource_cache() {
+    let context = TestContext::new();
+    context.write_file("data.txt", "original content");
+
+    let cache_settings = CacheSettings::new()
+        .max_total_weight(1024)
+        .max_item_weight(1024);
+
+    let served_dir = context
+        .builder
+        .cache_resources(cache_settings)
+        .file_hasher(hash_error)
+        .build();
+    let hdrs = HeaderMap::new();
+
+    let err = served_dir.get("/data.txt", &hdrs).await.unwrap_err();
+    match err {
+        SerdirError::IOError(inner) => {
+            assert_eq!(inner.kind(), std::io::ErrorKind::Other);
+            assert_eq!(inner.to_string(), "hash calculation failed");
+        }
+        other => panic!("expected IOError, got {:?}", other),
+    }
+}
