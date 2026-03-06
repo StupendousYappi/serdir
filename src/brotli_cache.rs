@@ -109,7 +109,7 @@ impl BrotliCache {
             return Self::wrap_orig(path, extension);
         }
 
-        let file_info = tokio::task::block_in_place(|| crate::FileInfo::for_path(path))?;
+        let file_info = crate::FileInfo::for_path(path)?;
 
         // Skip compression if the file is too large.
         if file_info.len() > self.max_file_size {
@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(cache.params.quality, 1);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn test_simple_compression() {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
@@ -360,7 +360,7 @@ mod tests {
         assert_eq!(matched2.file_info.mtime(), matched.file_info.mtime());
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn test_compression_levels() {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
@@ -407,7 +407,7 @@ mod tests {
         assert_eq!(59317, size5);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn test_skip_compression() {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
@@ -441,7 +441,7 @@ mod tests {
         assert_eq!(bytes, CAT_PHOTO_BYTES);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn test_max_file_size() {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
@@ -487,7 +487,7 @@ mod tests {
         ));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn test_prune_cache_keeps_smallest_half() {
         use std::io::Write;
 
