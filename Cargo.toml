@@ -18,10 +18,11 @@ rust-version = "1.88"
 runtime-compression = ["dep:brotli", "dep:tempfile"]
 tower = ["dep:tower", "dep:http-body-util"]
 hyper = ["dep:hyper"]
+metrics = ["dep:metrics"]
 
 
 [package.metadata.docs.rs]
-features = ["runtime-compression", "tower", "hyper"]
+features = ["runtime-compression", "tower", "hyper", "metrics"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
@@ -44,6 +45,7 @@ log = { version = "0.4.29", features = ["std"] }
 tower = { version = "0.4", optional = true, default-features = false }
 http-body-util = { version = "0.1", optional = true }
 hyper = { version = "1.0", default-features = false, optional = true }
+metrics = { version = "0.24", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -56,6 +58,8 @@ windows-sys = { version = "0.59", features = [
 anyhow = "1"
 argh = "0.1"
 criterion = { version = "0.5", features = ["async_tokio"] }
+metrics-exporter-prometheus = "0.16"
+metrics-util = "0.19"
 htmlescape = "0.3"
 http-body-util = "0.1.0"
 httparse = "1.3.4"
@@ -94,6 +98,10 @@ required-features = ["runtime-compression", "tower"]
 [[example]]
 name = "tower_service"
 required-features = ["tower", "runtime-compression"]
+
+[[example]]
+name = "metrics"
+required-features = ["metrics"]
 
 [[example]]
 name = "custom_error_handler"
